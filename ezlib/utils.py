@@ -1,35 +1,27 @@
 import numpy as np
 from PIL.ExifTags import TAGS
 
-
-class Munch(object):
-    """A simple implementation of the famous "Munch."
-    """
-
-    def __init__(self, **kwargs):
-        for key, item in kwargs.items():
-            self.__setattr__(key, item)
-
-
-class MetaCls(object):
+class MetaInfo(object):
     """ 
 
-    # MetaCls
+    # MetaInfo
 
-    MetaCls is used to store metadata. In MetaCls, tags can be indexed and 
+    MetaInfo is used to store metadata. In MetaInfo, tags can be indexed and 
     corresponding values can be got as using string values of tags.
 
     ## Args:
         init_dict (dict): Metadata dictionary.
-        encoding (str, optional): indicates how to decode byte array in metadata. Defaults to "latin-1".
-        str_maxlen (int, optional): the max length for formatting and print, string longer than which will be shown as "<LongString>". Defaults to 20.
+        encoding (str, optional): indicates how to decode byte array in metadata. 
+                    Defaults to "latin-1".
+        str_maxlen (int, optional): the max length for formatting and print, 
+                    string longer than which will be shown as "<LongString>". Defaults to 20.
         
     ## Usage
     
-    > Initialization. To initialize, simply run `MetaObj=MetaCls(meta_dict)`, 
+    > Initialization. To initialize, simply run `MetaObj=MetaInfo(meta_dict)`, 
     where meta_dict is metadata dictionary.
 
-    > Get available attributes. Since `MetaCls` is iterable, you can get all 
+    > Get available attributes. Since `MetaInfo` is iterable, you can get all 
     available attributes by running `[for tags in MetaObj]`.
 
     > Get attributes. There are several ways to get a specific attribute. If 
@@ -37,7 +29,7 @@ class MetaCls(object):
     `MetaObj.get("icc_profile")`. If you like, 
     `MetaObj.main_dict[MetaObj.tags["icc_profile"]]` can also help you...perhaps.
 
-    > MetaCls also provides a graceful print list (not exactly). 
+    > MetaInfo also provides a graceful print list (not exactly). 
     If you want to have a try, run `print(MetaObj)`.
 
     """
@@ -69,9 +61,9 @@ class MetaCls(object):
         return string
 
     def __repr__(self) -> str:
-        ret_str = "\nMetaClsList:\n"
+        ret_str = "\nMetaInfoList:\n"
         for (key, item) in self.tags.items():
-            ret_str += "%-20s: %s \n" % (key, self.fmt(self.main_dict[item]))
+            ret_str += f"{key:<20s}: {self.fmt(self.main_dict[item])} \n"
         return ret_str
 
     def __iter__(self):

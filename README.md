@@ -1,4 +1,4 @@
-# EasyStacker
+# EZStacker
 
 Python implementation of an image stacker. Suitable for star trails and slow shutter simulation with large amounts of images.
 
@@ -8,7 +8,7 @@ Python implementation of an image stacker. Suitable for star trails and slow shu
 
 To stack a star trail with 30% fade in and 30% fade out, run:
 
-```py
+```sh
 python stacker.py work_dir --fade-in 0.3 --fade-out 0.3
 ```
 
@@ -22,11 +22,11 @@ python stacker.py work_dir --fade-in 0.3 --fade-out 0.3
 
 #### 备注
 
-* ![TIFF/TIF](https://img.shields.io/badge/-TIFF%2FTIF-green) 代表经过一部分测试，且能够正常加载图像和元数据。
+* ![color/green](https://img.shields.io/badge/-green-green) 代表经过一部分测试，且能够正常加载图像和元数据。
 
-* ![CR2](https://img.shields.io/badge/-CR2-darkgreen) 代表能够加载图像，但还需要更多测试和调整。在可预见的未来，EasyStacker可能都不支持将储存于XMP中的数据加载到RAW类别的图像上。
+* ![CR2](https://img.shields.io/badge/-darkgreen-darkgreen) 代表能够加载图像，但还需要更多测试和调整。在可预见的未来，EasyStacker可能都不支持将储存于XMP中的数据加载到RAW类别的图像上。
 
-* ![BMP](https://img.shields.io/badge/-BMP-yellow) 代表能够加载图像，但并不保证能获得最好的图像性能。如果可能，请最好不使用这些数据类型作为输入。
+* ![BMP](https://img.shields.io/badge/-yellow-yellow) 代表能够加载图像，但并不保证能获得最好的图像性能。如果可能，请最好不使用这些数据类型作为输入。
 
 ### EasyStacker将计划支持
 
@@ -40,4 +40,4 @@ python stacker.py work_dir --fade-in 0.3 --fade-out 0.3
 * 视频抽帧叠加
 * 去除热燥
 * 更好支持各种数据类型（Raw的白平衡等）
-* 多线程读入，改善速度性能
+* 多线程/进程读入，改善速度性能
