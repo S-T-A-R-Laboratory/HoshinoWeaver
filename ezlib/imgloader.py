@@ -7,16 +7,13 @@ For color space management, now we can only do this in a dirty way. Hope that I 
 # In this implementation, metadata extraction is done by Pillow, and image loading is via OpenCV-python.
 
 import threading
-import time
-import multiprocessing
 import cv2
 import numpy as np
 import rawpy
 import queue
 from easydict import EasyDict
 from PIL import Image
-
-from utils import MetaInfo
+from .utils import MetaInfo
 
 support_color_space = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
 common_suffix = ["tiff", "tif", "jpg", "png", "jpeg"]
@@ -25,15 +22,15 @@ raw_suffix = ["cr2", "cr3", "arw", "nef", "dng"]
 support_bits = [8, 16]
 
 
-class BatchImgLoader(object):
-    """_summary_
+class ImgSeriesLoader(object):
+    """用于多线程读取图像序列的类。
 
     Args:
         object (_type_): _description_
     """
 
-    def __init__(self, imgname_list, max_poolsize=8):
-        self.imgname_list = imgname_list
+    def __init__(self, fname_list, max_poolsize=8):
+        self.fname_list = fname_list
         self.buffer = queue.Queue(maxsize=max_poolsize)
         self.stopped = True
         self.prog = 0
@@ -42,52 +39,27 @@ class BatchImgLoader(object):
     def start(self):
         self.stopped = False
         self.prog = 0
-        self.buffer = []
+        while not self.buffer.empty():
+            self.buffer.get()
         self.thread.start()
-        return self
-
-    def is_popable(self, num):
-        if num <= len(self.buffer):
-            return True
-        return False
 
     def stop(self):
         self.stopped = True
 
-    def pop(self, num=-1):
-        """pop [num] images from the buffer. When num=-1, pop all.
-
-        Args:
-            num (int, optional): num of images. Defaults to -1.
-        """
-        if num == -1 or num > self.max_poolsize: num = self.max_poolsize
-        while (not self.is_popable(num)):
-            if self.stopped:
-                break
-            time.sleep(self.wait_interval)
-        self.lock.acquire()
-        ret = self.buffer[:num]
-        self.buffer = self.buffer[num:]
-        self.lock.release()
-        return ret
+    def pop(self):
+        self.buffer.get()
 
     def loop(self):
         try:
-            for i, (imgname, imgweight) in enumerate(
-                    zip(self.imgname_list, self.weight_list)):
-                while (len(self.buffer) >= self.max_poolsize
-                       and not self.stopped):
-                    time.sleep(self.wait_interval)
+            for imgname in self.fname_list:
                 if self.stopped:
                     break
-                self.lock.acquire()
-                self.buffer.append(
-                    load_single_img(imgname).img * imgweight)
-                self.lock.release()
+                self.buffer.put(load_single_img(imgname).img)
                 self.prog += 1
+        except AssertionError as e:
+            raise e
         finally:
             self.stop()
-
 
 def get_color_profile(color_bstring):
     color_profile = color_bstring.decode("latin-1", errors="ignore")
@@ -98,7 +70,6 @@ def get_color_profile(color_bstring):
     return NotImplementedError(
         "Unsupported color space. For now only these color spaces are supported: %s"
         % support_color_space)
-
 
 def load_single_img(img_filename):
     """_summary_
@@ -115,9 +86,9 @@ def load_single_img(img_filename):
 
     # suffix check and warning raising
     suffix = img_filename.split(".")[-1].lower()
-    assert ((suffix in common_suffix) or (suffix in not_recom_suffix) or
-            (suffix in raw_suffix)), f"Unsupported img suffix:{suffix}."
-    
+    assert ((suffix in common_suffix) or (suffix in not_recom_suffix)
+            or (suffix in raw_suffix)), f"Unsupported img suffix:{suffix}."
+
     if suffix in not_recom_suffix:
         print(
             Warning("Got an Image with not recommended suffix. \
@@ -137,7 +108,9 @@ def load_single_img(img_filename):
             colorprofile = get_color_profile(
                 getattr(exifdata, 'icc_profile', b''))
         elif suffix in ["fits", "tiff", "tif"]:
-            exifdata = MetaInfo({key: meta_img.tag[key] for key in meta_img.tag_v2})
+            exifdata = MetaInfo(
+                {key: meta_img.tag[key]
+                 for key in meta_img.tag_v2})
             potiental_key = [x for x in exifdata.tags if "color" in x.lower()]
             if len(potiental_key) > 0:
                 colorprofile = get_color_profile(
@@ -148,7 +121,7 @@ def load_single_img(img_filename):
             img = raw.postprocess(output_bps=16,
                                   output_color=rawpy.rawpy.ColorSpace(4))
         # by default selecting ProRGB
-        colorprofile = "ProPhoto RGB"        
+        colorprofile = "ProPhoto RGB"
 
     # extract array from img. Force converting to int16.
     # (support int32 in the future?)

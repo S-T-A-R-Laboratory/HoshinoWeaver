@@ -1,4 +1,3 @@
-import numpy as np
 from PIL.ExifTags import TAGS
 
 class MetaInfo(object):
@@ -70,16 +69,3 @@ class MetaInfo(object):
         for tag in self.tags:
             yield tag
 
-
-def generate_weight(length, fin, fout):
-    assert fin + fout <= 1
-    in_len = int(length * fin)
-    out_len = int(length * fout)
-    ret_weight = np.ones((length, ), dtype=np.float16)
-    if in_len>0:
-        l = np.arange(1, 100, 100 / in_len) / 100
-        ret_weight[:in_len] = l
-    if out_len>0:
-        r = np.arange(1, 100, 100 / out_len)[::-1] / 100
-        ret_weight[-out_len:] = r
-    return ret_weight
