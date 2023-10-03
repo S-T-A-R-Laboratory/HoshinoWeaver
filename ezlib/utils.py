@@ -1,4 +1,8 @@
+import warnings
+from typing import Union
+
 from PIL.ExifTags import TAGS
+
 
 class MetaInfo(object):
     """ 
@@ -69,3 +73,11 @@ class MetaInfo(object):
         for tag in self.tags:
             yield tag
 
+
+def get_resize(tgt_wh: int, raw_wh: Union[list, tuple]):
+    w, h = raw_wh
+    tgt_wh = [tgt_wh, -1] if w > h else [-1, tgt_wh]
+    idn = 0 if tgt_wh[0] <= 0 else 1
+    idx = 1 - idn
+    tgt_wh[idn] = int(raw_wh[idn] * tgt_wh[idx] / raw_wh[idx])
+    return tgt_wh

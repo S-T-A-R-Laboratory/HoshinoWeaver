@@ -16,8 +16,9 @@ python stacker.py work_dir --fade-in 0.3 --fade-out 0.3
 
 ### EasyStacker已实现
 
-* 普通星轨✅
-* 渐入渐出星轨✅
+* 普通叠加✅
+* 渐入渐出叠加✅
+* 多进程读入✅（目前可达seq的叠加星轨的50%速度）
 * 已实现支持的数据类型：![TIFF/TIF](https://img.shields.io/badge/-TIFF%2FTIF-green) ![JPEG/JPG](https://img.shields.io/badge/-JPEG%2FJPG-green) ![PNG](https://img.shields.io/badge/-PNG-green) ![CR2](https://img.shields.io/badge/-CR2-darkgreen) ![CR3](https://img.shields.io/badge/-CR3-darkgreen) ![ARW](https://img.shields.io/badge/-ARW-darkgreen) ![NEF](https://img.shields.io/badge/-NEF-darkgreen) ![DNG](https://img.shields.io/badge/-DNG-darkgreen) ![BMP](https://img.shields.io/badge/-BMP-yellow) ![GIF](https://img.shields.io/badge/-GIF-yellow) ![FITS](https://img.shields.io/badge/-FITS-yellow)
 
 #### 备注
@@ -40,4 +41,3 @@ python stacker.py work_dir --fade-in 0.3 --fade-out 0.3
 * 视频抽帧叠加
 * 去除热燥
 * 更好支持各种数据类型（Raw的白平衡等）
-* 多线程/进程读入，改善速度性能
