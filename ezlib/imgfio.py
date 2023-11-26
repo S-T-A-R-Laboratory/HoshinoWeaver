@@ -125,7 +125,7 @@ def load_img(fname, dtype=None, resize=None):
 
 def load_exif(fname: str) -> EasyDict:
     """Load EXIF information of the given image file.
-    (colorprofile is still what I'm concerning about...)
+    (TODO: colorprofile is still what I'm concerning about...)
 
     Args:
         fname (str): /path/to/the/image.file
@@ -135,10 +135,12 @@ def load_exif(fname: str) -> EasyDict:
     """
     suffix = fname.lower()
     # load metadata and img for non-raw images
-    with open(fname, mode='rb') as img_file:
-        img = Image.open(img_file)
-        img_size = img.size
-        dtype=np.array(img).dtype
+    img = load_img(fname)
+    # cannot work for 16bit TIFF
+    #with open(fname, mode='rb') as img_file:
+    #    img = Image.open(img_file)
+    img_size = img.shape[:2]
+    dtype=img.dtype
     # FIXME: It just cannot work!
     # Color Management: Get ICC Profile
     if suffix in ["jpg", "png", "jpeg"]:

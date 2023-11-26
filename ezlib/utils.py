@@ -1,8 +1,13 @@
-import warnings
+import time
+from typing import Union, Callable
+from logging import getLogger
+import dataclasses
+import numpy as np
 from typing import Union
 
 from PIL.ExifTags import TAGS
 
+logger = getLogger()
 
 class MetaInfo(object):
     """ 
@@ -81,3 +86,57 @@ def get_resize(tgt_wh: int, raw_wh: Union[list, tuple]):
     idx = 1 - idn
     tgt_wh[idn] = int(raw_wh[idn] * tgt_wh[idx] / raw_wh[idx])
     return tgt_wh
+
+def time_cost_warpper(func: Callable)->Callable:
+    def do_func(*args,**kwargs):
+        t0 = time.time()
+        res = func(*args, **kwargs)
+        logger.info(f"{func.__name__} Time Cost: {(time.time()-t0):.2f}s.")
+        return res
+    return do_func
+
+
+@dataclasses.dataclass
+class GaussianParam(object):
+    mu: Union[np.ndarray,int,float]
+    var: Union[np.ndarray,int,float] = 0
+    n: int = 1
+    ddof: int = 1
+
+    def __add__(g1, g2):
+        assert isinstance(g2, GaussianParam), "unacceptable object"
+        assert g1.ddof == g2.ddof, "unmatched var calculation!"
+        ddof = g1.ddof
+        new_mu = (g1.mu * g1.n + g2.mu * g2.n) / (g1.n + g2.n)
+        new_var = ((g1.n - ddof) * g1.var + g1.n * np.square(g1.mu) +
+                   (g2.n - ddof) * g2.var + g2.n * np.square(g2.mu) -
+                   (g1.n + g2.n) * np.square(new_mu)) / (g1.n + g2.n - ddof)
+        return GaussianParam(mu=new_mu, var=new_var, n=g1.n + g2.n, ddof=ddof)
+
+    def __sub__(g1, g2):
+        assert isinstance(g2, GaussianParam), "unacceptable object"
+        assert g1.ddof == g2.ddof, "unmatched var calculation!"
+        assert g1.n>g2.n, "generate n<0 fistribution!"
+        ddof = g1.ddof
+        new_mu = (g1.mu * g1.n - g2.mu * g2.n) / (g1.n - g2.n)
+        new_var = ((g1.n - ddof) * g1.var + g1.n * np.square(g1.mu) -
+                   (g2.n - ddof) * g2.var - g2.n * np.square(g2.mu) -
+                   (g1.n - g2.n) * np.square(new_mu)) / (g1.n - g2.n - ddof)
+        return GaussianParam(mu=new_mu, var=new_var, n=g1.n - g2.n, ddof=ddof)
+
+
+def test_GaussianParam():
+    tot_num = 40
+    series = np.random.randn(tot_num)
+    base = GaussianParam(mu=series[0])
+    for i in range(1, tot_num):
+        print("n =", i)
+        add = GaussianParam(mu=series[i])
+        base = base + add
+        print(base.mu,np.mean(series[:i + 1]))
+        assert np.abs(base.mu - np.mean(series[:i + 1])) < 1e-8, (
+            base.mu, np.mean(series[:i + 1]))
+        assert np.abs(base.var - np.var(series[:i + 1], ddof=1)) < 1e-8, (
+            base.var, np.var(series[:i + 1], ddof=1), series)
+        assert base.n == i + 1
+        assert base.ddof == 1
