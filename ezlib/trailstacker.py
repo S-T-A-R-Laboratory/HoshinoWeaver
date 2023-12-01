@@ -8,16 +8,9 @@ from typing import Optional, Union
 import numpy as np
 
 from .imgfio import ImgSeriesLoader, load_exif
-from .utils import get_resize,time_cost_warpper,GaussianParam
-from .logging import get_default_logger
+from .utils import get_resize,time_cost_warpper,GaussianParam,get_mp_num, DTYPE_UPSCALE_MAP,FastGaussianParam
+from loguru import logger
 
-DTYPE_UPSCALE_MAP={
-    np.dtype('uint8'):np.dtype('uint16'),
-    np.dtype('uint16'):np.dtype('uint32'),
-    np.dtype('uint32'):np.dtype('uint64')
-}
-
-logger = get_default_logger()
 
 def generate_weight(length: int, fin: float, fout: float, int_weight=False) -> list[float,int]:
     """为渐入渐出星轨生成每张图像分配的权重。
@@ -71,10 +64,8 @@ def StarTrailMaster(fname_list: list[str],
         np.ndarray: 叠加完成的图像
     """
     tot_length = len(fname_list)
-    # 调整处理器使用数目，尽可能使每个处理器叠加sqrt(N)张图像
-    # 推导：n 图像分 m 组叠加，时间开销近似为 [n/m]+m ；min([n/m]+m)-> m取得sqrt(N)
-    mp_num = min(floor(sqrt(tot_length)), mp.cpu_count())
-    sub_length = tot_length / mp_num
+   
+    mp_num, sub_length = get_mp_num(tot_length)
     pool = mp.Pool(processes=mp_num)
     results = mp.Queue()
     
@@ -92,7 +83,7 @@ def StarTrailMaster(fname_list: list[str],
         int_weight=True
     elif int_weight and dtype_opt in DTYPE_UPSCALE_MAP:
         #INT权重 -> base图像扩大范围
-        print(f"Upscale Datatype From {dtype_opt} To {DTYPE_UPSCALE_MAP[dtype_opt]}.")
+        logger.info(f"Upscale Datatype From {dtype_opt} To {DTYPE_UPSCALE_MAP[dtype_opt]}.")
         dtype_opt = DTYPE_UPSCALE_MAP[dtype_opt]
     weight_list = generate_weight(tot_length, fin_ratio, fout_ratio,int_weight=int_weight)
 
@@ -160,7 +151,8 @@ def StarTrailStacker(fname_list: list[str],
         img_loader.stop()
     return base_img
 
-def MedianTrackMaster(fname_list: list[str],resize_length: Optional[int] = None, dtype_opt=None, resize_opt=None) -> np.ndarray:
+@time_cost_warpper
+def MeanTrackMaster(fname_list: list[str],resize_length: Optional[int] = None, dtype_opt=None, resize_opt=None) -> np.ndarray:
     """平均值叠加的入口函数。
 
     Args:
@@ -171,18 +163,23 @@ def MedianTrackMaster(fname_list: list[str],resize_length: Optional[int] = None,
         np.ndarray: _description_
     """
     tot_length = len(fname_list)
-    # 调整处理器使用数目，尽可能使每个处理器叠加sqrt(N)张图像
-    # 推导：n 图像分 m 组叠加，时间开销近似为 [n/m]+m ；min([n/m]+m)-> m取得sqrt(N)
-    mp_num = min(floor(sqrt(tot_length)), mp.cpu_count())
-    sub_length = tot_length / mp_num
+    mp_num, sub_length = get_mp_num(tot_length)
     pool = mp.Pool(processes= mp_num)
+    # 基于参考图像，获取EXIF信息，並默認提升範圍
+    # TODO：一些定制化的變換，比如用uint8得到uint16
+    base_exif=load_exif(fname_list[0])
+    raw_dtype_opt=base_exif.dtype
+
+    dtype_opt = DTYPE_UPSCALE_MAP[raw_dtype_opt]
     results = mp.Queue()
+    logger.info(f"Processor Num = {mp_num}; Dtype = {dtype_opt}; Resize = {resize_opt}")
     try:    
         # 多线程叠加
+        # TODO: 出问题的话，pool似乎不会直接中断，也不抛出堆栈错误
         for i in range(mp_num):
             l, r = int(i * sub_length), int((i + 1) * sub_length)
-            pool.apply_async(StarTrailStacker,
-                             args=(fname_list[l:r]),kwds=dict(
+            pool.apply_async(MeanTrackStacker,
+                             args=(fname_list[l:r],),kwds=dict(
                                  dtype=dtype_opt,resize=resize_opt),
                              callback=lambda ret: results.put(ret),
                              error_callback=lambda error: print(error))
@@ -190,14 +187,15 @@ def MedianTrackMaster(fname_list: list[str],resize_length: Optional[int] = None,
         base_img = results.get()
         for i in range(mp_num - 1):
             cur_img = results.get()
-            base_img = np.max([base_img, cur_img], axis=0)
+            logger.info(f"get {cur_img}")
+            base_img = base_img + cur_img
         
     except KeyboardInterrupt as e:
         pool.join()
     # TODO: EXIF最终写入合成图像中
-    return base_img
+    return np.array(base_img.mu,dtype=raw_dtype_opt)
 
-def MedianTrackStacker(fname_list: list[str],
+def MeanTrackStacker(fname_list: list[str],
                      dtype: Union[type,np.dtype],
                      resize=None,) -> GaussianParam:
     """平均值叠加子进程。
@@ -211,14 +209,14 @@ def MedianTrackStacker(fname_list: list[str],
 
     Returns:
         GaussianParam: _description_
-    """
+    """    
     img_loader = ImgSeriesLoader(fname_list,dtype,resize,max_poolsize=8)
     base_img = None
     try:
         img_loader.start()
-        base_img = GaussianParam(mu=img_loader.pop())
+        base_img = FastGaussianParam(img_loader.pop())
         for _ in range(len(fname_list)-1):
-            cur_img = GaussianParam(mu=img_loader.pop())
+            cur_img = FastGaussianParam(img_loader.pop())
             base_img = base_img+cur_img
     except Exception as e:
         # TODO: 明确错误类型。目前不确定，因此捕获全部错误
@@ -226,3 +224,27 @@ def MedianTrackStacker(fname_list: list[str],
     finally:
         img_loader.stop()
     return base_img
+
+class GeneralMergerSubprocess(object):
+    """通用的叠加子进程。
+    使用时需要定义图像的加载函数和融合函数。
+
+    Args:
+        object (_type_): _description_
+    """
+    def __init__(self,image_loading_function,image_merger_function, dtype,resize,max_poolsize=8) -> None:
+        pass
+    def run(self,fname_list: list[str]):
+        base_img = None
+        try:
+            self.img_loader.start()
+            base_img = self.image_loading_function(self.img_loader.pop())
+            for _ in range(len(fname_list)-1):
+                cur_img = self.image_loading_function(self.img_loader.pop())
+                base_img = self.image_merger_function(base_img,cur_img)
+        except Exception as e:
+            # TODO: 明确错误类型。目前不确定，因此捕获全部错误
+            return e
+        finally:
+            self.img_loader.stop()
+        return base_img

@@ -1,13 +1,19 @@
+import multiprocessing as mp
 import time
-from typing import Union, Callable
-from logging import getLogger
-import dataclasses
-import numpy as np
-from typing import Union
+from loguru import logger
+from math import floor, sqrt
+from typing import Callable, Union
 
+import numpy as np
 from PIL.ExifTags import TAGS
 
-logger = getLogger()
+DTYPE_UPSCALE_MAP = {
+    np.dtype('uint8'): np.dtype('uint16'),
+    np.dtype('uint16'): np.dtype('uint32'),
+    np.dtype('uint32'): np.dtype('uint64')
+}
+
+
 
 class MetaInfo(object):
     """ 
@@ -87,21 +93,44 @@ def get_resize(tgt_wh: int, raw_wh: Union[list, tuple]):
     tgt_wh[idn] = int(raw_wh[idn] * tgt_wh[idx] / raw_wh[idx])
     return tgt_wh
 
-def time_cost_warpper(func: Callable)->Callable:
-    def do_func(*args,**kwargs):
+
+def time_cost_warpper(func: Callable) -> Callable:
+
+    def do_func(*args, **kwargs):
         t0 = time.time()
         res = func(*args, **kwargs)
         logger.info(f"{func.__name__} Time Cost: {(time.time()-t0):.2f}s.")
         return res
+
     return do_func
 
 
-@dataclasses.dataclass
+def get_mp_num(tot_num: int) -> int:
+    """
+    设置处理器使用数目，在不超出处理器数目限制的情况下，尽可能使每个处理器叠加sqrt(N)张图像
+    推导：n 图像分 m 组叠加，时间开销近似为 [n/m]+m ；min([n/m]+m)-> m取得sqrt(N)
+    """
+    mp_num = min(floor(sqrt(tot_num)), mp.cpu_count() - 1)
+    sub_length = tot_num / mp_num
+    return mp_num, sub_length
+
+
 class GaussianParam(object):
-    mu: Union[np.ndarray,int,float]
-    var: Union[np.ndarray,int,float] = 0
-    n: int = 1
-    ddof: int = 1
+    """
+
+    Args:
+        object (_type_): _description_
+    """
+
+    def __init__(self,
+                 mu,
+                 var: Union[np.ndarray, int, float] = 0,
+                 n: int = 1,
+                 ddof: int = 1):
+        self.mu = mu
+        self.var = var
+        self.n = n
+        self.ddof = ddof
 
     def __add__(g1, g2):
         assert isinstance(g2, GaussianParam), "unacceptable object"
@@ -116,13 +145,59 @@ class GaussianParam(object):
     def __sub__(g1, g2):
         assert isinstance(g2, GaussianParam), "unacceptable object"
         assert g1.ddof == g2.ddof, "unmatched var calculation!"
-        assert g1.n>g2.n, "generate n<0 fistribution!"
+        assert g1.n > g2.n, "generate n<0 fistribution!"
         ddof = g1.ddof
         new_mu = (g1.mu * g1.n - g2.mu * g2.n) / (g1.n - g2.n)
         new_var = ((g1.n - ddof) * g1.var + g1.n * np.square(g1.mu) -
                    (g2.n - ddof) * g2.var - g2.n * np.square(g2.mu) -
                    (g1.n - g2.n) * np.square(new_mu)) / (g1.n - g2.n - ddof)
         return GaussianParam(mu=new_mu, var=new_var, n=g1.n - g2.n, ddof=ddof)
+
+
+class FastGaussianParam(object):
+    """
+    GaussianParam, but faster. 通过INT量化+优化数据储存提速。
+    Args:
+        object (_type_): _description_
+    TODO: 验证量化带来的精度损失是否可接受
+    （理论可以通过后置除法+提高数据范围提高精度）
+    """
+
+    def __init__(self,
+                 sum_mu,
+                 square_num: Union[np.ndarray, int, float] = None,
+                 n: int = 1,
+                 ddof: int = 1):
+        self.sum_mu = sum_mu
+        self.square_sum = square_num if square_num is not None else np.square(sum_mu)
+        self.n = n
+        self.ddof = ddof
+
+    @property
+    def mu(self):
+        return self.sum_mu // self.n
+
+    @property
+    def var(self):
+        # TODO: This is not validated.
+        return self.square_sum - np.square(self.sum) / (self.n - self.ddof)
+
+    def __add__(g1, g2):
+        assert isinstance(g2, FastGaussianParam), "unacceptable object"
+        assert g1.ddof == g2.ddof, "unmatched var calculation!"
+        return FastGaussianParam(sum_mu=g1.sum_mu + g2.sum_mu,
+                                 square_num=g1.square_sum + g2.square_sum,
+                                 n=g1.n + g2.n,
+                                 ddof=g1.ddof)
+
+    def __sub__(g1, g2):
+        assert isinstance(g2, FastGaussianParam), "unacceptable object"
+        assert g1.ddof == g2.ddof, "unmatched var calculation!"
+        assert g1.n > g2.n, "generate n<0 fistribution!"
+        return FastGaussianParam(sum_mu=g1.sum_mu - g2.sum_mu,
+                                 square_num=g1.square_sum - g2.square_sum,
+                                 n=g1.n - g2.n,
+                                 ddof=g1.ddof)
 
 
 def test_GaussianParam():
@@ -133,10 +208,17 @@ def test_GaussianParam():
         print("n =", i)
         add = GaussianParam(mu=series[i])
         base = base + add
-        print(base.mu,np.mean(series[:i + 1]))
-        assert np.abs(base.mu - np.mean(series[:i + 1])) < 1e-8, (
-            base.mu, np.mean(series[:i + 1]))
-        assert np.abs(base.var - np.var(series[:i + 1], ddof=1)) < 1e-8, (
-            base.var, np.var(series[:i + 1], ddof=1), series)
+        print(base.mu, np.mean(series[:i + 1]))
+        assert np.abs(base.mu -
+                      np.mean(series[:i + 1])) < 1e-8, (base.mu,
+                                                        np.mean(series[:i +
+                                                                       1]))
+        assert np.abs(base.var -
+                      np.var(series[:i + 1], ddof=1)) < 1e-8, (base.var,
+                                                               np.var(
+                                                                   series[:i +
+                                                                          1],
+                                                                   ddof=1),
+                                                               series)
         assert base.n == i + 1
         assert base.ddof == 1

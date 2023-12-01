@@ -14,6 +14,7 @@ from easydict import EasyDict
 from PIL import Image
 from .utils import MetaInfo
 from typing import Optional
+from loguru import logger
 
 support_color_space = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
 common_suffix = ["tiff", "tif", "jpg", "png", "jpeg"]
@@ -100,10 +101,9 @@ def load_img(fname, dtype=None, resize=None):
             or (suffix in raw_suffix)), f"Unsupported img suffix:{suffix}."
 
     if suffix in not_recom_suffix:
-        print(
-            Warning("Got an Image with not recommended suffix. \
+        logger.warning("Got an Image with not recommended suffix. \
             We do not guarantee the stability of EXIF extraction and the output image quality."
-                    ))
+                    )
 
     if (suffix in common_suffix) or (suffix in not_recom_suffix):
         img = cv2.imdecode(np.fromfile(fname, dtype=np.uint16),
@@ -120,6 +120,7 @@ def load_img(fname, dtype=None, resize=None):
     if resize:
         # TODO: 添加插值相关
         img = cv2.resize(img, resize)
+    logger.debug(f"Read img with shape={img.shape}; dtype={img.dtype}.")
     return img
 
 
