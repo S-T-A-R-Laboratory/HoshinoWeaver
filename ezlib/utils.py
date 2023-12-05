@@ -10,7 +10,8 @@ from PIL.ExifTags import TAGS
 DTYPE_UPSCALE_MAP = {
     np.dtype('uint8'): np.dtype('uint16'),
     np.dtype('uint16'): np.dtype('uint32'),
-    np.dtype('uint32'): np.dtype('uint64')
+    np.dtype('uint32'): np.dtype('uint64'),
+    np.dtype('uint64'): float
 }
 
 SUPPORT_COLOR_SPACE = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
@@ -108,10 +109,11 @@ class GaussianParam(object):
 
 class FastGaussianParam(object):
     """
-    GaussianParam, but faster. 通过INT量化+优化数据储存提速。
+    GaussianParam, but faster. 通过INT量化+优化数据储存提速。缺点是只支持INT型。
     Args:
         object (_type_): _description_
     TODO: 验证量化带来的精度损失是否可接受
+    TODO: 优化接口，和普通版本统一；进一步支持float类型
     （理论可以通过后置除法+提高数据范围提高精度）
     """
 
@@ -121,18 +123,28 @@ class FastGaussianParam(object):
                  n: int = 1,
                  ddof: int = 1):
         self.sum_mu = sum_mu
-        self.square_sum = square_num if square_num is not None else np.square(
-            sum_mu)
+        if square_num is not None:
+            self.square_sum = square_num
+        else:
+            sq_dtype = DTYPE_UPSCALE_MAP[self.sum_mu.dtype] if self.sum_mu.dtype in DTYPE_UPSCALE_MAP else float
+            print(f"use {sq_dtype} as var-dtype.")
+            self.square_sum = np.square(sum_mu, dtype = sq_dtype)
         self.n = n
         self.ddof = ddof
 
     @property
     def mu(self):
-        return self.sum_mu // self.n
+        return np.round(self.sum_mu / self.n)
 
     @property
     def var(self):
         # TODO: This is not validated.
+        #D(X) = ∑((X-E(X))^2)/(n-ddof)
+        #
+        #D(X) = (∑X^2 + nE(X)^2 - 2∑XE(X))/(n-ddof)
+        #    = ∑X^2 - nE(X)^2 /(n-ddof)
+
+        return self.square_sum - self.n * np.square(self.sum) / (self.n - self.ddof)
         return self.square_sum - np.square(self.sum_mu) / (self.n - self.ddof)
 
     def __add__(self, g2):
@@ -157,11 +169,12 @@ class FastGaussianParam(object):
 
 def test_GaussianParam():
     tot_num = 40
-    series = np.random.randn(tot_num)
-    base = GaussianParam(mu=series[0])
+    series = np.array(np.random.rand(tot_num)*32767,dtype=np.uint32)
+    print(series)
+    base = FastGaussianParam(series[0])
     for i in range(1, tot_num):
         print("n =", i)
-        add = GaussianParam(mu=series[i])
+        add = FastGaussianParam(series[i])
         base = base + add
         print(base.mu, np.mean(series[:i + 1]))
         assert np.abs(base.mu -
