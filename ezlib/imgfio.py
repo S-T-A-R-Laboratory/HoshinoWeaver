@@ -8,19 +8,14 @@ imgfio包含了与图像IO相关的函数和类。
 import threading
 import cv2
 import numpy as np
+import pyexiv2
 import rawpy
 import queue
 from easydict import EasyDict
 from PIL import Image
-from .utils import MetaInfo
+from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE, MetaInfo, is_support_format, time_cost_warpper
 from typing import Optional
 from loguru import logger
-
-support_color_space = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
-common_suffix = ["tiff", "tif", "jpg", "png", "jpeg"]
-not_recom_suffix = ["bmp", "gif", "fits"]
-raw_suffix = ["cr2", "cr3", "arw", "nef", "dng"]
-support_bits = [8, 16]
 
 
 class ImgSeriesLoader(object):
@@ -65,7 +60,8 @@ class ImgSeriesLoader(object):
             for imgname in self.fname_list:
                 if self.stopped:
                     break
-                self.buffer.put(load_img(imgname, dtype=self.dtype, resize=self.resize))
+                self.buffer.put(
+                    load_img(imgname, dtype=self.dtype, resize=self.resize))
                 self.prog += 1
         except AssertionError as e:
             raise e
@@ -76,15 +72,19 @@ class ImgSeriesLoader(object):
 def get_color_profile(color_bstring):
     color_profile = color_bstring.decode("latin-1", errors="ignore")
     if not color_profile: return None
-    for color_space in support_color_space:
+    for color_space in SUPPORT_COLOR_SPACE:
         if color_space in color_profile:
             return color_space
     return NotImplementedError(
         "Unsupported color space. For now only these color spaces are supported: %s"
-        % support_color_space)
+        % SUPPORT_COLOR_SPACE)
 
 
-def load_img(fname, dtype=None, resize=None):
+def load_PIL_img(fname):
+    return Image.open(fname)
+
+
+def load_img(fname, dtype=None, resize=None) -> np.ndarray:
     """_summary_
 
     Args:
@@ -97,15 +97,14 @@ def load_img(fname, dtype=None, resize=None):
 
     # suffix check and warning raising
     suffix = fname.split(".")[-1].lower()
-    assert ((suffix in common_suffix) or (suffix in not_recom_suffix)
-            or (suffix in raw_suffix)), f"Unsupported img suffix:{suffix}."
+    assert is_support_format(fname), f"Unsupported img suffix:{suffix}."
 
-    if suffix in not_recom_suffix:
+    if suffix in NOT_RECOM_SUFFIX:
         logger.warning("Got an Image with not recommended suffix. \
             We do not guarantee the stability of EXIF extraction and the output image quality."
-                    )
+                       )
 
-    if (suffix in common_suffix) or (suffix in not_recom_suffix):
+    if (suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX):
         img = cv2.imdecode(np.fromfile(fname, dtype=np.uint16),
                            cv2.IMREAD_UNCHANGED)
 
@@ -126,7 +125,6 @@ def load_img(fname, dtype=None, resize=None):
 
 def load_exif(fname: str) -> EasyDict:
     """Load EXIF information of the given image file.
-    (TODO: colorprofile is still what I'm concerning about...)
 
     Args:
         fname (str): /path/to/the/image.file
@@ -134,49 +132,61 @@ def load_exif(fname: str) -> EasyDict:
     Returns:
         EasyDict: a Easydict that stores EXIF information.
     """
-    suffix = fname.lower()
+    suffix = fname.split(".")[-1].lower()
     # load metadata and img for non-raw images
     img = load_img(fname)
+    pil_img = load_PIL_img(fname)
     # cannot work for 16bit TIFF
     #with open(fname, mode='rb') as img_file:
     #    img = Image.open(img_file)
     img_size = img.shape[:2]
-    dtype=img.dtype
-    # FIXME: It just cannot work!
+    dtype = img.dtype
+    # TODO: 获取的EXIF信息似乎仍然不全。
+    exifdata = None
+    colorprofile = b""
     # Color Management: Get ICC Profile
     if suffix in ["jpg", "png", "jpeg"]:
         # for images with compressed metadata(?)
-        exifdata = MetaInfo(img.getexif())
-        colorprofile = get_color_profile(getattr(exifdata, 'icc_profile', b''))
+        exifdata = MetaInfo(pil_img.getexif())
+        colorprofile = pil_img.info.get("icc_profile")
     elif suffix in ["fits", "tiff", "tif"]:
-        exifdata = MetaInfo(
-            {key: img.tag[key]
-             for key in img.tag_v2})
-        potiental_key = [x for x in exifdata.tags if "color" in x.lower()]
-        if len(potiental_key) > 0:
-            colorprofile = get_color_profile(
-                getattr(exifdata, potiental_key[0]))
+        exifdata = MetaInfo({key: pil_img.tag[key] for key in pil_img.tag_v2})
+        colorprofile = pil_img.info.get("icc_profile")
+    print(type(img_size), type(dtype), type(exifdata), type(colorprofile), type(pil_img.info))
     return EasyDict(img_size=img_size,
-                    dtype=dtype)
+                    dtype=dtype,
+                    exif=exifdata,
+                    colorprofile=colorprofile,)
+                    #info=pil_img.info)
 
 
+@time_cost_warpper
 def save_img(filename: str,
-                    img: np.ndarray,
-                    png_compressing: Optional[int] = 1,
-                    jpg_quality: Optional[int] = 90):
-    """保存单个图像到指定路径下。
+             img: np.ndarray,
+             png_compressing: int = 1,
+             jpg_quality: int = 90,
+             exif: bytes = b"",
+             colorprofile: bytes = b""):
+    """保存单个图像到指定路径下，并添加exif信息和色彩配置文件。
+    
+    主要工作流程如下：
+    使用openCV，将单个图像转换为字节流，岁后使用不包含exif和icc_profile信息。
 
     Args:
-        filename (str): _description_
+        suffix (str): 后缀
         img (np.ndarray): _description_
         png_compressing (Optional[int], optional): PNG压缩参数，1-10. Defaults to 1.
         jpg_quality (Optional[int], optional): JPG质量参数（0-100）. Defaults to 90.
 
     Raises:
-        NameError: _description_
-        Exception: _description_
+        NameError: 要求输出不支持的文件格式时出错。
     """
+    # TODO: 为无exif/无colorprofile的场景增加兜底逻辑
+    # TODO: 增加colorprofile转换的情况
+    logger.info(f"Saving image to {filename} ...")
     suffix = filename.upper().split(".")[-1]
+
+    # 将图像通过OpenCV进行编码
     if suffix == "PNG":
         ext = ".png"
         params = [int(cv2.IMWRITE_PNG_COMPRESSION), png_compressing]
@@ -193,8 +203,15 @@ def save_img(filename: str,
     else:
         raise NameError(f"Unsupported suffix \"{suffix}\".")
     status, buf = cv2.imencode(ext, img, params)
-    if status:
-        with open(filename, mode='wb') as f:
-            f.write(buf)
-    else:
-        raise Exception("imencode failed.")
+    assert status, "imencode failed."
+
+    image_data = pyexiv2.ImageData(buf.tobytes())
+    image_data.modify_icc(colorprofile)
+
+    # TODO: 增加exif的写入
+    #for key, value in exif_data.items():
+    #    image_data[key] = pyexiv2.ExifTag(key, value)
+
+    # 写入文件
+    with open(filename, mode='wb') as f:
+        f.write(image_data.get_bytes())

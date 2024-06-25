@@ -13,6 +13,11 @@ DTYPE_UPSCALE_MAP = {
     np.dtype('uint32'): np.dtype('uint64')
 }
 
+SUPPORT_COLOR_SPACE = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
+COMMON_SUFFIX = ["tiff", "tif", "jpg", "png", "jpeg"]
+NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
+RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng"]
+SUPPORT_BITS = [8, 16]
 
 
 class MetaInfo(object):
@@ -85,16 +90,31 @@ class MetaInfo(object):
             yield tag
 
 
+def is_support_format(fname) -> bool:
+    # suffix check and warning raising
+    suffix = fname.split(".")[-1].lower()
+    return ((suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX)
+            or (suffix in RAW_SUFFIX))
+
+
 def get_resize(tgt_wh: int, raw_wh: Union[list, tuple]):
     w, h = raw_wh
-    tgt_wh = [tgt_wh, -1] if w > h else [-1, tgt_wh]
-    idn = 0 if tgt_wh[0] <= 0 else 1
+    tgt_wh_list = [tgt_wh, -1] if w > h else [-1, tgt_wh]
+    idn = 0 if tgt_wh_list[0] <= 0 else 1
     idx = 1 - idn
-    tgt_wh[idn] = int(raw_wh[idn] * tgt_wh[idx] / raw_wh[idx])
-    return tgt_wh
+    tgt_wh_list[idn] = int(raw_wh[idn] * tgt_wh_list[idx] / raw_wh[idx])
+    return tgt_wh_list
 
 
 def time_cost_warpper(func: Callable) -> Callable:
+    """A decorator that supports to record time cost of the given function.
+
+    Args:
+        func (Callable): _description_
+
+    Returns:
+        Callable: _description_
+    """
 
     def do_func(*args, **kwargs):
         t0 = time.time()
@@ -105,7 +125,7 @@ def time_cost_warpper(func: Callable) -> Callable:
     return do_func
 
 
-def get_mp_num(tot_num: int) -> int:
+def get_mp_num(tot_num: int) -> tuple[int, float]:
     """
     设置处理器使用数目，在不超出处理器数目限制的情况下，尽可能使每个处理器叠加sqrt(N)张图像
     推导：n 图像分 m 组叠加，时间开销近似为 [n/m]+m ；min([n/m]+m)-> m取得sqrt(N)
@@ -132,7 +152,8 @@ class GaussianParam(object):
         self.n = n
         self.ddof = ddof
 
-    def __add__(g1, g2):
+    def __add__(self, g2):
+        g1 = self
         assert isinstance(g2, GaussianParam), "unacceptable object"
         assert g1.ddof == g2.ddof, "unmatched var calculation!"
         ddof = g1.ddof
@@ -142,7 +163,8 @@ class GaussianParam(object):
                    (g1.n + g2.n) * np.square(new_mu)) / (g1.n + g2.n - ddof)
         return GaussianParam(mu=new_mu, var=new_var, n=g1.n + g2.n, ddof=ddof)
 
-    def __sub__(g1, g2):
+    def __sub__(self, g2):
+        g1 = self
         assert isinstance(g2, GaussianParam), "unacceptable object"
         assert g1.ddof == g2.ddof, "unmatched var calculation!"
         assert g1.n > g2.n, "generate n<0 fistribution!"
@@ -169,7 +191,8 @@ class FastGaussianParam(object):
                  n: int = 1,
                  ddof: int = 1):
         self.sum_mu = sum_mu
-        self.square_sum = square_num if square_num is not None else np.square(sum_mu)
+        self.square_sum = square_num if square_num is not None else np.square(
+            sum_mu)
         self.n = n
         self.ddof = ddof
 
@@ -182,7 +205,8 @@ class FastGaussianParam(object):
         # TODO: This is not validated.
         return self.square_sum - np.square(self.sum) / (self.n - self.ddof)
 
-    def __add__(g1, g2):
+    def __add__(self, g2):
+        g1 = self
         assert isinstance(g2, FastGaussianParam), "unacceptable object"
         assert g1.ddof == g2.ddof, "unmatched var calculation!"
         return FastGaussianParam(sum_mu=g1.sum_mu + g2.sum_mu,
@@ -190,7 +214,8 @@ class FastGaussianParam(object):
                                  n=g1.n + g2.n,
                                  ddof=g1.ddof)
 
-    def __sub__(g1, g2):
+    def __sub__(self, g2):
+        g1 = self
         assert isinstance(g2, FastGaussianParam), "unacceptable object"
         assert g1.ddof == g2.ddof, "unmatched var calculation!"
         assert g1.n > g2.n, "generate n<0 fistribution!"
