@@ -12,8 +12,7 @@ import pyexiv2
 import rawpy
 import queue
 from easydict import EasyDict
-from PIL import Image
-from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE, MetaInfo, is_support_format, time_cost_warpper
+from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE, is_support_format, time_cost_warpper
 from typing import Optional
 from loguru import logger
 
@@ -80,10 +79,6 @@ def get_color_profile(color_bstring):
         % SUPPORT_COLOR_SPACE)
 
 
-def load_PIL_img(fname):
-    return Image.open(fname)
-
-
 def load_img(fname, dtype=None, resize=None) -> np.ndarray:
     """_summary_
 
@@ -112,7 +107,7 @@ def load_img(fname, dtype=None, resize=None) -> np.ndarray:
         # load images with rawpy
         with rawpy.imread(fname) as raw:
             img = raw.postprocess(output_bps=16,
-                                  output_color=rawpy.rawpy.ColorSpace(4))
+                                  output_color=rawpy.rawpy.ColorSpace(4)) # type: ignore
 
     if dtype:
         img = np.array(img, dtype=dtype)
@@ -123,8 +118,8 @@ def load_img(fname, dtype=None, resize=None) -> np.ndarray:
     return img
 
 
-def load_exif(fname: str) -> EasyDict:
-    """Load EXIF information of the given image file.
+def load_info(fname: str) -> EasyDict:
+    """Load basic information of the given image file (including EXIF, icc_profile, etc.).
 
     Args:
         fname (str): /path/to/the/image.file
@@ -132,32 +127,22 @@ def load_exif(fname: str) -> EasyDict:
     Returns:
         EasyDict: a Easydict that stores EXIF information.
     """
-    suffix = fname.split(".")[-1].lower()
-    # load metadata and img for non-raw images
     img = load_img(fname)
-    pil_img = load_PIL_img(fname)
-    # cannot work for 16bit TIFF
-    #with open(fname, mode='rb') as img_file:
-    #    img = Image.open(img_file)
+    image_data = None
+    with open(fname, mode='rb') as f:
+        image_data = pyexiv2.ImageData(f.read())
+    # 基础信息
     img_size = img.shape[:2]
     dtype = img.dtype
-    # TODO: 获取的EXIF信息似乎仍然不全。
-    exifdata = None
-    colorprofile = b""
-    # Color Management: Get ICC Profile
-    if suffix in ["jpg", "png", "jpeg"]:
-        # for images with compressed metadata(?)
-        exifdata = MetaInfo(pil_img.getexif())
-        colorprofile = pil_img.info.get("icc_profile")
-    elif suffix in ["fits", "tiff", "tif"]:
-        exifdata = MetaInfo({key: pil_img.tag[key] for key in pil_img.tag_v2})
-        colorprofile = pil_img.info.get("icc_profile")
-    print(type(img_size), type(dtype), type(exifdata), type(colorprofile), type(pil_img.info))
-    return EasyDict(img_size=img_size,
-                    dtype=dtype,
-                    exif=exifdata,
-                    colorprofile=colorprofile,)
-                    #info=pil_img.info)
+    colorprofile = image_data.read_icc()
+    exifdata = image_data.read_exif()
+    return EasyDict(
+        img_size=img_size,
+        dtype=dtype,
+        exif=EasyDict(exifdata),
+        colorprofile=colorprofile,
+    )
+    #info=pil_img.info)
 
 
 @time_cost_warpper

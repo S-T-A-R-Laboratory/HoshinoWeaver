@@ -51,6 +51,10 @@ if __name__ == "__main__":
                               int_weight=args.int_weight)
     elif args.mode == "mean":
         res = MeanTrackMaster(img_files)
+    else:
+        raise NotImplementedError(
+            f"NotImplementedMode: {args.mode}. Only \"max\" and \"mean\" are supported."
+        )
 
     save_img(output_file,
              res.img,

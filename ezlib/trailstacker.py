@@ -1,12 +1,12 @@
 import multiprocessing as mp
 
-from typing import Optional, Union
+from typing import Optional, Union, Any
 
 from easydict import EasyDict
 
 import numpy as np
 
-from .imgfio import ImgSeriesLoader, get_color_profile, load_exif
+from .imgfio import ImgSeriesLoader, get_color_profile, load_info
 from .utils import get_resize, time_cost_warpper, GaussianParam, get_mp_num, DTYPE_UPSCALE_MAP, FastGaussianParam
 from loguru import logger
 
@@ -73,18 +73,19 @@ def StarTrailMaster(fname_list: list[str],
     results = mp.Queue()
 
     # 基于参考图像，获取EXIF信息
-    base_exif = load_exif(fname_list[0])
-    dtype_opt = base_exif.dtype
+    base_info: Any = load_info(fname_list[0])
+    dtype_opt = base_info.dtype
 
     # DEBUG INFO
     logger.info(
         f"mp_num = {mp_num}; int_weight={int_weight} ;dtype={dtype_opt}")
-    logger.info(f"icc_profile={get_color_profile(base_exif.colorprofile)}")
-    logger.debug(f"Raw icc_profile={base_exif.colorprofile}")
+    logger.info(f"ICC_profile={get_color_profile(base_info.colorprofile)}")
+    logger.info(f"EXIF TAG num = {len(base_info.exif)}")
+    logger.debug(f"Raw basic infomation={base_info}")
 
     # 对于需要快速预览的场景，resize_opt被设置为具体的值；否则为None。
     resize_opt = get_resize(resize_length,
-                            base_exif.size) if resize_length else None
+                            base_info.size) if resize_length else None
 
     # 整形输入的位深度选项
     if (fin_ratio == 0 and fout_ratio == 0):
@@ -106,7 +107,7 @@ def StarTrailMaster(fname_list: list[str],
         # 多线程叠加
         for i in range(mp_num):
             l, r = int(i * sub_length), int((i + 1) * sub_length)
-            pool.apply_async(MaxTrackMaster,
+            pool.apply_async(StarTrailStacker,
                              args=(fname_list[l:r], weight_list[l:r]),
                              kwds=dict(dtype=dtype_opt, resize=resize_opt),
                              callback=lambda ret: results.put(ret),
@@ -117,27 +118,29 @@ def StarTrailMaster(fname_list: list[str],
             cur_img = results.get()
             base_img = np.max([base_img, cur_img], axis=0)
         # TODO: 转换到指定的输出类型。包括从8位图像叠加时创建16位图像的需求
-        if (not int_weight) and (base_exif.dtype in DTYPE_UPSCALE_MAP):
+        if (not int_weight) and (base_info.dtype in DTYPE_UPSCALE_MAP):
             # 输入为整形，但未使用整数权重时，会被转换为float16进行计算
             # 因此需要强制转换为整型
             # TODO: [但使用的整形精度应当根据输入进一步权衡]
-            base_img = np.array(base_img, dtype=base_exif.dtype)
-        if int_weight and (base_exif.dtype != dtype_opt):
+            base_img = np.array(base_img, dtype=base_info.dtype)
+        if int_weight and (base_info.dtype != dtype_opt):
             # 使用int_weight的需要做范围回退
-            base_img = np.array(base_img // 255, dtype=base_exif.dtype)
+            base_img = np.array(base_img // 255, dtype=base_info.dtype)
 
     except KeyboardInterrupt as e:
         pool.join()
+        raise e
     # TODO: EXIF最终写入合成图像中
+    # TODO: 异常处理
     return EasyDict(img=base_img,
-                    exif=base_exif.exif,
-                    colorprofile=base_exif.colorprofile)
+                    exif=base_info.exif,
+                    colorprofile=base_info.colorprofile)
 
 
-def MaxTrackMaster(fname_list: list[str],
-                     weight_list: Union[list[float], list[int]],
-                     dtype: Union[type, np.dtype],
-                     resize=None) -> np.ndarray:
+def StarTrailStacker(fname_list: list[str],
+                   weight_list: Union[list[float], list[int]],
+                   dtype: Union[type, np.dtype],
+                   resize=None) -> np.ndarray:
     """最大值叠加子进程。
 
     Args:
@@ -170,7 +173,7 @@ def MaxTrackMaster(fname_list: list[str],
 def MeanTrackMaster(fname_list: list[str],
                     resize_length: Optional[int] = None,
                     dtype_opt=None,
-                    resize_opt=None) -> np.ndarray:
+                    resize_opt=None) -> EasyDict:
     """平均值叠加的入口函数。
 
     Args:
@@ -185,8 +188,8 @@ def MeanTrackMaster(fname_list: list[str],
     pool = mp.Pool(processes=mp_num)
     # 基于参考图像，获取EXIF信息，並默認提升範圍
     # TODO：一些定制化的變換，比如用uint8得到uint16
-    base_exif = load_exif(fname_list[0])
-    raw_dtype_opt = base_exif.dtype
+    base_info: Any = load_info(fname_list[0])
+    raw_dtype_opt = base_info.dtype
 
     dtype_opt = DTYPE_UPSCALE_MAP[raw_dtype_opt]
     results = mp.Queue()
@@ -212,16 +215,16 @@ def MeanTrackMaster(fname_list: list[str],
 
     except KeyboardInterrupt as e:
         pool.join()
+        raise e
     # TODO: EXIF最终写入合成图像中
     return EasyDict(img=np.array(base_img.mu, dtype=raw_dtype_opt),
-                    exif=base_exif.exif,
-                    colorprofile=base_exif.colorprofile)
+                    exif=base_info.exif,
+                    colorprofile=base_info.colorprofile)
 
 
-def MeanTrackStacker(
-    fname_list: list[str],
-    dtype: Union[type, np.dtype],
-    resize=None) -> GaussianParam:
+def MeanTrackStacker(fname_list: list[str],
+                     dtype: Union[type, np.dtype],
+                     resize=None) -> FastGaussianParam:
     """平均值叠加子进程。
 
     Args:
@@ -249,7 +252,7 @@ def MeanTrackStacker(
         img_loader.stop()
     return base_img
 
-
+# WIP！
 class GeneralMergerSubprocess(object):
     """通用的叠加子进程。
     使用时需要定义图像的加载函数和融合函数。
@@ -258,21 +261,27 @@ class GeneralMergerSubprocess(object):
         object (_type_): _description_
     """
 
-    def __init__(self,
-                 image_loading_function,
-                 image_merger_function,
-                 dtype,
-                 resize,
-                 max_poolsize=8) -> None:
-        self.image_loading_function = image_loading_function
-        self.image_merger_function = image_merger_function
+    def __init__(self, img_loader, dtype, resize, max_poolsize=8) -> None:
 
+        pass
+
+    def process_image(self, img: np.ndarray) -> np.ndarray:
+        """定义一张图像在载入后如何被处理。对于不同的叠加模式，该过程略有不同。
+
+        Args:
+            img (np.ndarray): _description_
+
+        Returns:
+            np.ndarray: _description_
+        """
+        return img
 
     def run(self, fname_list: list[str]):
+        self.img_loader = img_loader
         base_img = None
         try:
             self.img_loader.start()
-            base_img = self.image_loading_function(self.img_loader.pop())
+            base_img = self.process_image(self.img_loader.pop())
             for _ in range(len(fname_list) - 1):
                 cur_img = self.image_loading_function(self.img_loader.pop())
                 base_img = self.image_merger_function(base_img, cur_img)
