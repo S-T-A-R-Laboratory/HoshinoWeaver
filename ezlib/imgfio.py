@@ -126,22 +126,24 @@ def load_info(fname: str) -> EasyDict:
     Returns:
         EasyDict: a Easydict that stores EXIF information.
     """
+    info = None
     img = load_img(fname)
-    image_data = None
     with open(fname, mode='rb') as f:
-        image_data = pyexiv2.ImageData(f.read())
-    # 基础信息
-    img_size = img.shape[:2]
-    dtype = img.dtype
-    colorprofile = image_data.read_icc()
-    exifdata = image_data.read_exif()
-    return EasyDict(
-        img_size=img_size,
-        dtype=dtype,
-        exif=EasyDict(exifdata),
-        colorprofile=colorprofile,
-    )
-    #info=pil_img.info)
+        with pyexiv2.ImageData(f.read()) as image_data:
+            # 基础信息
+            img_size = img.shape[:2]
+            dtype = img.dtype
+            colorprofile = image_data.read_icc()
+            exifdata = image_data.read_exif()
+            image_data.close()
+            info = EasyDict(
+                img_size=img_size,
+                dtype=dtype,
+                exif=EasyDict(exifdata),
+                colorprofile=colorprofile,
+            )#info=pil_img.info)
+    return info
+    
 
 
 @time_cost_warpper
@@ -189,13 +191,13 @@ def save_img(filename: str,
     status, buf = cv2.imencode(ext, img, params)
     assert status, "imencode failed."
 
-    image_data = pyexiv2.ImageData(buf.tobytes())
-    image_data.modify_icc(colorprofile)
+    with pyexiv2.ImageData(buf.tobytes()) as image_data:
+        image_data.modify_icc(colorprofile)
 
-    # TODO: 增加exif的写入
-    #for key, value in exif_data.items():
-    #    image_data[key] = pyexiv2.ExifTag(key, value)
+        # TODO: 增加exif的写入
+        #for key, value in exif_data.items():
+        #    image_data[key] = pyexiv2.ExifTag(key, value)
 
-    # 写入文件
-    with open(filename, mode='wb') as f:
-        f.write(image_data.get_bytes())
+        # 写入文件
+        with open(filename, mode='wb') as f:
+            f.write(image_data.get_bytes())
