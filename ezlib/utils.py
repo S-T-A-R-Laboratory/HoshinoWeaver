@@ -144,8 +144,8 @@ class FastGaussianParam(object):
         #D(X) = (∑X^2 + nE(X)^2 - 2∑XE(X))/(n-ddof)
         #    = ∑X^2 - nE(X)^2 /(n-ddof)
 
-        return self.square_sum - self.n * np.square(self.sum) / (self.n - self.ddof)
-        return self.square_sum - np.square(self.sum_mu) / (self.n - self.ddof)
+        return self.square_sum - self.n * np.square(self.sum_mu) / (self.n - self.ddof)
+        #return self.square_sum - np.square(self.sum_mu) / (self.n - self.ddof)
 
     def __add__(self, g2):
         g1 = self

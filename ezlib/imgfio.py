@@ -1,9 +1,8 @@
 """
+imgfio contains functions and classes about image file i/o.
+
 imgfio包含了与图像IO相关的函数和类。
-
 """
-
-# In this implementation, metadata extraction is done by Pillow, and image loading is via OpenCV-python.
 
 import threading
 import cv2
@@ -148,7 +147,7 @@ def load_info(fname: str) -> EasyDict:
 @time_cost_warpper
 def save_img(filename: str,
              img: np.ndarray,
-             png_compressing: int = 1,
+             png_compressing: int = 0,
              jpg_quality: int = 90,
              exif: bytes = b"",
              colorprofile: bytes = b""):
@@ -158,10 +157,10 @@ def save_img(filename: str,
     使用openCV，将单个图像转换为字节流，岁后使用不包含exif和icc_profile信息。
 
     Args:
-        suffix (str): 后缀
-        img (np.ndarray): _description_
-        png_compressing (Optional[int], optional): PNG压缩参数，1-10. Defaults to 1.
-        jpg_quality (Optional[int], optional): JPG质量参数（0-100）. Defaults to 90.
+        filename (str): The tgt filename.
+        img (np.ndarray): The image to be saved.
+        png_compressing (int): PNG compressing arguments, ranges from 0 (no compressing) to 9. Defaults to 0.
+        jpg_quality (int): JPG quality parameter, ranges from 0 to 100. Defaults to 90.
 
     Raises:
         NameError: 要求输出不支持的文件格式时出错。

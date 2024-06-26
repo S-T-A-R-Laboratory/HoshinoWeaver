@@ -19,7 +19,7 @@ if __name__ == "__main__":
     arg_parser.add_argument("--fade-out", type=float, default=0.1)
     arg_parser.add_argument("--int-weight", action="store_true")
     arg_parser.add_argument("--jpg-quality", type=int, default=90)
-    arg_parser.add_argument("--png-compressing", type=int, default=1)
+    arg_parser.add_argument("--png-compressing", type=int, default=0)
     arg_parser.add_argument("--output", type=str)
     arg_parser.add_argument("--debug",
                             action="store_true",
