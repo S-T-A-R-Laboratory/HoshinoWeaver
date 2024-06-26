@@ -11,11 +11,38 @@ Python implementation of an image stacker. Suitable for star trails and slow shu
 2. 支持渐入/渐出功能：可以快速创建有渐入/渐出效果的星轨图像。通常类似功能需要使用PS中的插件（如半岛雪人的堆栈），而主流星轨叠加软件不支持类似功能。
 
 ## Usage
+```sh
+python launcher.py [-h] --mode {mean,max} [--fade-in FADE_IN] [--fade-out FADE_OUT] [--int-weight] [--jpg-quality JPG_QUALITY]
+                   [--png-compressing PNG_COMPRESSING] [--output OUTPUT] [--debug]
+                   dirname
+```
+
+### Positional Arguments
+  dirname: directory of images
+
+### Options
+  --mode {mean,max}     stack mode. Select from "mean" and "max".
+  --fade-in Fade-in ratio. Ranges from 0 to 1.
+  --fade-out Fade-out ratio. Ranges from 0 to 1.
+  --int-weight
+  --jpg-quality JPG_QUALITY
+  --png-compressing PNG_COMPRESSING
+  --output OUTPUT
+  --debug               print logs with debug level.
+
+
+### Example
 
 To stack a star trail with 30% fade in and 30% fade out, run:
 
 ```sh
 python launcher.py /path/to/your/work_dir --mode max --fade-in 0.3 --fade-out 0.3 --int-weight --output "img.tif"
+```
+
+To stack an average image, run:
+
+```sh
+python launcher.py /path/to/your/work_dir --mode mean --output "img.tif"
 ```
 
 ## TODO List
@@ -35,6 +62,8 @@ python launcher.py /path/to/your/work_dir --mode max --fade-in 0.3 --fade-out 0.
 * ![CR2](https://img.shields.io/badge/-darkgreen-darkgreen) 代表能够加载图像和元数据，但还需要更多测试和调整。例如，Easystacker支持读取RAW文件，但并不支持将XMP中的数据加载到RAW图像上。
 
 * ![BMP](https://img.shields.io/badge/-yellow-yellow) 代表能够加载图像，不能加载（或数据本身不支持）元数据。
+
+* pyexiv2在M1/M2 CPU设备上不能直接运行。（稍后补充相关文档）
 
 ### EasyStacker将计划支持
 
