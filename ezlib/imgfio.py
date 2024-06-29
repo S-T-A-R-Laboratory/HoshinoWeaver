@@ -73,7 +73,7 @@ class ImgSeriesLoader(object):
                 self.buffer.put(
                     load_img(imgname, dtype=self.dtype, resize=self.resize))
                 self.prog += 1
-        except AssertionError as e:
+        except Exception as e:
             raise e
         finally:
             self.stop()
@@ -131,7 +131,6 @@ def load_img(fname: str,
         )
         return img
     except Exception as e:
-        # TODO: 细化exception类别
         logger.warning(f"Failed to read {fname} Because {e}!")
         return None
 
