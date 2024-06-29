@@ -127,7 +127,7 @@ class FastGaussianParam(object):
             self.square_sum = square_num
         else:
             sq_dtype = DTYPE_UPSCALE_MAP[self.sum_mu.dtype] if self.sum_mu.dtype in DTYPE_UPSCALE_MAP else float
-            print(f"use {sq_dtype} as var-dtype.")
+            #logger.debug(f"use {sq_dtype} as var-dtype.")
             self.square_sum = np.square(sum_mu, dtype = sq_dtype)
         self.n = n
         self.ddof = ddof

@@ -6,7 +6,7 @@ from easydict import EasyDict
 
 import numpy as np
 
-from .imgfio import ImgSeriesLoader, get_color_profile, load_info
+from .imgfio import ImgSeriesLoader, get_color_profile, load_info, load_img
 from .utils import get_resize, time_cost_warpper, GaussianParam, get_mp_num, DTYPE_UPSCALE_MAP, FastGaussianParam
 from loguru import logger
 
@@ -45,6 +45,114 @@ def generate_weight(length: int,
     return ret_weight
 
 
+class BaseMergerSubprocess(object):
+    """通用的叠加子进程。
+    使用时需要定义图像的加载函数和融合函数。
+
+    Args:
+        object (_type_): _description_
+    """
+
+    def __init__(self, img_loader_type: type) -> None:
+        self.id = None
+        self.img_loader_type = img_loader_type
+        self.stacked_num = 0
+        self.merged_img = None
+
+    def merge_image(self, new_img) -> None:
+        raise NotImplementedError
+
+    def post_process(self,
+                     img: np.ndarray,
+                     index: Optional[int] = None) -> np.ndarray:
+        raise NotImplementedError
+
+    def run(self, **kwargs):
+        self.id = kwargs.get("id")
+        img_loader: ImgSeriesLoader = self.img_loader_type(**kwargs)
+        tot_num = img_loader.tot_num
+        self.merged_img = None
+        self.stacked_num = 0
+        failed_num = 0
+        try:
+            img_loader.start()
+            for i in range(tot_num):
+                raw_img = img_loader.pop()
+                if raw_img is None:
+                    logger.warning("Skip the failed frame.")
+                    failed_num += 1
+                    continue
+                cur_img = self.post_process(raw_img, index=i)
+                if self.merged_img is None:
+                    self.merged_img = cur_img
+                else:
+                    self.merge_image(cur_img)
+                self.stacked_num += 1
+        except Exception as e:
+            # TODO: 明确错误类型。目前不确定，因此捕获全部错误。这会导致进程无法终止，因此最好合理处理。
+            logger.error(
+                f"Fatal error:{e}. {self.__class__.__name__}#{self.id} will terminated."
+                + "The final result cam be unexpected.")
+
+        finally:
+            img_loader.stop()
+        if self.stacked_num == 0:
+            logger.warning(f"No valid frames are loaded!")
+            return None
+        logger.info(
+            f"{self.__class__.__name__}#{self.id} successfully stacked {self.stacked_num} "
+            + f"images from {tot_num} images. ({failed_num} fail(s)).")
+        return self.merged_img
+
+
+class MaxMergerSubprocessor(BaseMergerSubprocess):
+    """基于通用的叠加子进程模板的最大值叠加类。
+
+    Args:
+        BaseMergerSubprocess (_type_): _description_
+    """
+
+    def __init__(self, img_loader_type) -> None:
+        super().__init__(img_loader_type)
+        self.weight_list = []
+
+    def merge_image(self, new_img) -> None:
+        assert self.merged_img is not None, "Unexcepted None encoutered"
+        self.merged_img = np.max([self.merged_img, new_img], axis=0)
+
+    def post_process(self,
+                     img: np.ndarray,
+                     index: Optional[int] = None) -> np.ndarray:
+        if index is not None:
+            assert 0 <= index < len(
+                self.weight_list
+            ), f"Invalid index {index} encountered. Expect 0<=index<={len(self.weight_list)}."
+            return img * self.weight_list[index]
+        else:
+            return img
+
+    def run(self, **kwargs):
+        self.weight_list = kwargs["weight_list"]
+        return super().run(**kwargs)
+
+
+class MeanMergerSubprocessor(BaseMergerSubprocess):
+    """基于通用的叠加子进程模板的平均值叠加类。
+
+    Args:
+        BaseMergerSubprocess (_type_): _description_
+    """
+
+    def merge_image(self, new_img) -> None:
+        assert self.merged_img is not None, "Unexcepted None encoutered"
+        self.merged_img = self.merged_img + new_img
+
+    def post_process(self,
+                     img: np.ndarray,
+                     index: Optional[int] = None) -> FastGaussianParam:
+        return FastGaussianParam(img)
+
+
 @time_cost_warpper
 def StarTrailMaster(fname_list: list[str],
                     fin_ratio: float,
@@ -74,18 +182,20 @@ def StarTrailMaster(fname_list: list[str],
 
     # 基于参考图像，获取EXIF信息
     base_info: Any = load_info(fname_list[0])
-    dtype_opt = base_info.dtype
+    # TODO: 可能出错:load_img可能会抛出错误。尚未处理
+    sample_img = load_img(fname_list[0])
+    dtype_opt = sample_img.dtype
 
     # DEBUG INFO
     logger.info(
-        f"mp_num = {mp_num}; int_weight={int_weight} ;dtype={dtype_opt}")
-    logger.info(f"ICC_profile={get_color_profile(base_info.colorprofile)}")
+        f"mp_num = {mp_num}; int_weight = {int_weight}; dtype = {dtype_opt}")
+    logger.info(f"ICC_profile = {get_color_profile(base_info.colorprofile)}")
     logger.info(f"EXIF TAG num = {len(base_info.exif)}")
     logger.debug(f"Raw basic infomation={base_info}")
 
     # 对于需要快速预览的场景，resize_opt被设置为具体的值；否则为None。
     resize_opt = get_resize(resize_length,
-                            base_info.size) if resize_length else None
+                            sample_img.shape[:2]) if resize_length else None
 
     # 整形输入的位深度选项
     if (fin_ratio == 0 and fout_ratio == 0):
@@ -104,69 +214,47 @@ def StarTrailMaster(fname_list: list[str],
     logger.debug(f"Full weight list:{weight_list}")
 
     try:
+        subprocessor = MaxMergerSubprocessor(ImgSeriesLoader)
         # 多线程叠加
         for i in range(mp_num):
             l, r = int(i * sub_length), int((i + 1) * sub_length)
-            pool.apply_async(StarTrailStacker,
-                             args=(fname_list[l:r], weight_list[l:r]),
-                             kwds=dict(dtype=dtype_opt, resize=resize_opt),
+            #subprocessor.run(fname_list=fname_list[l:r],
+            #                 dtype=dtype_opt,
+            #                 resize=resize_opt,
+            #                 weight_list=weight_list[l:r])
+            pool.apply_async(subprocessor.run,
+                             kwds=dict(id=i,
+                                       fname_list=fname_list[l:r],
+                                       dtype=dtype_opt,
+                                       resize=resize_opt,
+                                       weight_list=weight_list[l:r]),
                              callback=lambda ret: results.put(ret),
-                             error_callback=lambda error: print(error))
+                             error_callback=lambda error: logger.error(error))
         # 合并多线程叠加结果
         base_img = results.get()
         for i in range(mp_num - 1):
             cur_img = results.get()
             base_img = np.max([base_img, cur_img], axis=0)
         # TODO: 转换到指定的输出类型。包括从8位图像叠加时创建16位图像的需求
-        if (not int_weight) and (base_info.dtype in DTYPE_UPSCALE_MAP):
+        if (not int_weight) and (sample_img.dtype in DTYPE_UPSCALE_MAP):
             # 输入为整形，但未使用整数权重时，会被转换为float16进行计算
             # 因此需要强制转换为整型
             # TODO: [但使用的整形精度应当根据输入进一步权衡]
-            base_img = np.array(base_img, dtype=base_info.dtype)
-        if int_weight and (base_info.dtype != dtype_opt):
+            base_img = np.array(base_img, dtype=sample_img.dtype)
+        if int_weight and (sample_img.dtype != dtype_opt):
             # 使用int_weight的需要做范围回退
-            base_img = np.array(base_img // 255, dtype=base_info.dtype)
+            logger.info(
+                f"Downscale datatype from {base_img.dtype} To {sample_img.dtype} to apply int-weight."
+            )
+            base_img = np.array(base_img // 255, dtype=sample_img.dtype)
 
     except KeyboardInterrupt as e:
         pool.join()
         raise e
-    # TODO: EXIF最终写入合成图像中
     # TODO: 异常处理
     return EasyDict(img=base_img,
                     exif=base_info.exif,
                     colorprofile=base_info.colorprofile)
-
-
-def StarTrailStacker(fname_list: list[str],
-                   weight_list: Union[list[float], list[int]],
-                   dtype: Union[type, np.dtype],
-                   resize=None) -> np.ndarray:
-    """最大值叠加子进程。
-
-    Args:
-        fname_list (list[str]): _description_
-        weight_list (list[float]): _description_
-
-    Raises:
-        e: _description_
-
-    Returns:
-        np.ndarray: _description_
-    """
-    img_loader = ImgSeriesLoader(fname_list, dtype, resize, max_poolsize=8)
-    base_img = None
-    try:
-        img_loader.start()
-        base_img = img_loader.pop() * weight_list[0]
-        for weight in weight_list[1:]:
-            cur_img = img_loader.pop() * weight
-            base_img = np.max([base_img, cur_img], axis=0)
-    except Exception as e:
-        # TODO: 明确错误类型。目前不确定，因此捕获全部错误
-        raise e
-    finally:
-        img_loader.stop()
-    return base_img
 
 
 @time_cost_warpper
@@ -189,7 +277,8 @@ def MeanTrackMaster(fname_list: list[str],
     # 基于参考图像，获取EXIF信息，並默認提升範圍
     # TODO：一些定制化的變換，比如用uint8得到uint16
     base_info: Any = load_info(fname_list[0])
-    raw_dtype_opt = base_info.dtype
+    sample_img = load_img(fname_list[0])
+    raw_dtype_opt = sample_img.dtype
 
     dtype_opt = DTYPE_UPSCALE_MAP[raw_dtype_opt]
     results = mp.Queue()
@@ -197,97 +286,27 @@ def MeanTrackMaster(fname_list: list[str],
         f"Processor Num = {mp_num}; Dtype = {dtype_opt}; Resize = {resize_opt}"
     )
     try:
+        subprocessor = MeanMergerSubprocessor(ImgSeriesLoader)
         # 多线程叠加
         # TODO: 出问题的话，pool似乎不会直接中断，也不抛出堆栈错误
         for i in range(mp_num):
             l, r = int(i * sub_length), int((i + 1) * sub_length)
-            pool.apply_async(MeanTrackStacker,
-                             args=(fname_list[l:r], ),
-                             kwds=dict(dtype=dtype_opt, resize=resize_opt),
+            pool.apply_async(subprocessor.run,
+                             kwds=dict(id=i,
+                                       fname_list=fname_list[l:r],
+                                       dtype=dtype_opt,
+                                       resize=resize_opt),
                              callback=lambda ret: results.put(ret),
                              error_callback=lambda error: print(error))
         # 合并多线程叠加结果
         base_img = results.get()
         for i in range(mp_num - 1):
             cur_img = results.get()
-            logger.info(f"get {cur_img}")
             base_img = base_img + cur_img
 
     except KeyboardInterrupt as e:
         pool.join()
         raise e
-    # TODO: EXIF最终写入合成图像中
     return EasyDict(img=np.array(base_img.mu, dtype=raw_dtype_opt),
                     exif=base_info.exif,
                     colorprofile=base_info.colorprofile)
-
-
-def MeanTrackStacker(fname_list: list[str],
-                     dtype: Union[type, np.dtype],
-                     resize=None) -> FastGaussianParam:
-    """平均值叠加子进程。
-
-    Args:
-        fname_list (list[str]): _description_
-        weight_list (list[float]): _description_
-
-    Raises:
-        e: _description_
-
-    Returns:
-        GaussianParam: _description_
-    """
-    img_loader = ImgSeriesLoader(fname_list, dtype, resize, max_poolsize=8)
-    base_img = None
-    try:
-        img_loader.start()
-        base_img = FastGaussianParam(img_loader.pop())
-        for _ in range(len(fname_list) - 1):
-            cur_img = FastGaussianParam(img_loader.pop())
-            base_img = base_img + cur_img
-    except Exception as e:
-        # TODO: 明确错误类型。目前不确定，因此捕获全部错误
-        raise e
-    finally:
-        img_loader.stop()
-    return base_img
-
-# WIP！
-class GeneralMergerSubprocess(object):
-    """通用的叠加子进程。
-    使用时需要定义图像的加载函数和融合函数。
-
-    Args:
-        object (_type_): _description_
-    """
-
-    def __init__(self, img_loader, dtype, resize, max_poolsize=8) -> None:
-
-        pass
-
-    def process_image(self, img: np.ndarray) -> np.ndarray:
-        """定义一张图像在载入后如何被处理。对于不同的叠加模式，该过程略有不同。
-
-        Args:
-            img (np.ndarray): _description_
-
-        Returns:
-            np.ndarray: _description_
-        """
-        return img
-
-    def run(self, fname_list: list[str]):
-        self.img_loader = img_loader
-        base_img = None
-        try:
-            self.img_loader.start()
-            base_img = self.process_image(self.img_loader.pop())
-            for _ in range(len(fname_list) - 1):
-                cur_img = self.image_loading_function(self.img_loader.pop())
-                base_img = self.image_merger_function(base_img, cur_img)
-        except Exception as e:
-            # TODO: 明确错误类型。目前不确定，因此捕获全部错误
-            return e
-        finally:
-            self.img_loader.stop()
-        return base_img

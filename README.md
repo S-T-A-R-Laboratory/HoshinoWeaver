@@ -1,8 +1,10 @@
-# EZStacker
+# HoshinoWeaver
 
 Python implementation of an image stacker. Suitable for star trails and slow shutter simulation with large amounts of images.
 
 基于Python的堆栈/模拟慢门工具，针对星轨场景进行了优化。
+
+(Aim to be) the best startrail crafting tools!
 
 做最好用的星轨叠加工具！
 
@@ -65,17 +67,28 @@ python launcher.py /path/to/your/work_dir --mode mean --output "img.tif"
 
 * pyexiv2在M1/M2 CPU设备上不能直接运行。（稍后补充相关文档）
 
-### EasyStacker将计划支持
+### EasyStacker的未来计划
 
-* 16Bit的叠加工作流和输出
-* 最大值/平均值混合叠加星轨
-* 一个简单的图形界面
-* 适当的连接断掉的星轨
-* 叠加预览
-* 带排异的平均值叠加
-* 星轨特殊排异（灯，飞机线？）/反排异（仅保留飞机/灯）
-* 支持视频抽帧叠加
-* 去除热燥
-* 插入/合理的修改EXIF信息
-* 更好支持各种数据类型（Raw的XMP等）
-* 减弱星点数量，以支持从密集星点图像创建稀疏星轨
+目前EasyStacker仍然处在非常早期的开发阶段。主要的未来开发方向有：
+
+1. 图形界面
+  * 一个简单的图形界面
+  * 叠加预览
+
+2. 支持已有的叠加算法
+  * 去除热燥
+  * 支持简单蒙版
+  * 带排异的平均值叠加
+  * 创建星轨延时序列
+
+3. 输入和输出数据支持
+  * 支持视频抽帧叠加
+  * 16Bit的叠加工作流和输出
+  * 适当的连接断掉的星轨
+  * 插入/合理的修改EXIF信息
+  * 更好支持各种数据类型（Raw的XMP等）
+
+4. 实验性功能
+  * 最大值/平均值混合叠加星轨算法
+  * 星轨特殊排异（灯，飞机线？）/反排异（仅保留飞机/灯）
+  * 减弱星点数量，以支持从密集星点图像创建稀疏星轨

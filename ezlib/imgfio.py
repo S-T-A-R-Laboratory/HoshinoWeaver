@@ -15,6 +15,12 @@ from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE, is_supp
 from typing import Optional
 from loguru import logger
 
+BITS2DTYPE = {
+    '8': np.dtype('uint8'),
+    '16': np.dtype('uint16'),
+    '32': np.dtype('uint32')
+}
+
 
 class ImgSeriesLoader(object):
     """用于多线程读取图像序列的类。
@@ -23,7 +29,12 @@ class ImgSeriesLoader(object):
         object (_type_): _description_
     """
 
-    def __init__(self, fname_list, dtype=None, resize=None, max_poolsize=8):
+    def __init__(self,
+                 fname_list,
+                 dtype=None,
+                 resize=None,
+                 max_poolsize=8,
+                 **kwargs):
         """_summary_
 
         Args:
@@ -38,6 +49,7 @@ class ImgSeriesLoader(object):
         self.buffer = queue.Queue(maxsize=max_poolsize)
         self.stopped = True
         self.prog = 0
+        self.tot_num = len(fname_list)
         self.thread = threading.Thread(target=self.loop, args=())
 
     def start(self):
@@ -50,7 +62,7 @@ class ImgSeriesLoader(object):
     def stop(self):
         self.stopped = True
 
-    def pop(self):
+    def pop(self) -> Optional[np.ndarray]:
         return self.buffer.get()
 
     def loop(self):
@@ -78,47 +90,54 @@ def get_color_profile(color_bstring):
         % SUPPORT_COLOR_SPACE)
 
 
-def load_img(fname, dtype=None, resize=None) -> np.ndarray:
-    """_summary_
+def load_img(fname: str,
+             dtype: Optional[type] = None,
+             resize=None) -> Optional[np.ndarray]:
+    """ Using OpenCV API to load a single image from the given path.
+    
+    If necessary, the image will be converted to the given dtype.
 
     Args:
-        fname (_type_): _description_
+        fname (str): /path/to/the/image.suffix
 
     Returns:
-        _type_: _description_
+        np.ndarray: normally a `numpy.ndarray` object will be returned. 
+        But the image fails to be loaded, an error will be logged, and `None` will be returned under such condition.
     """
-    img = None
-
-    # suffix check and warning raising
-    suffix = fname.split(".")[-1].lower()
-    assert is_support_format(fname), f"Unsupported img suffix:{suffix}."
-
-    if suffix in NOT_RECOM_SUFFIX:
-        logger.warning("Got an Image with not recommended suffix. \
-            We do not guarantee the stability of EXIF extraction and the output image quality."
-                       )
-
-    if (suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX):
-        img = cv2.imdecode(np.fromfile(fname, dtype=np.uint16),
-                           cv2.IMREAD_UNCHANGED)
-
-    else:
-        # load images with rawpy
-        with rawpy.imread(fname) as raw:
-            img = raw.postprocess(output_bps=16,
-                                  output_color=rawpy.rawpy.ColorSpace(4)) # type: ignore
-
-    if dtype:
-        img = np.array(img, dtype=dtype)
-    if resize:
-        # TODO: 添加插值相关
-        img = cv2.resize(img, resize)
-    logger.debug(f"Read img with shape={img.shape}; dtype={img.dtype}.")
-    return img
+    try:
+        # suffix check and warning raising
+        suffix = fname.split(".")[-1].lower()
+        assert is_support_format(fname), f"Unsupported img suffix:{suffix}."
+        if suffix in NOT_RECOM_SUFFIX:
+            logger.warning("Got an Image with not recommended suffix. \
+                We do not guarantee the stability of EXIF extraction and the output image quality."
+                           )
+        if (suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX):
+            img = cv2.imdecode(np.fromfile(fname, dtype=np.uint16),
+                               cv2.IMREAD_UNCHANGED)
+        else:
+            # load images with rawpy
+            with rawpy.imread(fname) as raw:
+                img = raw.postprocess(
+                    output_bps=16,
+                    output_color=rawpy.rawpy.ColorSpace(4))  # type: ignore
+        if dtype:
+            img = np.array(img, dtype=dtype)
+        if resize:
+            # TODO: 添加插值相关
+            img = cv2.resize(img, resize)
+        logger.debug(
+            f"Successfully read img with shape={img.shape}; dtype={img.dtype}."
+        )
+        return img
+    except Exception as e:
+        # TODO: 细化exception类别
+        logger.warning(f"Failed to read {fname} Because {e}!")
+        return None
 
 
 def load_info(fname: str) -> EasyDict:
-    """Load basic information of the given image file (including EXIF, icc_profile, etc.).
+    """Load EXIF and icc_profile information of the given image file.
 
     Args:
         fname (str): /path/to/the/image.file
@@ -127,23 +146,16 @@ def load_info(fname: str) -> EasyDict:
         EasyDict: a Easydict that stores EXIF information.
     """
     info = None
-    img = load_img(fname)
     with open(fname, mode='rb') as f:
         with pyexiv2.ImageData(f.read()) as image_data:
             # 基础信息
-            img_size = img.shape[:2]
-            dtype = img.dtype
-            colorprofile = image_data.read_icc()
             exifdata = image_data.read_exif()
-            image_data.close()
+            colorprofile = image_data.read_icc()
             info = EasyDict(
-                img_size=img_size,
-                dtype=dtype,
                 exif=EasyDict(exifdata),
                 colorprofile=colorprofile,
-            )#info=pil_img.info)
+            )
     return info
-    
 
 
 @time_cost_warpper
