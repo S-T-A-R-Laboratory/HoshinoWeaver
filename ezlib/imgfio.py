@@ -15,12 +15,6 @@ from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE, is_supp
 from typing import Optional
 from loguru import logger
 
-BITS2DTYPE = {
-    '8': np.dtype('uint8'),
-    '16': np.dtype('uint16'),
-    '32': np.dtype('uint32')
-}
-
 
 class ImgSeriesLoader(object):
     """用于多线程读取图像序列的类。
@@ -33,7 +27,7 @@ class ImgSeriesLoader(object):
                  fname_list,
                  dtype=None,
                  resize=None,
-                 max_poolsize=8,
+                 max_poolsize=2,
                  **kwargs):
         """_summary_
 
@@ -41,7 +35,7 @@ class ImgSeriesLoader(object):
             fname_list (_type_): _description_
             dtype (_type_): 如果读出图像需要强制类型转换，在此项配置。
             resize (_type_): 如果读出图像需要尺寸变换，在此项配置。
-            max_poolsize (int, optional): _description_. Defaults to 8.
+            max_poolsize (int, optional): _description_. Defaults to 2.
         """
         self.fname_list = fname_list
         self.dtype = dtype
@@ -123,15 +117,20 @@ def load_img(fname: str,
                     output_color=rawpy.rawpy.ColorSpace(4))  # type: ignore
         if dtype:
             img = np.array(img, dtype=dtype)
-        if resize:
-            # TODO: 添加插值相关
-            img = cv2.resize(img, resize)
+        if resize is not None:
+            # resize is in shape order (i.e, [h,w])
+            # so when using OpenCV resize, it should be reversed.
+            assert len(
+                resize
+            ) == 2, f"invalid resize arg! expect length=2, got {resize}."
+            [h, w] = resize
+            img = cv2.resize(img, [w, h])
         logger.debug(
             f"Successfully read img with shape={img.shape}; dtype={img.dtype}."
         )
         return img
     except Exception as e:
-        logger.warning(f"Failed to read {fname} Because {e}!")
+        logger.error(f"Failed to read {fname} Because {e}!")
         return None
 
 

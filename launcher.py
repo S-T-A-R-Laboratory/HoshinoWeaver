@@ -1,7 +1,7 @@
 import argparse
 import os
 import sys
-from ezlib.trailstacker import StarTrailMaster, MeanTrackMaster
+from ezlib.trailstacker import SigmaClippingMaster, StarTrailMaster, MeanStackMaster, SimpleMixTrailMaster
 from ezlib.imgfio import save_img
 from loguru import logger
 
@@ -10,17 +10,31 @@ from ezlib.utils import is_support_format
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("dirname", help="dir of images")
-    arg_parser.add_argument("--mode",
+    arg_parser.add_argument(
+        "--mode",
+        type=str,
+        required=True,
+        choices=["mean", "max", "mask-mix", "sigmaclip-mean"],
+        help="stack mode")
+    arg_parser.add_argument("--ground-mask",
                             type=str,
-                            required=True,
-                            choices=["mean", "max"],
-                            help="stack mode")
+                            help="/path/to/the/mask.file",
+                            default=None)
     arg_parser.add_argument("--fade-in", type=float, default=0.1)
     arg_parser.add_argument("--fade-out", type=float, default=0.1)
     arg_parser.add_argument("--int-weight", action="store_true")
     arg_parser.add_argument("--jpg-quality", type=int, default=90)
     arg_parser.add_argument("--png-compressing", type=int, default=0)
-    arg_parser.add_argument("--output", type=str)
+    arg_parser.add_argument("--output", type=str, required=True)
+    arg_parser.add_argument("--output-bits",
+                            type=int,
+                            choices=[8, 16, 32],
+                            help="the bit of output image.")
+    arg_parser.add_argument("--resize", type=str, default=None)
+    arg_parser.add_argument("--num_processor",
+                            type=int,
+                            default=None,
+                            help="max available processor num.")
     arg_parser.add_argument("--debug",
                             action="store_true",
                             help="print logs with debug level.")
@@ -48,14 +62,32 @@ if __name__ == "__main__":
         res = StarTrailMaster(img_files,
                               fin_ratio=fin_ratio,
                               fout_ratio=fout_ratio,
-                              int_weight=args.int_weight)
+                              resize=args.resize,
+                              int_weight=args.int_weight,
+                              output_bits=args.output_bits,
+                              ground_mask=args.ground_mask)
     elif args.mode == "mean":
-        res = MeanTrackMaster(img_files)
+        res = MeanStackMaster(img_files,
+                              resize=args.resize,
+                              output_bits=args.output_bits,
+                              ground_mask=args.ground_mask)
+    elif args.mode == "mask-mix":
+        res = SimpleMixTrailMaster(img_files,
+                                   fin_ratio=fin_ratio,
+                                   fout_ratio=fout_ratio,
+                                   int_weight=args.int_weight,
+                                   resize=args.resize,
+                                   output_bits=args.output_bits,
+                                   ground_mask=args.ground_mask)
+    elif args.mode == "sigmaclip-mean":
+        res = SigmaClippingMaster(img_files, output_bits=args.output_bits)
     else:
         raise NotImplementedError(
             f"NotImplementedMode: {args.mode}. Only \"max\" and \"mean\" are supported."
         )
-
+    if res.img is None:
+        logger.error(f"Got empty result.")
+        exit()
     save_img(output_file,
              res.img,
              png_compressing=args.png_compressing,
