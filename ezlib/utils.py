@@ -52,6 +52,15 @@ SUPPORT_BITS = [8, 16]
 
 
 def error_raiser(error):
+    """A simple error raiser. For subprocessor callback function.
+
+    Args:
+        error (Exception): exception
+
+    Raises:
+        error: the error that accepts.
+    """
+    # TODO: not sure. Is this necessary?
     raise error
 
 

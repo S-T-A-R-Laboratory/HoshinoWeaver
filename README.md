@@ -2,7 +2,7 @@
 
 HoshinoWeaver is a Python-based software project designed for image stacking, specifically tailored for creating star trail images from extensive amount of photos. It is also suitable for a wide range of slow shutter simulation scenes.
 
-HoshinoWeaver 是一款基于 Python 的图像堆栈软件项目，专门用于从大量照片中创建星轨图像。它也适用于各种慢速快门模拟场景。
+HoshinoWeaver 是一款基于 Python 的图像堆栈软件项目，适用于从大量照片中创建星轨图像。它也适用于各种模拟慢门场景。
 
 Currently implemented main features are:
 1. Fast and memory-friendly: no need to load all photos into memory at once.
@@ -21,8 +21,18 @@ So far only the command-line launcher is fully developed and tested. To use Hosh
 目前只支持从命令行启动HoshinoWeaver。运行以下命令：
 
 ```sh
-python launcher.py [-h] --mode {mean,max} [--fade-in FADE_IN] [--fade-out FADE_OUT] [--int-weight] [--jpg-quality JPG_QUALITY]
-                   [--png-compressing PNG_COMPRESSING] [--output OUTPUT] [--debug]
+python launcher.py  --mode {mean,max,mask-mix,sigmaclip-mean} 
+                    [--ground-mask GROUND_MASK]
+                    [--fade-in FADE_IN]
+                    [--fade-out FADE_OUT]
+                    [--int-weight]
+                    [--jpg-quality JPG_QUALITY]
+                    [--png-compressing PNG_COMPRESSING]
+                    [--output OUTPUT]
+                    [--output-bits OUTPUT_BITS]
+                    [--resize RESIZE]
+                    [--num-processor NUM_PROCESSOR]
+                    [--debug]
                    dirname
 ```
 
@@ -30,7 +40,7 @@ python launcher.py [-h] --mode {mean,max} [--fade-in FADE_IN] [--fade-out FADE_O
   * `dirname` directory of images.
 
 ### Options
-  * `--mode {mean,max}` stack mode. This is a **required** argument. Select from "mean" and "max".
+  * `--mode` stack mode. This is a **required** argument. For now, HoshinoWeaver supports 4 modes, respectively "max", "mean", "sigmaclip-mean", and "mask-mix". To see how these modes works, see [Stack mode](#Stack-Mode).
   * `--fade-in` Fade-in ratio. Ranges from 0 to 1. Only works when a star trail is required.
   * `--fade-out` Fade-out ratio. Ranges from 0 to 1. Only works when a star trail is required.
   * `--int-weight` Using integer weight instead of the float weight. This accelerates the program while having little affects on the result image. For most conditions, it is recommended to apply this.
@@ -56,6 +66,19 @@ To stack an average image, run:
 ```sh
 python launcher.py /path/to/your/work_dir --mode mean --output "img.tif"
 ```
+
+## Function
+
+### Stack Mode
+
+* 最大值： 最大值叠加模式下，结果图像的某一像素取值通过所有图像在该位置的最大值作为结果。最大值叠加预期将获得与常规星轨合成相同的结果。
+* 平均值： 平均值叠加模式下，结果图像的某一像素取值通过所有图像在该位置的平均值作为结果。平均值叠加通常被用于日间模拟慢门，图像降噪等。
+* Sigma裁剪均值：Sigma裁剪均值是平均值叠加的改进版本。在计算均值时，Sigma裁剪均值会排除显著异常的数据，用以获得对显著干扰的稳健性。
+* 基于掩模的混合叠加 (Mask-mix): 在提供参数时，额外提供一个用于框选天空部分的掩模图像(Mask)。天空部分将使用最大值叠加以合成，地面部分则使用平均值。最大值叠加和均值叠加产生的图像会存在亮度差异将通过HoshinoWeaver算法修正到相同水平。
+
+## Algorithm
+
+(To be updated.)
 
 ## TODO List
 

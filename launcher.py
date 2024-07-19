@@ -31,7 +31,7 @@ if __name__ == "__main__":
                             choices=[8, 16, 32],
                             help="the bit of output image.")
     arg_parser.add_argument("--resize", type=str, default=None)
-    arg_parser.add_argument("--num_processor",
+    arg_parser.add_argument("--num-processor",
                             type=int,
                             default=None,
                             help="max available processor num.")
