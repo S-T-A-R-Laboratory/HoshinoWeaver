@@ -1,12 +1,14 @@
 import multiprocessing as mp
+import threading
 import time
 from math import floor, log, sqrt
 from typing import Callable, Optional, Union
 
 import numpy as np
+import psutil
 from loguru import logger
 from PIL.ExifTags import TAGS
-import psutil
+from tqdm import tqdm
 
 DTYPE_UPSCALE_MAP = {
     np.dtype('uint8'): np.dtype('uint16'),
@@ -49,6 +51,20 @@ COMMON_SUFFIX = ["tiff", "tif", "jpg", "png", "jpeg"]
 NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
 RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng"]
 SUPPORT_BITS = [8, 16]
+
+FAIL_FLAG = 0
+SUCC_FLAG = 1
+END_FLAG = -1
+
+def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
+    """A simple implementation of dtype_sclaer.
+    TODO: update in the future.
+    """
+    assert times >= 0 and isinstance(times, int), "invalid scale times!"
+    while times > 0 and raw_type != float:
+        raw_type = DTYPE_UPSCALE_MAP[raw_type]
+        times -= 1
+    return raw_type
 
 
 def error_raiser(error):
@@ -141,6 +157,55 @@ def get_max_expmean(x: int) -> float:
     return 1 / 2 * log(x + 1)**(0.84) + 0.71
 
 
+class QueueProgressBar(object):
+    """A simple threading progressbar
+
+    Args:
+        object (_type_): _description_
+    """
+
+    def __init__(self, tot_num: int, desc: str = "") -> None:
+        self.tot_num = tot_num
+        self.desc = desc
+        self.stopped = True
+        self.queue = mp.Manager().Queue()
+        self.thread = threading.Thread(target=self.loop, args=())
+
+    def start(self, desc=None):
+        self.stopped = False
+        if desc is not None:
+            self.desc = desc
+        self.thread.start()
+
+    def stop(self):
+        if not self.stopped:
+            self.queue.put(END_FLAG)
+            self.stopped = True
+
+    def put(self, flag):
+        self.queue.put(flag)
+
+    def loop(self):
+        try:
+            status = None
+            for _ in tqdm(range(self.tot_num),
+                          total=self.tot_num,
+                          unit="imgs",
+                          dynamic_ncols=True,
+                          desc=self.desc):
+                if self.stopped: break
+                # TODO: timeout硬编码为60？
+                try:
+                    status = self.queue.get(timeout=60)
+                except KeyboardInterrupt as e:
+                    pass
+                if status == END_FLAG:
+                    # TODO: fix: 如果某一进程出现意外造成终止，会阻塞全局进度条。
+                    self.stopped = True
+        except Exception as e:
+            self.stopped = True
+
+
 class GaussianParam(object):
     """
     维护np.ndarray的流方差与流均值的原始实现。
@@ -213,9 +278,7 @@ class FastGaussianParam(object):
             self.square_sum = square_num
         else:
             # var默认根据sum_mu构造而成
-            sq_dtype = DTYPE_UPSCALE_MAP[
-                self.sum_mu.
-                dtype] if self.sum_mu.dtype in DTYPE_UPSCALE_MAP else float
+            sq_dtype = self.get_upscale_dtype_as(self.sum_mu)
             self.square_sum = np.square(sum_mu, dtype=sq_dtype)
         self.n = n if n is not None else np.ones_like(self.sum_mu,
                                                       dtype=dtype_n)
@@ -233,6 +296,19 @@ class FastGaussianParam(object):
         sum_mu = np.array(self.sum_mu, dtype=self.square_sum.dtype)
         return (self.square_sum - np.square(sum_mu) / self.n) / (self.n -
                                                                  self.ddof)
+
+    def upscale(self):
+        upscaled_sum_mu_dtype = self.get_upscale_dtype_as(self.sum_mu)
+        upscaled_sum_sq_dtype = self.get_upscale_dtype_as(self.square_sum)
+        self.sum_mu = np.array(self.sum_mu, dtype=upscaled_sum_mu_dtype)
+        self.square_sum = np.array(self.square_sum,
+                                   dtype=upscaled_sum_sq_dtype)
+
+    def get_upscale_dtype_as(self, ref_array: np.ndarray):
+        """必要时候提升数据范围
+        """
+        return DTYPE_UPSCALE_MAP[
+            ref_array.dtype] if ref_array.dtype in DTYPE_UPSCALE_MAP else float
 
     def __add__(self, g2):
         g1 = self

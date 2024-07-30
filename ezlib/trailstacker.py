@@ -1,16 +1,21 @@
 import multiprocessing as mp
 import sys
-from typing import Optional, Union, Any
-
-from easydict import EasyDict
-
-import numpy as np
-
-from .imgfio import ImgSeriesLoader, get_color_profile, load_info, load_img
-from .utils import BITS2DTYPE, DTYPE_NUM2TYPE, error_raiser, get_max_expmean, get_resize, time_cost_warpper, GaussianParam, get_mp_num, DTYPE_UPSCALE_MAP, FastGaussianParam, DTYPE_REVERSE_MAP, DTYPE_MAX_VALUE
-from loguru import logger
+from abc import ABCMeta, abstractclassmethod
+from typing import Any, Optional, Union
 
 import cv2
+import numpy as np
+from easydict import EasyDict
+from loguru import logger
+
+from .imgfio import ImgSeriesLoader, get_color_profile, load_img, load_info
+from .merger import (BaseMerger, MaxMerger, MeanMerger, MinMerger,
+                     SigmaClippingMerger)
+from .utils import (BITS2DTYPE, DTYPE_MAX_VALUE, DTYPE_REVERSE_MAP,
+                    DTYPE_UPSCALE_MAP, FastGaussianParam, QueueProgressBar,
+                    dtype_scaler, error_raiser, get_max_expmean, get_mp_num,
+                    get_resize, time_cost_warpper, SUCC_FLAG, FAIL_FLAG,
+                    END_FLAG)
 
 
 def generate_weight(length: int,
@@ -66,550 +71,601 @@ def load_sample_img(fname_list: list[str]) -> Optional[np.ndarray]:
     return sample_img
 
 
-class BaseMergerSubprocess(object):
+def run_merger_subprocess(proc_id: int,
+                          img_loader_type: type[ImgSeriesLoader],
+                          merger_type: type[BaseMerger],
+                          progressbar=None,
+                          debug=False,
+                          on_error: str = "continue",
+                          **kwargs):
     """通用的叠加子进程。
     使用时需要定义图像的加载函数和融合函数。
 
     Args:
         object (_type_): _description_
     """
-
-    def __init__(self, img_loader_type: type) -> None:
-        self.id = None
-        self.img_loader_type = img_loader_type
-        self.stacked_num = 0
-        self.merged_img = None
-
-    def merge_image(self, new_img) -> None:
-        raise NotImplementedError
-
-    def post_process(self,
-                     img: np.ndarray,
-                     index: Optional[int] = None) -> np.ndarray:
-        raise NotImplementedError
-
-    def run(self, **kwargs):
-        self.id = kwargs.get("id")
-        img_loader: ImgSeriesLoader = self.img_loader_type(**kwargs)
-        tot_num = img_loader.tot_num
-        self.merged_img = None
-        self.stacked_num = 0
-        failed_num = 0
-        try:
-            img_loader.start()
-            for i in range(tot_num):
-                raw_img = img_loader.pop()
-                if raw_img is None:
-                    logger.warning("Skip the failed frame.")
-                    failed_num += 1
-                    continue
-                cur_img = self.post_process(raw_img, index=i)
-                if self.merged_img is None:
-                    self.merged_img = cur_img
-                else:
-                    self.merge_image(cur_img)
-                self.stacked_num += 1
-        except Exception as e:
-            logger.error(
-                f"Fatal error:{e}. {self.__class__.__name__}#{self.id} will terminated."
-                + "The final result cam be unexpected.")
-
-        finally:
-            img_loader.stop()
-        if self.stacked_num == 0:
-            logger.warning(f"No valid frames are loaded!")
-            return None
-        logger.info(
-            f"{self.__class__.__name__}#{self.id} successfully stacked {self.stacked_num} "
-            + f"images from {tot_num} images. ({failed_num} fail(s)).")
-        return self.merged_img
-
-
-# TODO: 也许未来进一步抽象出叠加方式。快速开发阶段先忽略。
-class MaxMergerSubprocessor(BaseMergerSubprocess):
-    """基于通用的叠加子进程模板的最大值叠加类。
-
-    Args:
-        BaseMergerSubprocess (_type_): _description_
-    """
-
-    def __init__(self, img_loader_type) -> None:
-        super().__init__(img_loader_type)
-        self.weight_list = []
-
-    def merge_image(self, new_img) -> None:
-        assert self.merged_img is not None, "Unexcepted None encoutered"
-        self.merged_img = np.max([self.merged_img, new_img], axis=0)
-
-    def post_process(self,
-                     img: np.ndarray,
-                     index: Optional[int] = None) -> np.ndarray:
-        if index is not None:
-            assert 0 <= index < len(
-                self.weight_list
-            ), f"Invalid index {index} encountered. Expect 0<=index<={len(self.weight_list)}."
-            return img * self.weight_list[index]
-        else:
-            return img
-
-    def run(self, **kwargs):
-        self.weight_list = kwargs["weight_list"]
-        logger.remove()
-        if kwargs["debug"]:
-            logger.add(sys.stdout, level="DEBUG")
-        else:
-            logger.add(sys.stdout, level="INFO")
-        return super().run(**kwargs)
-
-
-class MeanMergerSubprocessor(BaseMergerSubprocess):
-    """基于通用的叠加子进程模板的平均值叠加类。
-
-    Args:
-        BaseMergerSubprocess (_type_): _description_
-    """
-
-    def merge_image(self, new_img) -> None:
-        assert self.merged_img is not None, "Unexcepted None encoutered"
-        self.merged_img = self.merged_img + new_img
-
-    def post_process(self,
-                     img: np.ndarray,
-                     index: Optional[int] = None) -> FastGaussianParam:
-        return FastGaussianParam(img)
-
-
-class SigmaClipSubprocessor(BaseMergerSubprocess):
-    """基于通用的叠加子进程模板的，带有N*Sigma拒绝平均值叠加类。
-
-    该进程叠加的self.merged_img其实是被拒绝的叠加结果。取值和输出时需要转换。
-
-    Args:
-        BaseMergerSubprocess (_type_): _description_
-    """
-
-    def __init__(self, img_loader_type: type, rej_high_img: np.ndarray,
-                 rej_low_img: np.ndarray) -> None:
-        super().__init__(img_loader_type)
-        self.rej_high_img = rej_high_img
-        self.rej_low_img = rej_low_img
-        self.merged_img = None
-
-    def merge_image(self, new_img) -> None:
-        assert self.merged_img is not None, "Unexcepted None encoutered."
-        new_img.mask((new_img.mu > self.rej_high_img)
-                     | (new_img.mu < self.rej_low_img))
-        self.merged_img = self.merged_img + new_img
-
-    def post_process(self,
-                     img: np.ndarray,
-                     index: Optional[int] = None) -> FastGaussianParam:
-        return FastGaussianParam(img)
-
-
-@time_cost_warpper
-def StarTrailMaster(
-        fname_list: list[str],
-        fin_ratio: float,
-        fout_ratio: float,
-        resize: Optional[str] = None,
-        int_weight: bool = True,
-        output_bits: Optional[int] = None,
-        ground_mask: Optional[np.ndarray] = None) -> Optional[EasyDict]:
-    """星轨最大值叠加的入口函数。
-
-    Args:
-        fname_list (list[str]): 图像名列表
-        fin_ratio (float): 渐入效果比值
-        fout_ratio (float): 渐出效果比值
-        resize (Optional[int], optional): _description_. Defaults to None.
-        output_bits (int, optional): _description_. Defaults to -1.
-        ground_mask (Optional[np.ndarray], optional): _description_. Defaults to None.
-
-    Returns:
-        Optional[EasyDict]: 叠加完成的图像及其exif，颜色配置等信息。如果无法得到图像，返回None。
-    """
-    tot_length = len(fname_list)
-
-    mp_num, sub_length = get_mp_num(tot_length)
-    pool = mp.Pool(processes=mp_num)
-    results = mp.Queue()
-
-    # 获取EXIF信息和样本图像
-    base_info: Any = load_info(fname_list[0])
-    sample_img = load_sample_img(fname_list)
-    # 如果无法获得样本图像，说明序列完全没有可用图像。直接退出。
-    if sample_img is None:
-        logger.error(
-            "No sample image available: All reading attempt failed. " +
-            "Check your input.")
-        return None
-
-    # 对于星轨，默认运行时dtype与输入一致
-    input_dtype = sample_img.dtype
-    runtime_dtype = input_dtype
-    output_dtype = BITS2DTYPE[output_bits] if output_bits else input_dtype
-
-    # DEBUG INFO
-    logger.info(
-        f"mp_num = {mp_num}; int_weight = {int_weight}; dtype = {input_dtype}")
-    logger.info(f"ICC_profile = {get_color_profile(base_info.colorprofile)}")
-    logger.info(f"EXIF TAG num = {len(base_info.exif)}")
-    logger.debug(f"Raw basic infomation={base_info}")
-
-    # 对于需要快速预览的场景，resize_opt被设置为具体的值；否则为None。
-    resize_opt = get_resize(resize, sample_img.shape[:2])
-
-    # 整形输入的位深度选项
-    if (fin_ratio == 0 and fout_ratio == 0):
-        # 1权重不进行类型转换，计算时按*1d运算
-        int_weight = True
-    elif int_weight and input_dtype in DTYPE_UPSCALE_MAP:
-        #INT权重 -> base图像扩大范围
-        runtime_dtype = DTYPE_UPSCALE_MAP[input_dtype]
-        logger.info(
-            f"Upscale datatype from {input_dtype} To {runtime_dtype} to apply int-weight."
-        )
+    # reset logger level
+    logger.remove()
+    if debug:
+        logger.add(sys.stdout, level="DEBUG")
+        logger.info(f"Debug mode activated.")
     else:
-        runtime_dtype = float
+        logger.add(sys.stdout, level="INFO")
 
-    weight_list = generate_weight(tot_length,
-                                  fin_ratio,
-                                  fout_ratio,
-                                  int_weight=int_weight)
-    logger.debug(f"Full weight list:{weight_list}")
+    # init img_loader and merger
+    stacked_num = 0
+    failed_num = 0
+    img_loader = img_loader_type(**kwargs)
+    merger = merger_type(**kwargs)
+    tot_num = img_loader.tot_num
 
+    # main progress
     try:
-        subprocessor = MaxMergerSubprocessor(ImgSeriesLoader)
-        # 多线程叠加
-        for i in range(mp_num):
-            l, r = int(i * sub_length), int((i + 1) * sub_length)
-            pool.apply_async(subprocessor.run,
-                             kwds=dict(id=i,
-                                       fname_list=fname_list[l:r],
-                                       dtype=runtime_dtype,
-                                       resize=resize_opt,
-                                       weight_list=weight_list[l:r],
-                                       debug = False),
-                             callback=lambda ret: results.put(ret),
-                             error_callback=lambda error: logger.error(error))
-        # 合并多线程叠加结果
-        base_img = results.get()
-        for i in range(mp_num - 1):
-            cur_img = results.get()
-            base_img = np.max([base_img, cur_img], axis=0)
+        img_loader.start()
+        for i in range(tot_num):
+            raw_img = img_loader.pop()
+            if raw_img is None:
+                # TODO: 添加支持,对于可能预期外的叠加中间（读入失败，尺寸不匹配等）抛出额外错误
+                logger.warning("Skip the failed frame.")
+                failed_num += 1
+                if progressbar:
+                    progressbar.put(FAIL_FLAG)
+                continue
+            cur_img = merger.post_process(raw_img, index=i)
+            merger.merge(cur_img)
+            if progressbar:
+                progressbar.put(SUCC_FLAG)
+            stacked_num += 1
+    except (KeyboardInterrupt, Exception) as e:
+        logger.error(
+            f"Fatal error:{e.__repr__()}. {merger_type.__name__}Subprocessor#{proc_id} will terminated."
+            + "The final result cam be unexpected.")
+        if progressbar:
+            progressbar.put(END_FLAG)
 
-        # 精度转换
-        # upscale_time代表输出需要放缩255的倍数
-        upscale_time = DTYPE_REVERSE_MAP[output_dtype] - DTYPE_REVERSE_MAP[
-            input_dtype]
-        if int_weight and input_dtype != runtime_dtype:
-            # 应用int_weight时，相当于已上放缩一次，此处还原。
-            upscale_time -= 1
+    finally:
+        img_loader.stop()
+    if stacked_num == 0:
+        logger.warning(f"No valid frames are loaded!")
+        return None
+    logger.info(
+        f"{merger_type.__name__}Subprocessor#{proc_id} successfully stacked {stacked_num} "
+        + f"images from {tot_num} images. ({failed_num} fail(s)).")
+    return merger.merged_image
 
-        if DTYPE_REVERSE_MAP[output_dtype] > DTYPE_REVERSE_MAP[runtime_dtype]:
+
+class DtypeRecorder(object):
+
+    def __init__(self, input_dtype, rt_upscale_num,
+                 output_dtype: Optional[np.dtype], int_weight_switch,
+                 int_weight, fin_ratio, fout_ratio) -> None:
+        # 目前dtype放缩是在后置步骤完成的。TODO: 是否可简化？
+        #if int_weight_switch and int_weight:
+        #    rt_upscale_num += 1
+        self.input_dtype = input_dtype
+        self.runtime_dtype = dtype_scaler(self.input_dtype, rt_upscale_num)
+        self.output_dtype = output_dtype if output_dtype else self.input_dtype
+        self.int_weight = int_weight
+        # upscale_time代表输出相比于运算过程量需要放缩255的倍数
+        self.upscale_time = DTYPE_REVERSE_MAP[
+            self.output_dtype] - DTYPE_REVERSE_MAP[input_dtype]
+
+        # 视情况对运行中数据类型做变更
+        if int_weight_switch:
+            self.apply_int_weight(fin_ratio, fout_ratio)
+            if self.int_weight and self.input_dtype != self.runtime_dtype:
+                # 应用int_weight时，相当于已上放缩一次，此处还原。
+                self.upscale_time -= 1
+        if DTYPE_REVERSE_MAP[self.output_dtype] > DTYPE_REVERSE_MAP[
+                self.runtime_dtype]:
             # 如果希望输出高于运行时精度的数据，警告（但仍然按需求输出）
             logger.warning(
-                f"Expect output to be {output_dtype}, but runtime data type is {runtime_dtype}."
-                + f"Accuracy is duplicated.")
+                f"Expect output to be {output_dtype}, but runtime data type is {self.runtime_dtype}."
+                + f" Accuracy can be duplicated.")
 
-        if upscale_time > 0:
-            base_img = np.array(base_img, dtype=output_dtype)
-            base_img *= (255**upscale_time)
-        elif upscale_time:
-            base_img = np.array(base_img // 255**(abs(upscale_time)),
-                                dtype=output_dtype)
+    def apply_int_weight(self, fin_ratio, fout_ratio):
+        """根据渐入渐出选项变更dtype。
+        TODO: 這個邏輯是只有在星轨模式才生效。常规模式应当有N/A选项。
 
-    except KeyboardInterrupt as e:
-        pool.join()
-        raise e
-    # TODO: 异常处理
-    return EasyDict(img=base_img,
-                    exif=base_info.exif,
-                    colorprofile=base_info.colorprofile)
+        Args:
+            fin_ratio (_type_): _description_
+            fout_ratio (_type_): _description_
+        """
+        # 整形输入的位深度选项
+        if (fin_ratio == 0 and fout_ratio == 0):
+            # 1权重不进行类型转换，计算时按*1d运算
+            self.int_weight = True
+        elif self.int_weight and self.input_dtype in DTYPE_UPSCALE_MAP:
+            #INT权重 -> base图像扩大范围
+            self.runtime_dtype = DTYPE_UPSCALE_MAP[self.input_dtype]
+            logger.info(
+                f"Upscale datatype from {self.input_dtype} To {self.runtime_dtype} to apply int-weight."
+            )
+        else:
+            self.runtime_dtype = float
 
-
-@time_cost_warpper
-def MeanStackMaster(fname_list: list[str],
-                    resize: Optional[str] = None,
-                    output_bits: Optional[int] = None,
-                    ground_mask: Optional[np.ndarray] = None) -> EasyDict:
-    """平均值叠加的入口函数。
-
-    Args:
-        fname_list (list[str]): _description_
-        resize_length (Optional[int], optional): _description_. Defaults to None.
-
-    Returns:
-        np.ndarray: _description_
-    """
-    tot_length = len(fname_list)
-    mp_num, sub_length = get_mp_num(tot_length)
-    pool = mp.Pool(processes=mp_num)
-
-    base_info: Any = load_info(fname_list[0])
-    sample_img = load_img(fname_list[0])
-    if sample_img is None:
-        return EasyDict(img=None)
-
-    input_dtype = sample_img.dtype
-    resize_opt = get_resize(resize, sample_img.shape[:2])
-    # 默認提升1次範圍。如果jpg过多，需要升2次。
-    # TODO: 设计上的优化：理论上子进程不超过255时不需要提升2次，仅合并时提升也可以达到相同效果。
-    if len(fname_list) > 255 and input_dtype == np.dtype("uint8"):
-        runtime_dtype = DTYPE_UPSCALE_MAP[DTYPE_UPSCALE_MAP[input_dtype]]
-    else:
-        runtime_dtype = DTYPE_UPSCALE_MAP[input_dtype]
-    output_dtype = BITS2DTYPE[output_bits] if output_bits else input_dtype
-
-    results = mp.Queue()
-    logger.info(
-        f"Processor Num = {mp_num}; Dtype = {input_dtype}; Resize = {resize_opt}"
-    )
-    try:
-        subprocessor = MeanMergerSubprocessor(ImgSeriesLoader)
-        # 多线程叠加
-        # TODO: 出问题的话，pool似乎不会直接中断，也不抛出堆栈错误
-        for i in range(mp_num):
-            l, r = int(i * sub_length), int((i + 1) * sub_length)
-            pool.apply_async(subprocessor.run,
-                             kwds=dict(id=i,
-                                       fname_list=fname_list[l:r],
-                                       dtype=runtime_dtype,
-                                       resize=resize_opt),
-                             callback=lambda ret: results.put(ret),
-                             error_callback=lambda error: print(error))
-        # 合并多线程叠加结果
-        base_img: FastGaussianParam = results.get()
-        for i in range(mp_num - 1):
-            cur_img = results.get()
-            base_img = base_img + cur_img
-
-    except KeyboardInterrupt as e:
-        pool.join()
-        raise e
-
-    # 精度转换
-    # upscale_time代表输出需要放缩255的倍数
-    upscale_time = DTYPE_REVERSE_MAP[output_dtype] - DTYPE_REVERSE_MAP[
-        input_dtype]
-    ret_img = base_img.mu
-    var_img = base_img.var
-    if upscale_time > 0:
-        ret_img = np.array(base_img.mu * (255**upscale_time),
-                           dtype=output_dtype)
-        var_img = base_img.var * (255**upscale_time)**2
-    else:
-        ret_img = np.array(base_img.mu // (255**abs(upscale_time)),
-                           dtype=output_dtype)
-        var_img = base_img.var // (255**abs(upscale_time))**2
-
-    return EasyDict(img=ret_img,
-                    var=var_img,
-                    exif=base_info.exif,
-                    colorprofile=base_info.colorprofile)
+    def rescale(self, image: np.ndarray, power: int = 1):
+        if self.upscale_time > 0:
+            image = np.array(image, dtype=self.output_dtype)
+            image *= (255**self.upscale_time)**(power)
+        elif self.upscale_time:
+            image = np.array(image // (255**(abs(self.upscale_time)))**(power),
+                             dtype=self.output_dtype)
+        return image
 
 
-@time_cost_warpper
-def SigmaClippingMaster(fname_list: list[str],
-                        resize: Optional[str] = None,
-                        output_bits: Optional[int] = None,
-                        ground_mask: Optional[np.ndarray] = None,
-                        rej_high: float = 3.0,
-                        rej_low: float = 3.0,
-                        max_iter: int = 5) -> EasyDict:
-    """带SigmaClipping的平均值叠加的入口函数。
+class GenericMasterBase(object):
+    """通用主函数基类。
 
     Args:
-        fname_list (list[str]): _description_
-        resize_length (Optional[int], optional): _description_. Defaults to None.
-
-    Returns:
-        np.ndarray: _description_
+        object (_type_): _description_
     """
-    tot_length = len(fname_list)
-    mp_num, sub_length = get_mp_num(tot_length)
-    pool = mp.Pool(processes=mp_num)
 
-    base_info: Any = load_info(fname_list[0])
-    sample_img = load_img(fname_list[0])
-    if sample_img is None:
-        return EasyDict(img=None)
+    def __init__(self) -> None:
+        self.rt_upscale_num = 0
+        # int_weight_switch 表示该模式是否支持int_weight。
+        # 该处的int_weight_switch特指255权重。
+        self.int_weight_switch = False
 
-    input_dtype = sample_img.dtype
-    resize_opt = get_resize(resize, sample_img.shape[:2])
-    # 默認提升1次範圍。如果jpg过多，需要升2次。
-    # TODO: 设计上的优化：理论上子进程不超过255时不需要提升2次，仅合并时提升也可以达到相同效果。
-    if tot_length > 255 and input_dtype == np.dtype("uint8"):
-        post_runtime_dtype = DTYPE_UPSCALE_MAP[DTYPE_UPSCALE_MAP[input_dtype]]
-    else:
-        post_runtime_dtype = DTYPE_UPSCALE_MAP[input_dtype]
-    if sub_length > 255 and input_dtype == np.dtype("uint8"):
-        runtime_dtype = DTYPE_UPSCALE_MAP[DTYPE_UPSCALE_MAP[input_dtype]]
-    else:
-        runtime_dtype = DTYPE_UPSCALE_MAP[input_dtype]
+    def init_base_param(self, fname_list, **kwargs):
+        self.fname_list = fname_list
+        self.tot_length = len(fname_list)
+        self.mp_num, self.sub_length = get_mp_num(self.tot_length)
 
-    output_dtype = BITS2DTYPE[output_bits] if output_bits else input_dtype
+    def init_base_and_exif(self, fname_list, base_info: Any,
+                           sample_img: Optional[np.ndarray], **kwargs):
+        # 获取EXIF信息和样本图像
+        self.base_info: Any = base_info if base_info is not None else load_info(
+            fname_list[0])
+        self.sample_img = sample_img if sample_img is not None else load_sample_img(
+            fname_list)
 
-    results = mp.Queue()
-    logger.info(
-        f"Processor Num = {mp_num}; Dtype = {input_dtype}; Resize = {resize_opt}"
-    )
-    try:
-        base_subprocessor = MeanMergerSubprocessor(ImgSeriesLoader)
-        # 多线程叠加
-        # TODO: 出问题的话，pool似乎不会直接中断，也不抛出堆栈错误
-        for i in range(mp_num):
-            l, r = int(i * sub_length), int((i + 1) * sub_length)
-            pool.apply_async(base_subprocessor.run,
-                             kwds=dict(id=i,
-                                       fname_list=fname_list[l:r],
-                                       dtype=runtime_dtype,
-                                       resize=resize_opt),
-                             callback=lambda ret: results.put(ret),
-                             error_callback=error_raiser)
-        # 合并多线程叠加结果
-        base_img = FastGaussianParam(sum_mu=np.zeros((1, ),
-                                                     dtype=post_runtime_dtype),
-                                     n=np.zeros((1, ),
-                                                dtype=np.dtype("uint16")))
-        for i in range(mp_num):
-            cur_img = results.get()
-            base_img = base_img + cur_img
+    def init_dtype_recorder(self,
+                            sample_img: np.ndarray,
+                            output_bits: Optional[int] = None,
+                            int_weight: bool = False,
+                            fin_ratio: Optional[float] = None,
+                            fout_ratio: Optional[float] = None):
+        # 计算各阶段使用的dtype。
+        # 如果某种方式的提升逻辑不一样，Override该函数即可。
+        self.dtype_recorder = DtypeRecorder(
+            input_dtype=sample_img.dtype,
+            rt_upscale_num=self.rt_upscale_num,
+            output_dtype=BITS2DTYPE[output_bits] if output_bits else None,
+            int_weight_switch=self.int_weight_switch,
+            int_weight=int_weight,
+            fin_ratio=fin_ratio,
+            fout_ratio=fout_ratio)
 
-    except KeyboardInterrupt as e:
-        pool.join()
-        raise e
-    # Sigma Clip
-    try:
+
+class SimpleMasterTemplate(GenericMasterBase):
+    """WIP.
+
+    Args:
+        object (_type_): _description_
+    """
+
+    def __init__(self,
+                 progressbar: Optional[type] = None,
+                 subprocessor: Optional[type] = None) -> None:
+        super().__init__()
+        # 如果需要做对应改动，则需要实例化，并对实例化的模板执行对应操作
+        self.subprocessor = subprocessor if subprocessor else run_merger_subprocess
+        self.rt_upscale_num = 0
+        self.progressbar = progressbar if progressbar else QueueProgressBar
+        self.gen_weight_list = False
+        self.sub_merger_type = MaxMerger
+        self.main_merger_type = MaxMerger
+        self.main_upscale = False
+
+    def construct_ret(self) -> EasyDict:
+        rescaled_main_img = self.dtype_recorder.rescale(
+            self.main_merger.merged_image)
+        return EasyDict(img=rescaled_main_img,
+                        exif=self.base_info.exif,
+                        colorprofile=self.base_info.colorprofile)
+
+    @time_cost_warpper
+    def run(self,
+            fname_list: list[str],
+            fin_ratio: float,
+            fout_ratio: float,
+            resize: Optional[str] = None,
+            int_weight: bool = True,
+            output_bits: Optional[int] = None,
+            ground_mask: Optional[str] = None,
+            debug_mode: Optional[bool] = None,
+            base_info: Optional[EasyDict] = None,
+            sample_img: Optional[np.ndarray] = None,
+            **kwargs) -> Optional[EasyDict]:
+        """星轨最大值叠加的入口函数。
+
+        Args:
+            fname_list (list[str]): 图像名列表
+            fin_ratio (float): 渐入效果比值
+            fout_ratio (float): 渐出效果比值
+            resize (Optional[int], optional): _description_. Defaults to None.
+            output_bits (int, optional): _description_. Defaults to -1.
+            ground_mask (Optional[np.ndarray], optional): _description_. Defaults to None.
+
+        Returns:
+            Optional[EasyDict]: 叠加完成的图像及其exif，颜色配置等信息。如果无法得到图像，返回None。
+        """
+        self.init_base_param(fname_list=fname_list, **kwargs)
+        has_scaled = False
+        pool = mp.Pool(processes=self.mp_num)
+        results = mp.Manager().Queue()
+        self.main_merger = self.main_merger_type()
+
+        self.init_base_and_exif(fname_list=fname_list,
+                                base_info=base_info,
+                                sample_img=sample_img,
+                                **kwargs)
+        # 如果无法获得样本图像，说明序列完全没有可用图像。直接退出。
+        if self.sample_img is None:
+            logger.error(
+                "No sample image available: All reading attempt failed. " +
+                "Check your input.")
+            return EasyDict(img=None)
+
+        self.init_dtype_recorder(self.sample_img, output_bits, int_weight,
+                                 fin_ratio, fout_ratio)
+        logger.info(
+            f"Data scaling: Runtime scaling = {self.rt_upscale_num}; Output scaling = {self.dtype_recorder.upscale_time}."
+        )
+        if self.gen_weight_list:
+            weight_list = generate_weight(self.tot_length,
+                                          fin_ratio,
+                                          fout_ratio,
+                                          int_weight=int_weight)
+        else:
+            # default. for filling param only.
+            weight_list = np.ones((self.tot_length, ), dtype=np.int8)
+
+        # 对于需要快速预览的场景，resize_opt被设置为具体的值；否则为None。
+        resize_opt = get_resize(resize, self.sample_img.shape[:2])
+
+        # DEBUG INFO
+        logger.info(
+            f"Processor num = {self.mp_num}; int_weight = {self.dtype_recorder.int_weight}; dtype = {self.dtype_recorder.input_dtype}; resize = {resize_opt};"
+        )
+        logger.info(
+            f"ICC_profile = {get_color_profile(self.base_info.colorprofile)}")
+        logger.info(f"EXIF TAG num = {len(self.base_info.exif)}")
+        logger.debug(f"Raw basic infomation={self.base_info}")
+        logger.debug(f"Full weight list:{weight_list}")
+
+        # 进度条指示器
+        queue_processor = self.progressbar(
+            tot_num=self.tot_length,
+            desc=f"Executing {self.__class__.__name__}")
+
+        try:
+            queue_processor.start()
+            # 多线程叠加
+            for i in range(self.mp_num):
+                l, r = int(i * self.sub_length), int((i + 1) * self.sub_length)
+                pool.apply_async(
+                    self.subprocessor,
+                    kwds=dict(proc_id=i,
+                              img_loader_type=ImgSeriesLoader,
+                              merger_type=self.sub_merger_type,
+                              fname_list=fname_list[l:r],
+                              progressbar=queue_processor.queue,
+                              debug=debug_mode,
+                              dtype=self.dtype_recorder.runtime_dtype,
+                              resize=resize_opt,
+                              weight_list=weight_list[l:r],
+                              **kwargs),
+                    callback=lambda ret: results.put(ret),
+                    error_callback=lambda error: error_raiser(error))
+            pool.close()
+            # 合并多线程叠加结果
+            # refresh in case
+            self.main_merger.merged_image = None
+            for i in range(self.mp_num):
+                cur_img = results.get()
+                self.main_merger.merge(cur_img)
+                # A temp fix for datascaleup of MeanStacker.
+                # If this is used for main_merger that do not have upscale method,
+                # this could raise an Exception.
+                # TODO: Fix this in the future.
+                if (not has_scaled) and self.main_upscale:
+                    logger.info("Upscale main merger dtype...")
+                    self.main_merger.upscale()
+                    has_scaled = True
+            # 结束进度条
+            pool.join()
+            queue_processor.stop()
+            result_dict = self.construct_ret()
+
+        except (KeyboardInterrupt, Exception) as e:
+            logger.error(f"{e.__repr__()} is triggered.")
+            pool.terminate()
+            pool.join()
+            queue_processor.stop()
+            raise e
+        # TODO: 异常处理
+        return result_dict
+
+
+class StarTrailMaster(SimpleMasterTemplate):
+
+    def __init__(self,
+                 progressbar: Optional[type] = None,
+                 subprocessor: Optional[type] = None) -> None:
+        super().__init__(progressbar, subprocessor)
+        self.sub_merger_type = MaxMerger
+        self.gen_weight_list = True
+        self.int_weight_switch = True
+
+
+class MinStackMaster(SimpleMasterTemplate):
+
+    def __init__(self,
+                 progressbar: Optional[type] = None,
+                 subprocessor: Optional[type] = None) -> None:
+        super().__init__(progressbar, subprocessor)
+        self.sub_merger_type = MinMerger
+        self.main_merger_type = MinMerger
+
+
+class MeanStackMaster(SimpleMasterTemplate):
+
+    def __init__(self,
+                 progressbar: Optional[type] = None,
+                 subprocessor: Optional[type] = None) -> None:
+        super().__init__(progressbar, subprocessor)
+        self.sub_merger_type = MeanMerger
+        self.main_merger_type = MeanMerger
+        self.rt_upscale_num = 1
+
+    def init_dtype_recorder(self,
+                            sample_img: np.ndarray,
+                            output_bits: Optional[int] = None,
+                            int_weight: bool = False,
+                            fin_ratio: Optional[float] = None,
+                            fout_ratio: Optional[float] = None):
+        # 处理uint8输入且总张数大于255的场景
+        if self.tot_length > 255 and sample_img.dtype == np.dtype("uint8"):
+            if self.tot_length / self.mp_num > 255:
+                # 单进程也大于255的话，runtime数据需要2次提升
+                self.rt_upscale_num = 2
+            else:
+                # 否则仅需要在主进程内提升一次即可
+                self.main_upscale = True
+        super().init_dtype_recorder(sample_img, output_bits, int_weight,
+                                    fin_ratio, fout_ratio)
+
+    def construct_ret(self) -> EasyDict:
+        rescaled_main_img = self.dtype_recorder.rescale(
+            self.main_merger.merged_image.mu)
+        rescaled_var_img = self.dtype_recorder.rescale(
+            self.main_merger.merged_image.var, power=2)
+        return EasyDict(img=rescaled_main_img,
+                        var=rescaled_var_img,
+                        raw=self.main_merger.merged_image,
+                        n=self.main_merger.merged_image.n,
+                        exif=self.base_info.exif,
+                        colorprofile=self.base_info.colorprofile)
+
+
+class SingleSigmaClippingMaster(MeanStackMaster):
+
+    def __init__(self,
+                 progressbar: Optional[type] = None,
+                 subprocessor: Optional[type] = None) -> None:
+        super().__init__(progressbar, subprocessor)
+        self.sub_merger_type = SigmaClippingMerger
+
+    # sigmaClipping de ref img should be scaled before being using as the ref img.
+    # It is not allowed to rescale the ref img, actually.
+    def construct_ret(self) -> EasyDict:
+        main_img_param = self.full_ref_img - self.main_merger.merged_image
+        rescaled_main_img = self.dtype_recorder.rescale(main_img_param.mu)
+        rescaled_var_img = self.dtype_recorder.rescale(main_img_param.var,
+                                                       power=2)
+        rescaled_rej_img = self.dtype_recorder.rescale(
+            self.main_merger.merged_image.mu)
+        return EasyDict(img=rescaled_main_img,
+                        var=rescaled_var_img,
+                        rej=rescaled_rej_img,
+                        raw=main_img_param,
+                        n=main_img_param.n,
+                        exif=self.base_info.exif,
+                        colorprofile=self.base_info.colorprofile)
+
+    def init_base_param(self, fname_list: list[str],
+                        **kwargs) -> Optional[EasyDict]:
+        self.ref_img: FastGaussianParam = kwargs["ref_img"]
+        self.full_ref_img: FastGaussianParam = kwargs["full_ref_img"]
+        super().init_base_param(fname_list)
+
+
+class SigmaClippingMaster(GenericMasterBase):
+    """ComplexMasterTemplate通常包含若干个SimpleMaster或者ComplexMaster进程。因此其主要执行流除了需要处理必要的初始化以外，通常需要包含高度自定义的中间流程。
+
+    Args:
+        object (_type_): _description_
+    """
+
+    def __init__(self, **kwargs) -> None:
+        self.subprocessor = None
+        # 对于复杂模板类，该变量实际不被使用，但可用于指示中间支持的upscale数目。
+        self.rt_upscale_num = 1
+        self.progressbar = None
+        self.gen_weight_list = False
+        self.sub_merger_type = None
+        self.main_merger_type = None
+        self.main_upscale = False
+        self.int_weight_switch = False
+
+    @time_cost_warpper
+    def run(self,
+            fname_list: list[str],
+            fin_ratio: float,
+            fout_ratio: float,
+            resize: Optional[str] = None,
+            int_weight: bool = True,
+            output_bits: Optional[int] = None,
+            ground_mask: Optional[str] = None,
+            debug_mode: Optional[bool] = None,
+            base_info: Optional[EasyDict] = None,
+            sample_img: Optional[np.ndarray] = None,
+            rej_high: float = 3.0,
+            rej_low: float = 3.0,
+            max_iter: int = 5,
+            **kwargs):
+        assert max_iter > 0, "max_iter must >0 !"
+        self.init_base_param(fname_list)
+        self.init_base_and_exif(fname_list,
+                                base_info=base_info,
+                                sample_img=sample_img)
+        # 如果无法获得样本图像，说明序列完全没有可用图像。直接退出。
+        if self.sample_img is None:
+            logger.error(
+                "No sample image available: All reading attempt failed. " +
+                "Check your input.")
+            return EasyDict(img=None)
+        self.init_dtype_recorder(self.sample_img,
+                                 output_bits,
+                                 int_weight=False,
+                                 fin_ratio=None,
+                                 fout_ratio=None)
+
+        base_mean_stacker = MeanStackMaster()
+        base_result_dict = base_mean_stacker.run(fname_list=fname_list,
+                                                 fin_ratio=fin_ratio,
+                                                 fout_ratio=fout_ratio,
+                                                 resize=resize,
+                                                 int_weight=int_weight,
+                                                 output_bits=None,
+                                                 ground_mask=ground_mask,
+                                                 debug_mode=debug_mode,
+                                                 base_info=self.base_info,
+                                                 sample_img=self.sample_img)
+        single_sigmaclipping = SingleSigmaClippingMaster()
         cur_iter = 0
-        ref_img = base_img
-        last_clip_num = ref_img.n
-        reject_img = FastGaussianParam(sum_mu=np.zeros(
-            (1, ), dtype=post_runtime_dtype),
-                                       n=np.zeros((1, ),
-                                                  dtype=np.dtype("uint16")))
+        last_clip_num = base_result_dict.n
+        iter_result = base_result_dict
         while cur_iter < max_iter:
-            ref_mu = ref_img.mu
-            ref_var = np.sqrt(ref_img.var)
-            rej_high_img = np.array((ref_mu + ref_var * rej_high).clip(
-                min=0, max=DTYPE_MAX_VALUE[input_dtype]),
-                                    dtype=input_dtype)
-            rej_low_img = np.array((ref_var - ref_var * rej_low).clip(
-                min=0, max=DTYPE_MAX_VALUE[input_dtype]),
-                                   dtype=input_dtype)
-            cv2.imwrite("ref_high_img.jpg", rej_high_img)
             cur_iter += 1
             logger.info(f"SigmaClipping iter#{cur_iter}...")
-            subprocessor = SigmaClipSubprocessor(ImgSeriesLoader,
-                                                 rej_high_img=rej_high_img,
-                                                 rej_low_img=rej_low_img)
-            # 多线程叠加
-            # TODO: 出问题的话，pool似乎不会直接中断，也不抛出堆栈错误
-            # TODO: 如果是加载时resize，会多次计算。这是冗余的。
-            for i in range(mp_num):
-                l, r = int(i * sub_length), int((i + 1) * sub_length)
-                pool.apply_async(subprocessor.run,
-                                 kwds=dict(id=i,
-                                           fname_list=fname_list[l:r],
-                                           dtype=runtime_dtype,
-                                           resize=resize_opt),
-                                 callback=lambda ret: results.put(ret),
-                                 error_callback=lambda error: print(error))
-            # 合并多线程叠加结果
-            reject_img = FastGaussianParam(sum_mu=np.zeros(
-                (1, ), dtype=post_runtime_dtype),
-                                           n=np.zeros(
-                                               (1, ),
-                                               dtype=np.dtype("uint16")))
-            for i in range(mp_num):
-                cur_img = results.get()
-                reject_img = reject_img + cur_img
-            ref_img = base_img - reject_img
-            if ((last_clip_num - ref_img.n).all() == 0):
+            iter_result = single_sigmaclipping.run(
+                fname_list=fname_list,
+                fin_ratio=fin_ratio,
+                fout_ratio=fout_ratio,
+                resize=resize,
+                int_weight=int_weight,
+                output_bits=None,
+                ground_mask=ground_mask,
+                debug_mode=debug_mode,
+                base_info=self.base_info,
+                sample_img=self.sample_img,
+                full_ref_img=base_result_dict.raw,
+                ref_img=iter_result.raw,
+                rej_input_dtype=self.dtype_recorder.input_dtype,
+                rej_high=rej_high,
+                rej_low=rej_low)
+            if ((last_clip_num - iter_result.n).all() == 0):
+                logger.info("Early convergence detected.")
                 break
-            last_clip_num = ref_img.n
-
-    except KeyboardInterrupt as e:
-        pool.join()
-        raise e
-
-    # 精度转换
-    # upscale_time代表输出需要放缩255的倍数
-    upscale_time = DTYPE_REVERSE_MAP[output_dtype] - DTYPE_REVERSE_MAP[
-        input_dtype]
-    ret_img = ref_img.mu
-    var_img = ref_img.var
-    rej_img = reject_img
-    if upscale_time > 0:
-        ret_img = np.array(ref_img.mu * (255**upscale_time),
-                           dtype=output_dtype)
-        rej_img = np.array(reject_img.mu * (255**upscale_time),
-                           dtype=output_dtype)
-        var_img = ref_img.var * (255**upscale_time)**2
-    else:
-        ret_img = np.array(ref_img.mu // (255**abs(upscale_time)),
-                           dtype=output_dtype)
-        rej_img = np.array(reject_img.mu // (255**abs(upscale_time)),
-                           dtype=output_dtype)
-        var_img = ref_img.var // (255**abs(upscale_time))**2
-
-    return EasyDict(img=ret_img,
-                    var=var_img,
-                    rej=reject_img,
-                    exif=base_info.exif,
-                    colorprofile=base_info.colorprofile)
+            last_clip_num = iter_result.n
+        rescaled_main_img = self.dtype_recorder.rescale(iter_result.img)
+        rescaled_var_img = self.dtype_recorder.rescale(iter_result.var,
+                                                       power=2)
+        rescaled_rej_img = self.dtype_recorder.rescale(iter_result.rej)
+        return EasyDict(img=rescaled_main_img,
+                        var=rescaled_var_img,
+                        rej=rescaled_rej_img,
+                        n=iter_result.n,
+                        exif=self.base_info.exif,
+                        colorprofile=self.base_info.colorprofile)
 
 
-@time_cost_warpper
-def SimpleMixTrailMaster(fname_list: list[str],
-                         fin_ratio: float,
-                         fout_ratio: float,
-                         resize: Optional[str] = None,
-                         int_weight: bool = True,
-                         output_bits: int = -1,
-                         ground_mask: Optional[str] = None) -> EasyDict:
-    """基于蒙版简单混合的平均值+星轨最大值叠加的入口函数。
+class SimpleMixTrailMaster(GenericMasterBase):
+    """ComplexMasterTemplate通常包含若干个SimpleMaster或者ComplexMaster进程。因此其主要执行流除了需要处理必要的初始化以外，通常需要包含高度自定义的中间流程。
 
     Args:
-        fname_list (list[str]): 图像名列表
-        fin_ratio (float): 渐入效果比值
-        fout_ratio (float): 渐出效果比值
-        resize_length (Optional[int], optional): _description_. Defaults to None.
-        output_bits (int, optional): _description_. Defaults to -1.
-        ground_mask (Optional[np.ndarray], optional): _description_. Defaults to None.
-
-    Returns:
-        np.ndarray: 叠加完成的图像
+        object (_type_): _description_
     """
-    max_ezdict = StarTrailMaster(fname_list, fin_ratio, fout_ratio, resize,
-                                 int_weight, output_bits, ground_mask)
-    mean_ezdict = SigmaClippingMaster(fname_list, resize, output_bits,
-                                      ground_mask)
-    max_img = max_ezdict.img
-    mean_img = mean_ezdict.img
-    mean_var = mean_ezdict.var
-    resize_opt = get_resize(resize, max_img.shape[:2])
 
-    assert ground_mask, "this mode should launch with a ground mask!"
-    mask = load_img(ground_mask, resize=resize_opt)
-    if mask is None:
-        logger.error("Fail to load mask.")
-        return EasyDict(img=None)
-    mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-    mask = np.repeat(mask[..., None], max_img.shape[-1], axis=-1)
-    div_num = DTYPE_MAX_VALUE[
-        mask.dtype] if mask.dtype in DTYPE_MAX_VALUE else np.max(mask)
-    float_mask = np.array(mask, dtype=float) / div_num
-    ratio = get_max_expmean(len(fname_list))
-    diff_img = ratio * np.sqrt(mean_var)
-    #if diff_img.dtype == np.dtype("uint8"):
-    #    diff_img = cv2.medianBlur(diff_img, 128)
-    #    diff_img = cv2.cvtColor(cv2.cvtColor(diff_img, cv2.COLOR_BGR2GRAY),
-    #                            cv2.COLOR_GRAY2BGR)
-    reg_max_img = max_img - diff_img
-    logger.info(f"fix ratio = {ratio:.4f}")
-    #cv2.imwrite("var.tiff", mean_var)
-    return EasyDict(img=reg_max_img * float_mask + (1 - float_mask) * mean_img,
-                    exif=mean_ezdict.exif,
-                    colorprofile=mean_ezdict.colorprofile)
+    def __init__(self, **kwargs) -> None:
+        pass
+
+    @time_cost_warpper
+    def run(self,
+            fname_list: list[str],
+            fin_ratio: float,
+            fout_ratio: float,
+            resize: Optional[str] = None,
+            int_weight: bool = True,
+            output_bits: Optional[int] = None,
+            ground_mask: Optional[str] = None,
+            debug_mode: Optional[bool] = None,
+            base_info: Optional[EasyDict] = None,
+            sample_img: Optional[np.ndarray] = None,
+            rej_high: float = 3.0,
+            rej_low: float = 3.0,
+            max_iter: int = 5,
+            **kwargs):
+        assert max_iter > 0, "max_iter must >0 !"
+        self.init_base_param(fname_list)
+        self.init_base_and_exif(fname_list,
+                                base_info=base_info,
+                                sample_img=sample_img)
+        # 如果无法获得样本图像，说明序列完全没有可用图像。直接退出。
+        if self.sample_img is None:
+            logger.error(
+                "No sample image available: All reading attempt failed. " +
+                "Check your input.")
+            return EasyDict(img=None)
+        # 对于需要快速预览的场景，resize_opt被设置为具体的值；否则为None。
+        resize_opt = get_resize(resize, self.sample_img.shape[:2])
+        assert ground_mask is not None, "this mode should launch with a ground mask!"
+        mask = load_img(ground_mask, resize=resize_opt)
+        if mask is None:
+            logger.error("Fail to load mask.")
+            return EasyDict(img=None)
+
+        sigma_mean_stacker = SigmaClippingMaster()
+        mean_result_dict = sigma_mean_stacker.run(fname_list=fname_list,
+                                                  fin_ratio=fin_ratio,
+                                                  fout_ratio=fout_ratio,
+                                                  resize=resize,
+                                                  int_weight=int_weight,
+                                                  output_bits=output_bits,
+                                                  ground_mask=ground_mask,
+                                                  debug_mode=debug_mode,
+                                                  base_info=self.base_info,
+                                                  sample_img=self.sample_img,
+                                                  rej_high=rej_high,
+                                                  rej_low=rej_low,
+                                                  max_iter=max_iter)
+        max_stacker = StarTrailMaster()
+        max_result_dict = max_stacker.run(fname_list=fname_list,
+                                          fin_ratio=fin_ratio,
+                                          fout_ratio=fout_ratio,
+                                          resize=resize,
+                                          int_weight=int_weight,
+                                          output_bits=output_bits,
+                                          ground_mask=ground_mask,
+                                          debug_mode=debug_mode,
+                                          base_info=self.base_info,
+                                          sample_img=self.sample_img)
+
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+        mask = np.repeat(mask[..., None], 3, axis=-1)
+        div_num = DTYPE_MAX_VALUE[
+            mask.dtype] if mask.dtype in DTYPE_MAX_VALUE else np.max(mask)
+        float_mask = np.array(mask, dtype=float) / div_num
+        ratio = get_max_expmean(self.tot_length)
+        diff_img = ratio * np.sqrt(mean_result_dict.var)
+        reg_max_img = max_result_dict.img - diff_img
+        logger.info(f"fix ratio = {ratio:.4f}")
+        merged_img = reg_max_img * float_mask + (
+            1 - float_mask) * mean_result_dict.img
+        merged_img = self.dtype_recorder.rescale(merged_img)
+        return EasyDict(img=merged_img,
+                        exif=self.base_info.exif,
+                        colorprofile=self.base_info.colorprofile)

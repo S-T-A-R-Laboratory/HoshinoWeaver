@@ -1,11 +1,65 @@
 import argparse
 import os
 import sys
-from ezlib.trailstacker import SigmaClippingMaster, StarTrailMaster, MeanStackMaster, SimpleMixTrailMaster
+from ezlib.trailstacker import SigmaClippingMaster, StarTrailMaster, MeanStackMaster, SimpleMixTrailMaster, MinStackMaster
 from ezlib.imgfio import save_img
 from loguru import logger
+from typing import Optional
 
 from ezlib.utils import is_support_format
+
+modestr2func = {
+    "max": StarTrailMaster,
+    "min": MinStackMaster,
+    "mean": MeanStackMaster,
+    "sigmaclip-mean": SigmaClippingMaster,
+    "mask-mix": SimpleMixTrailMaster
+}
+
+
+def gui_request(img_files: list,
+                mode: str,
+                output_fname: str,
+                fin_ratio: Optional[float] = None,
+                fout_ratio: Optional[float] = None,
+                int_weight: bool = False,
+                resize: Optional[str] = None,
+                output_bits: Optional[int] = None,
+                ground_mask: Optional[str] = None,
+                debug_mode: bool = False,
+                rej_high: float = 3.0,
+                rej_low: float = 3.0,
+                max_iter: int = 5,
+                png_compressing: int = 0,
+                jpg_quality: int = 90,
+                **kwargs) -> dict:
+    try:
+        assert mode in modestr2func, f" Got unsupport mode `{mode}`. Should be selected from {modestr2func.keys()}"
+        runner = modestr2func[mode]()
+        res = runner.run(fname_list=img_files,
+                         fin_ratio=fin_ratio,
+                         fout_ratio=fout_ratio,
+                         int_weight=int_weight,
+                         resize=resize,
+                         output_bits=output_bits,
+                         ground_mask=ground_mask,
+                         debug_mode=debug_mode,
+                         rej_high=rej_high,
+                         rej_low=rej_low,
+                         max_iter=max_iter)
+        if res.img is None:
+            return {"success": False, "message": "空结果"}
+        else:
+            save_img(output_fname,
+                     res.img,
+                     png_compressing=png_compressing,
+                     jpg_quality=jpg_quality,
+                     exif=res.exif,
+                     colorprofile=res.colorprofile)
+            return {"success":True, "message": None}
+    except Exception as e:
+        return {"success": False, "message": f"程序因为以下原因失败：{e.__repr__()}"}
+
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
@@ -14,7 +68,7 @@ if __name__ == "__main__":
         "--mode",
         type=str,
         required=True,
-        choices=["mean", "max", "mask-mix", "sigmaclip-mean"],
+        choices=["mean", "max", "min", "mask-mix", "sigmaclip-mean"],
         help="stack mode")
     arg_parser.add_argument("--ground-mask",
                             type=str,
@@ -25,7 +79,10 @@ if __name__ == "__main__":
     arg_parser.add_argument("--int-weight", action="store_true")
     arg_parser.add_argument("--jpg-quality", type=int, default=90)
     arg_parser.add_argument("--png-compressing", type=int, default=0)
-    arg_parser.add_argument("--output", type=str, required=True)
+    arg_parser.add_argument("--output",
+                            type=str,
+                            required=False,
+                            default="default.jpg")
     arg_parser.add_argument("--output-bits",
                             type=int,
                             choices=[8, 16, 32],
@@ -58,33 +115,21 @@ if __name__ == "__main__":
         os.path.join(dir_name, x) for x in img_files if is_support_format(x)
     ]
 
-    if args.mode == "max":
-        res = StarTrailMaster(img_files,
-                              fin_ratio=fin_ratio,
-                              fout_ratio=fout_ratio,
-                              resize=args.resize,
-                              int_weight=args.int_weight,
-                              output_bits=args.output_bits,
-                              ground_mask=args.ground_mask)
-    elif args.mode == "mean":
-        res = MeanStackMaster(img_files,
-                              resize=args.resize,
-                              output_bits=args.output_bits,
-                              ground_mask=args.ground_mask)
-    elif args.mode == "mask-mix":
-        res = SimpleMixTrailMaster(img_files,
-                                   fin_ratio=fin_ratio,
-                                   fout_ratio=fout_ratio,
-                                   int_weight=args.int_weight,
-                                   resize=args.resize,
-                                   output_bits=args.output_bits,
-                                   ground_mask=args.ground_mask)
-    elif args.mode == "sigmaclip-mean":
-        res = SigmaClippingMaster(img_files, output_bits=args.output_bits)
-    else:
-        raise NotImplementedError(
-            f"NotImplementedMode: {args.mode}. Only \"max\" and \"mean\" are supported."
-        )
+    assert args.mode in modestr2func, f" Got unsupport mode `{args.mode}`. Should be selected from {modestr2func.keys()}"
+    runner = modestr2func[args.mode]()
+
+    res = runner.run(fname_list=img_files,
+                     fin_ratio=fin_ratio,
+                     fout_ratio=fout_ratio,
+                     int_weight=args.int_weight,
+                     resize=args.resize,
+                     output_bits=args.output_bits,
+                     ground_mask=args.ground_mask,
+                     debug_mode=args.debug,
+                     rej_high=3.0,
+                     rej_low=3.0,
+                     max_iter=5)
+
     if res.img is None:
         logger.error(f"Got empty result.")
         exit()

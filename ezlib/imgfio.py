@@ -70,6 +70,7 @@ class ImgSeriesLoader(object):
         except Exception as e:
             raise e
         finally:
+            logger.debug(f"{self.__class__.__name__} has successfully stopped.")
             self.stop()
 
 
