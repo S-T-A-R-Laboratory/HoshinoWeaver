@@ -1,5 +1,4 @@
 import multiprocessing as mp
-import threading
 import time
 from math import floor, log, sqrt
 from typing import Callable, Optional, Union
@@ -8,7 +7,6 @@ import numpy as np
 import psutil
 from loguru import logger
 from PIL.ExifTags import TAGS
-from tqdm import tqdm
 
 DTYPE_UPSCALE_MAP = {
     np.dtype('uint8'): np.dtype('uint16'),
@@ -52,10 +50,6 @@ NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
 RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng"]
 SUPPORT_BITS = [8, 16]
 
-FAIL_FLAG = 0
-SUCC_FLAG = 1
-END_FLAG = -1
-
 def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
     """A simple implementation of dtype_sclaer.
     TODO: update in the future.
@@ -91,7 +85,7 @@ def get_resize(opt: Optional[str], raw_wh: Union[list, tuple]):
     if not opt: return None
     # 如果直接以类似"1280x720"的方式指定，则直接返回值
     if "x" in opt and len(opt.split("x")) == 2:
-        return list(map(int, opt.split("x")))
+        return list(reversed(list(map(int, opt.split("x")))))
     tgt_wh = None
     try:
         tgt_wh = int(opt)
@@ -155,55 +149,6 @@ def get_max_expmean(x: int) -> float:
     if 0 < x < 80:
         return 1 / 2 * log(x)**(0.91) + 0.52
     return 1 / 2 * log(x + 1)**(0.84) + 0.71
-
-
-class QueueProgressBar(object):
-    """A simple threading progressbar
-
-    Args:
-        object (_type_): _description_
-    """
-
-    def __init__(self, tot_num: int, desc: str = "") -> None:
-        self.tot_num = tot_num
-        self.desc = desc
-        self.stopped = True
-        self.queue = mp.Manager().Queue()
-        self.thread = threading.Thread(target=self.loop, args=())
-
-    def start(self, desc=None):
-        self.stopped = False
-        if desc is not None:
-            self.desc = desc
-        self.thread.start()
-
-    def stop(self):
-        if not self.stopped:
-            self.queue.put(END_FLAG)
-            self.stopped = True
-
-    def put(self, flag):
-        self.queue.put(flag)
-
-    def loop(self):
-        try:
-            status = None
-            for _ in tqdm(range(self.tot_num),
-                          total=self.tot_num,
-                          unit="imgs",
-                          dynamic_ncols=True,
-                          desc=self.desc):
-                if self.stopped: break
-                # TODO: timeout硬编码为60？
-                try:
-                    status = self.queue.get(timeout=60)
-                except KeyboardInterrupt as e:
-                    pass
-                if status == END_FLAG:
-                    # TODO: fix: 如果某一进程出现意外造成终止，会阻塞全局进度条。
-                    self.stopped = True
-        except Exception as e:
-            self.stopped = True
 
 
 class GaussianParam(object):

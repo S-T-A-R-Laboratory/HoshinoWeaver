@@ -189,6 +189,7 @@ def save_img(filename: str,
         params = [int(cv2.IMWRITE_PNG_COMPRESSION), png_compressing]
     elif suffix in ["JPG", "JPEG"]:
         # 导出 jpg 时，位深度强制转换为8
+        # TODO: 目前仅支持从uint16降为uint8。部分情况下可能出现问题
         if img.dtype == np.uint16:
             img = np.array(img // 255, dtype=np.uint8)
         ext = ".jpg"

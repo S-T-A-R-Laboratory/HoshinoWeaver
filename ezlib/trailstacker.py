@@ -11,11 +11,11 @@ from loguru import logger
 from .imgfio import ImgSeriesLoader, get_color_profile, load_img, load_info
 from .merger import (BaseMerger, MaxMerger, MeanMerger, MinMerger,
                      SigmaClippingMerger)
+from .progressbar import (TqdmProgressbar, SUCC_FLAG, FAIL_FLAG,END_FLAG)
 from .utils import (BITS2DTYPE, DTYPE_MAX_VALUE, DTYPE_REVERSE_MAP,
-                    DTYPE_UPSCALE_MAP, FastGaussianParam, QueueProgressBar,
-                    dtype_scaler, error_raiser, get_max_expmean, get_mp_num,
-                    get_resize, time_cost_warpper, SUCC_FLAG, FAIL_FLAG,
-                    END_FLAG)
+                    DTYPE_UPSCALE_MAP, FastGaussianParam, dtype_scaler,
+                    error_raiser, get_max_expmean, get_mp_num,
+                    get_resize, time_cost_warpper)
 
 
 def generate_weight(length: int,
@@ -195,8 +195,21 @@ class DtypeRecorder(object):
 
 
 class GenericMasterBase(object):
-    """通用主函数基类。
+    """GenericMaster 的基类。
+    MasterBase类是叠加算法的入口类。继承该方法以实现特定的叠加功能。
+    
+    MasterBase类包含了大多数叠加必须使用的一些通用方法，如初始化必要参数，通过参考图像获取exif，colorprofile等配置信息，数据放缩等。
+    
+    如果期望实现的叠加仅需要遍历一次数据，可基于继承自GenericMasterBase的SimpleMasterTemplate进行开发。反之，如果流程中包含若干个 SimpleMaster 或者 GenericMaster 流程，直接继承该类并在 run 方法中执行必要的初始化，并串行设置自定义的中间流程即可。
 
+    ## Usage
+    该类按照如下方式被调用：
+    1. 初始化
+    2. 调用run方法，并返回一个Easydict对象，其中需要至少包含img[np.ndarray], colorprofile, exif字段。
+    
+    要继承该方法，主要需要override run() method。
+    
+    
     Args:
         object (_type_): _description_
     """
@@ -236,6 +249,8 @@ class GenericMasterBase(object):
             int_weight=int_weight,
             fin_ratio=fin_ratio,
             fout_ratio=fout_ratio)
+    def run(self,**kwargs):
+        raise NotImplementedError
 
 
 class SimpleMasterTemplate(GenericMasterBase):
@@ -252,7 +267,7 @@ class SimpleMasterTemplate(GenericMasterBase):
         # 如果需要做对应改动，则需要实例化，并对实例化的模板执行对应操作
         self.subprocessor = subprocessor if subprocessor else run_merger_subprocess
         self.rt_upscale_num = 0
-        self.progressbar = progressbar if progressbar else QueueProgressBar
+        self.progressbar = progressbar if progressbar else TqdmProgressbar
         self.gen_weight_list = False
         self.sub_merger_type = MaxMerger
         self.main_merger_type = MaxMerger
@@ -483,7 +498,7 @@ class SingleSigmaClippingMaster(MeanStackMaster):
 
 
 class SigmaClippingMaster(GenericMasterBase):
-    """ComplexMasterTemplate通常包含若干个SimpleMaster或者ComplexMaster进程。因此其主要执行流除了需要处理必要的初始化以外，通常需要包含高度自定义的中间流程。
+    """若干个SimpleMaster或者ComplexMaster进程。因此其主要执行流除了需要处理必要的初始化以外，通常需要包含高度自定义的中间流程。
 
     Args:
         object (_type_): _description_
