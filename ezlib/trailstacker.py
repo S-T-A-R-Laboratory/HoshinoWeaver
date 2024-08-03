@@ -2,6 +2,7 @@ import multiprocessing as mp
 import sys
 from abc import ABCMeta, abstractclassmethod
 from typing import Any, Optional, Union
+import fractions
 
 import cv2
 import numpy as np
@@ -11,10 +12,11 @@ from loguru import logger
 from .imgfio import ImgSeriesLoader, get_color_profile, load_img, load_info
 from .merger import (BaseMerger, MaxMerger, MeanMerger, MinMerger,
                      SigmaClippingMerger)
-from .progressbar import (TqdmProgressbar, SUCC_FLAG, FAIL_FLAG,END_FLAG)
+from .progressbar import (QueueProgressbar, TqdmProgressbar, SUCC_FLAG,
+                          FAIL_FLAG, END_FLAG)
 from .utils import (BITS2DTYPE, DTYPE_MAX_VALUE, DTYPE_REVERSE_MAP,
-                    DTYPE_UPSCALE_MAP, FastGaussianParam, dtype_scaler,
-                    error_raiser, get_max_expmean, get_mp_num,
+                    DTYPE_UPSCALE_MAP, SOFTWARE_NAME, FastGaussianParam,
+                    dtype_scaler, error_raiser, get_max_expmean, get_mp_num,
                     get_resize, time_cost_warpper)
 
 
@@ -165,7 +167,6 @@ class DtypeRecorder(object):
 
     def apply_int_weight(self, fin_ratio, fout_ratio):
         """根据渐入渐出选项变更dtype。
-        TODO: 這個邏輯是只有在星轨模式才生效。常规模式应当有N/A选项。
 
         Args:
             fin_ratio (_type_): _description_
@@ -191,6 +192,8 @@ class DtypeRecorder(object):
         elif self.upscale_time:
             image = np.array(image // (255**(abs(self.upscale_time)))**(power),
                              dtype=self.output_dtype)
+        else:
+            image = np.array(image, dtype=self.output_dtype)
         return image
 
 
@@ -225,13 +228,54 @@ class GenericMasterBase(object):
         self.tot_length = len(fname_list)
         self.mp_num, self.sub_length = get_mp_num(self.tot_length)
 
-    def init_base_and_exif(self, fname_list, base_info: Any,
-                           sample_img: Optional[np.ndarray], **kwargs):
+    @time_cost_warpper
+    def init_base_and_exif(self,
+                           fname_list,
+                           base_info: Any,
+                           sample_img: Optional[np.ndarray],
+                           info_load_mode="detail",
+                           **kwargs):
+        assert info_load_mode in [
+            "detail", "first_only"
+        ], "info_load_mode only supports `detail` and `first-only`."
+        # 直接继承的情况下不进行初始化
+        self.base_info: Any = base_info
+        self.sample_img = sample_img
+        if self.base_info is not None and self.sample_img is not None:
+            return
+        self.sample_img = load_sample_img(fname_list)
         # 获取EXIF信息和样本图像
-        self.base_info: Any = base_info if base_info is not None else load_info(
-            fname_list[0])
-        self.sample_img = sample_img if sample_img is not None else load_sample_img(
-            fname_list)
+        if info_load_mode == "detail":
+            # detail模式下，会从所有文件中读取EXIF信息，并加和曝光时间。
+            # 同时会读取EXIF中的宽高信息。如果存在不匹配宽高，抛出警告（可以被ignore？）
+            time_cumsum = fractions.Fraction(0)
+            for fname in fname_list:
+                cur_info: Any = load_info(fname)
+                time = cur_info.exif.get("Exif.Photo.ExposureTime")
+                if time is not None:
+                    time_cumsum += fractions.Fraction(time)
+                if self.base_info is None:
+                    self.base_info = cur_info
+            if self.base_info.exif.get("Exif.Photo.ExposureTime") is not None:
+                self.base_info.exif["Exif.Photo.ExposureTime"] = "/".join(
+                    map(str, time_cumsum.as_integer_ratio()))
+        else:
+            # 直接使用张数估算总曝光时间
+            self.base_info = load_info(fname_list[0])
+            self.base_info.exif.update(
+                "Exif.Photo.ExposureTime", "/".join(
+                    map(str, (fractions.Fraction(
+                        self.base_info.exif.get("Exif.Photo.ExposureTime")) *
+                              len(fname_list)).as_integer_ratio())))
+        logger.info(
+            f"Calculated total exposure time = {self.base_info.exif.get('Exif.Photo.ExposureTime')}."
+        )
+        logger.info(
+            f"ICC_profile = {get_color_profile(self.base_info.colorprofile)}")
+        logger.info(f"EXIF TAG num = {len(self.base_info.exif)}")
+        logger.debug(f"Raw basic infomation={self.base_info}")
+        # 设置软体名称
+        self.base_info.exif["Exif.Image.Software"] = SOFTWARE_NAME
 
     def init_dtype_recorder(self,
                             sample_img: np.ndarray,
@@ -249,7 +293,8 @@ class GenericMasterBase(object):
             int_weight=int_weight,
             fin_ratio=fin_ratio,
             fout_ratio=fout_ratio)
-    def run(self,**kwargs):
+
+    def run(self, **kwargs):
         raise NotImplementedError
 
 
@@ -260,22 +305,24 @@ class SimpleMasterTemplate(GenericMasterBase):
         object (_type_): _description_
     """
 
-    def __init__(self,
-                 progressbar: Optional[type] = None,
-                 subprocessor: Optional[type] = None) -> None:
+    def __init__(self) -> None:
         super().__init__()
         # 如果需要做对应改动，则需要实例化，并对实例化的模板执行对应操作
-        self.subprocessor = subprocessor if subprocessor else run_merger_subprocess
+        self.subprocessor = run_merger_subprocess
         self.rt_upscale_num = 0
-        self.progressbar = progressbar if progressbar else TqdmProgressbar
+        self.default_progressbar = TqdmProgressbar(
+            desc=f"Executing {self.__class__.__name__}")
         self.gen_weight_list = False
         self.sub_merger_type = MaxMerger
         self.main_merger_type = MaxMerger
         self.main_upscale = False
 
     def construct_ret(self) -> EasyDict:
-        rescaled_main_img = self.dtype_recorder.rescale(
-            self.main_merger.merged_image)
+        if self.main_merger.merged_image is not None:
+            rescaled_main_img = self.dtype_recorder.rescale(
+                self.main_merger.merged_image)
+        else:
+            rescaled_main_img = None
         return EasyDict(img=rescaled_main_img,
                         exif=self.base_info.exif,
                         colorprofile=self.base_info.colorprofile)
@@ -292,6 +339,7 @@ class SimpleMasterTemplate(GenericMasterBase):
             debug_mode: Optional[bool] = None,
             base_info: Optional[EasyDict] = None,
             sample_img: Optional[np.ndarray] = None,
+            progressbar: Optional[QueueProgressbar] = None,
             **kwargs) -> Optional[EasyDict]:
         """星轨最大值叠加的入口函数。
 
@@ -344,19 +392,14 @@ class SimpleMasterTemplate(GenericMasterBase):
         logger.info(
             f"Processor num = {self.mp_num}; int_weight = {self.dtype_recorder.int_weight}; dtype = {self.dtype_recorder.input_dtype}; resize = {resize_opt};"
         )
-        logger.info(
-            f"ICC_profile = {get_color_profile(self.base_info.colorprofile)}")
-        logger.info(f"EXIF TAG num = {len(self.base_info.exif)}")
-        logger.debug(f"Raw basic infomation={self.base_info}")
         logger.debug(f"Full weight list:{weight_list}")
 
         # 进度条指示器
-        queue_processor = self.progressbar(
-            tot_num=self.tot_length,
-            desc=f"Executing {self.__class__.__name__}")
-
+        if not progressbar:
+            progressbar = self.default_progressbar
         try:
-            queue_processor.start()
+            progressbar.reset(tot_num=self.tot_length)
+            progressbar.start()
             # 多线程叠加
             for i in range(self.mp_num):
                 l, r = int(i * self.sub_length), int((i + 1) * self.sub_length)
@@ -366,7 +409,7 @@ class SimpleMasterTemplate(GenericMasterBase):
                               img_loader_type=ImgSeriesLoader,
                               merger_type=self.sub_merger_type,
                               fname_list=fname_list[l:r],
-                              progressbar=queue_processor.queue,
+                              progressbar=progressbar.queue,
                               debug=debug_mode,
                               dtype=self.dtype_recorder.runtime_dtype,
                               resize=resize_opt,
@@ -391,14 +434,14 @@ class SimpleMasterTemplate(GenericMasterBase):
                     has_scaled = True
             # 结束进度条
             pool.join()
-            queue_processor.stop()
+            progressbar.stop()
             result_dict = self.construct_ret()
 
         except (KeyboardInterrupt, Exception) as e:
             logger.error(f"{e.__repr__()} is triggered.")
             pool.terminate()
             pool.join()
-            queue_processor.stop()
+            progressbar.stop()
             raise e
         # TODO: 异常处理
         return result_dict
@@ -406,10 +449,8 @@ class SimpleMasterTemplate(GenericMasterBase):
 
 class StarTrailMaster(SimpleMasterTemplate):
 
-    def __init__(self,
-                 progressbar: Optional[type] = None,
-                 subprocessor: Optional[type] = None) -> None:
-        super().__init__(progressbar, subprocessor)
+    def __init__(self) -> None:
+        super().__init__()
         self.sub_merger_type = MaxMerger
         self.gen_weight_list = True
         self.int_weight_switch = True
@@ -417,20 +458,16 @@ class StarTrailMaster(SimpleMasterTemplate):
 
 class MinStackMaster(SimpleMasterTemplate):
 
-    def __init__(self,
-                 progressbar: Optional[type] = None,
-                 subprocessor: Optional[type] = None) -> None:
-        super().__init__(progressbar, subprocessor)
+    def __init__(self) -> None:
+        super().__init__()
         self.sub_merger_type = MinMerger
         self.main_merger_type = MinMerger
 
 
 class MeanStackMaster(SimpleMasterTemplate):
 
-    def __init__(self,
-                 progressbar: Optional[type] = None,
-                 subprocessor: Optional[type] = None) -> None:
-        super().__init__(progressbar, subprocessor)
+    def __init__(self) -> None:
+        super().__init__()
         self.sub_merger_type = MeanMerger
         self.main_merger_type = MeanMerger
         self.rt_upscale_num = 1
@@ -453,24 +490,28 @@ class MeanStackMaster(SimpleMasterTemplate):
                                     fin_ratio, fout_ratio)
 
     def construct_ret(self) -> EasyDict:
-        rescaled_main_img = self.dtype_recorder.rescale(
-            self.main_merger.merged_image.mu)
-        rescaled_var_img = self.dtype_recorder.rescale(
-            self.main_merger.merged_image.var, power=2)
+        if self.main_merger.merged_image is not None:
+            rescaled_main_img = self.dtype_recorder.rescale(
+                self.main_merger.merged_image.mu)
+            rescaled_var_img = self.dtype_recorder.rescale(
+                self.main_merger.merged_image.var, power=2)
+            num = self.main_merger.merged_image.n
+        else:
+            rescaled_main_img = None
+            rescaled_var_img = None
+            num = None
         return EasyDict(img=rescaled_main_img,
                         var=rescaled_var_img,
                         raw=self.main_merger.merged_image,
-                        n=self.main_merger.merged_image.n,
+                        n=num,
                         exif=self.base_info.exif,
                         colorprofile=self.base_info.colorprofile)
 
 
 class SingleSigmaClippingMaster(MeanStackMaster):
 
-    def __init__(self,
-                 progressbar: Optional[type] = None,
-                 subprocessor: Optional[type] = None) -> None:
-        super().__init__(progressbar, subprocessor)
+    def __init__(self) -> None:
+        super().__init__()
         self.sub_merger_type = SigmaClippingMerger
 
     # sigmaClipping de ref img should be scaled before being using as the ref img.
@@ -480,11 +521,8 @@ class SingleSigmaClippingMaster(MeanStackMaster):
         rescaled_main_img = self.dtype_recorder.rescale(main_img_param.mu)
         rescaled_var_img = self.dtype_recorder.rescale(main_img_param.var,
                                                        power=2)
-        rescaled_rej_img = self.dtype_recorder.rescale(
-            self.main_merger.merged_image.mu)
         return EasyDict(img=rescaled_main_img,
                         var=rescaled_var_img,
-                        rej=rescaled_rej_img,
                         raw=main_img_param,
                         n=main_img_param.n,
                         exif=self.base_info.exif,
@@ -505,6 +543,7 @@ class SigmaClippingMaster(GenericMasterBase):
     """
 
     def __init__(self, **kwargs) -> None:
+        super().__init__()
         self.subprocessor = None
         # 对于复杂模板类，该变量实际不被使用，但可用于指示中间支持的upscale数目。
         self.rt_upscale_num = 1
@@ -527,6 +566,7 @@ class SigmaClippingMaster(GenericMasterBase):
             debug_mode: Optional[bool] = None,
             base_info: Optional[EasyDict] = None,
             sample_img: Optional[np.ndarray] = None,
+            progressbar: Optional[QueueProgressbar] = None,
             rej_high: float = 3.0,
             rej_low: float = 3.0,
             max_iter: int = 5,
@@ -558,7 +598,8 @@ class SigmaClippingMaster(GenericMasterBase):
                                                  ground_mask=ground_mask,
                                                  debug_mode=debug_mode,
                                                  base_info=self.base_info,
-                                                 sample_img=self.sample_img)
+                                                 sample_img=self.sample_img,
+                                                 progressbar=progressbar)
         single_sigmaclipping = SingleSigmaClippingMaster()
         cur_iter = 0
         last_clip_num = base_result_dict.n
@@ -577,6 +618,7 @@ class SigmaClippingMaster(GenericMasterBase):
                 debug_mode=debug_mode,
                 base_info=self.base_info,
                 sample_img=self.sample_img,
+                progressbar=progressbar,
                 full_ref_img=base_result_dict.raw,
                 ref_img=iter_result.raw,
                 rej_input_dtype=self.dtype_recorder.input_dtype,
@@ -589,10 +631,9 @@ class SigmaClippingMaster(GenericMasterBase):
         rescaled_main_img = self.dtype_recorder.rescale(iter_result.img)
         rescaled_var_img = self.dtype_recorder.rescale(iter_result.var,
                                                        power=2)
-        rescaled_rej_img = self.dtype_recorder.rescale(iter_result.rej)
         return EasyDict(img=rescaled_main_img,
                         var=rescaled_var_img,
-                        rej=rescaled_rej_img,
+                        raw=iter_result,
                         n=iter_result.n,
                         exif=self.base_info.exif,
                         colorprofile=self.base_info.colorprofile)
@@ -606,7 +647,7 @@ class SimpleMixTrailMaster(GenericMasterBase):
     """
 
     def __init__(self, **kwargs) -> None:
-        pass
+        super().__init__()
 
     @time_cost_warpper
     def run(self,
@@ -620,6 +661,7 @@ class SimpleMixTrailMaster(GenericMasterBase):
             debug_mode: Optional[bool] = None,
             base_info: Optional[EasyDict] = None,
             sample_img: Optional[np.ndarray] = None,
+            progressbar: Optional[QueueProgressbar] = None,
             rej_high: float = 3.0,
             rej_low: float = 3.0,
             max_iter: int = 5,
@@ -635,6 +677,7 @@ class SimpleMixTrailMaster(GenericMasterBase):
                 "No sample image available: All reading attempt failed. " +
                 "Check your input.")
             return EasyDict(img=None)
+        self.init_dtype_recorder(self.sample_img, output_bits)
         # 对于需要快速预览的场景，resize_opt被设置为具体的值；否则为None。
         resize_opt = get_resize(resize, self.sample_img.shape[:2])
         assert ground_mask is not None, "this mode should launch with a ground mask!"
@@ -654,6 +697,7 @@ class SimpleMixTrailMaster(GenericMasterBase):
                                                   debug_mode=debug_mode,
                                                   base_info=self.base_info,
                                                   sample_img=self.sample_img,
+                                                  progressbar=progressbar,
                                                   rej_high=rej_high,
                                                   rej_low=rej_low,
                                                   max_iter=max_iter)
@@ -667,7 +711,8 @@ class SimpleMixTrailMaster(GenericMasterBase):
                                           ground_mask=ground_mask,
                                           debug_mode=debug_mode,
                                           base_info=self.base_info,
-                                          sample_img=self.sample_img)
+                                          sample_img=self.sample_img,
+                                          progressbar=progressbar)
 
         mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
         mask = np.repeat(mask[..., None], 3, axis=-1)
@@ -680,7 +725,8 @@ class SimpleMixTrailMaster(GenericMasterBase):
         logger.info(f"fix ratio = {ratio:.4f}")
         merged_img = reg_max_img * float_mask + (
             1 - float_mask) * mean_result_dict.img
-        merged_img = self.dtype_recorder.rescale(merged_img)
+        # 不需要处理放缩，仅需要转换格式
+        merged_img = np.array(merged_img, dtype = self.dtype_recorder.output_dtype)
         return EasyDict(img=merged_img,
                         exif=self.base_info.exif,
                         colorprofile=self.base_info.colorprofile)

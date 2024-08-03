@@ -13,11 +13,15 @@ class BaseMerger(metaclass=ABCMeta):
     def __init__(self, **kwargs) -> None:
         self.merged_image = None
 
-    @abstractmethod
     def merge(self, new_img):
         if self.merged_image is None:
             self.merged_image = new_img
-        # or do nothing
+        else:
+            self.merged_image = self._merge(self.merged_image, new_img)
+
+    @abstractmethod
+    def _merge(self, base_img, new_img):
+        raise NotImplementedError
 
     @abstractmethod
     def post_process(self, img: np.ndarray, index: Optional[int] = None):
@@ -36,11 +40,8 @@ class MaxMerger(BaseMerger):
         self.weight_list = weight_list
         super().__init__(**kwargs)
 
-    def merge(self, new_img) -> None:
-        if self.merged_image is None:
-            self.merged_image = new_img
-        else:
-            self.merged_image = np.max([self.merged_image, new_img], axis=0)
+    def _merge(self, base_img, new_img):
+        return np.max([base_img, new_img], axis=0)
 
     def post_process(self,
                      img: np.ndarray,
@@ -62,11 +63,8 @@ class MinMerger(BaseMerger):
         self.weight_list = weight_list
         super().__init__(**kwargs)
 
-    def merge(self, new_img) -> None:
-        if self.merged_image is None:
-            self.merged_image = new_img
-        else:
-            self.merged_image = np.min([self.merged_image, new_img], axis=0)
+    def _merge(self, base_img, new_img):
+        return np.min([base_img, new_img], axis=0)
 
     def post_process(self,
                      img: np.ndarray,
@@ -82,11 +80,8 @@ class MinMerger(BaseMerger):
 
 class MeanMerger(BaseMerger):
 
-    def merge(self, new_img: FastGaussianParam):
-        if self.merged_image is None:
-            self.merged_image = new_img
-        else:
-            self.merged_image += new_img
+    def _merge(self, base_img, new_img: FastGaussianParam):
+        return base_img + new_img
 
     def post_process(self, img: np.ndarray, index: Optional[int] = None):
         return FastGaussianParam(img)
@@ -98,7 +93,7 @@ class MeanMerger(BaseMerger):
             self.merged_image.upscale()
 
 
-class SigmaClippingMerger(BaseMerger):
+class SigmaClippingMerger(MeanMerger):
     """带有N*Sigma拒绝平均值叠加Merger。
 
     该进程叠加的是被拒绝的叠加结果。取值和输出时需要转换。
@@ -119,15 +114,9 @@ class SigmaClippingMerger(BaseMerger):
                                     dtype=rej_input_dtype)
         super().__init__()
 
-    def merge(self, new_img: FastGaussianParam) -> None:
-        if self.merged_image is None:
-            self.merged_image = new_img
-        else:
-            new_img.mask((new_img.mu > self.rej_high_img)
-                         | (new_img.mu < self.rej_low_img))
-            self.merged_image += new_img
-
     def post_process(self,
                      img: np.ndarray,
                      index: Optional[int] = None) -> FastGaussianParam:
-        return FastGaussianParam(img)
+        new_img = FastGaussianParam(img)
+        new_img.mask((img > self.rej_high_img) | (img < self.rej_low_img))
+        return new_img

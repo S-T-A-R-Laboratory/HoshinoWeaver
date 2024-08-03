@@ -4,16 +4,19 @@ imgfio contains functions and classes about image file i/o.
 imgfio包含了与图像IO相关的函数和类。
 """
 
+import queue
 import threading
+from typing import Optional, Union
+
 import cv2
 import numpy as np
 import pyexiv2
 import rawpy
-import queue
 from easydict import EasyDict
-from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE, is_support_format, time_cost_warpper
-from typing import Optional
 from loguru import logger
+
+from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE,
+                    is_support_format, time_cost_warpper)
 
 
 class ImgSeriesLoader(object):
@@ -162,7 +165,7 @@ def save_img(filename: str,
              img: np.ndarray,
              png_compressing: int = 0,
              jpg_quality: int = 90,
-             exif: bytes = b"",
+             exif: Union[dict, EasyDict, None] = None,
              colorprofile: bytes = b""):
     """保存单个图像到指定路径下，并添加exif信息和色彩配置文件。
     
@@ -178,7 +181,6 @@ def save_img(filename: str,
     Raises:
         NameError: 要求输出不支持的文件格式时出错。
     """
-    # TODO: 为无exif/无colorprofile的场景增加兜底逻辑
     # TODO: 增加colorprofile转换的情况
     logger.info(f"Saving image to {filename} ...")
     suffix = filename.upper().split(".")[-1]
@@ -204,11 +206,10 @@ def save_img(filename: str,
     assert status, "imencode failed."
 
     with pyexiv2.ImageData(buf.tobytes()) as image_data:
-        image_data.modify_icc(colorprofile)
-
-        # TODO: 增加exif的写入
-        #for key, value in exif_data.items():
-        #    image_data[key] = pyexiv2.ExifTag(key, value)
+        if colorprofile is not None:
+            image_data.modify_icc(colorprofile)
+        if exif is not None:
+            image_data.modify_exif(exif)
 
         # 写入文件
         with open(filename, mode='wb') as f:

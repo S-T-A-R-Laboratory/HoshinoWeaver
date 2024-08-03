@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+from ezlib.progressbar import QueueProgressbar
 from ezlib.trailstacker import SigmaClippingMaster, StarTrailMaster, MeanStackMaster, SimpleMixTrailMaster, MinStackMaster
 from ezlib.imgfio import save_img
 from loguru import logger
@@ -27,6 +28,7 @@ def launch(img_files: list,
                 output_bits: Optional[int] = None,
                 ground_mask: Optional[str] = None,
                 debug_mode: bool = False,
+                progressbar: Optional[QueueProgressbar] = None,
                 rej_high: float = 3.0,
                 rej_low: float = 3.0,
                 max_iter: int = 5,
@@ -52,6 +54,7 @@ def launch(img_files: list,
             默认与输入图像位深度一致，除非指定了必须为8位深度的输出格式（如jpg）。 Defaults to None.
         ground_mask (Optional[str], optional): 掩模文件路径。建议表示为绝对路径。仅在需要掩模的模式下使用。 Defaults to None.
         debug_mode (bool, optional): 是否在debug级别打印日志. Defaults to False.
+        progressbar (QueueProgressbar, Optional): 進度條實例。如果期望使用GUI或者其他形勢進度條，需要傳入實例。否則，使用默認的命令行進度條。Defaults to None.
         rej_high (float, optional): Sigma裁剪均值的拒绝上界倍率。仅在使用了Sigma裁剪均值的模式下生效。 Defaults to 3.0.
         rej_low (float, optional): Sigma裁剪均值的拒绝下界倍率。仅在使用了Sigma裁剪均值的模式下生效。 Defaults to 3.0.
         max_iter (int, optional): Sigma裁剪均值的最大迭代轮数。 Defaults to 5.
@@ -73,6 +76,7 @@ def launch(img_files: list,
                          output_bits=output_bits,
                          ground_mask=ground_mask,
                          debug_mode=debug_mode,
+                         progressbar=progressbar,
                          rej_high=rej_high,
                          rej_low=rej_low,
                          max_iter=max_iter)
@@ -87,6 +91,7 @@ def launch(img_files: list,
                      colorprofile=res.colorprofile)
             return {"success":True, "message": None}
     except Exception as e:
+        raise e
         return {"success": False, "message": f"程序因为以下原因失败：{e.__repr__()}"}
 
 

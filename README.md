@@ -1,5 +1,7 @@
 # HoshinoWeaver
 
+[![GitHub release](https://img.shields.io/github/release/Designerspr/HoshinoWeaver.svg)](https://github.com/Designerspr/HoshinoWeaver/releases/latest) [![GitHub Release Date](https://img.shields.io/github/release-date/Designerspr/HoshinoWeaver.svg)](https://github.com/Designerspr/HoshinoWeaver/releases/latest) [![license](https://img.shields.io/github/license/Designerspr/HoshinoWeaver)](./LICENSE) [![Github All Releases](https://img.shields.io/github/downloads/Designerspr/HoshinoWeaver/total.svg)](https://github.com/Designerspr/HoshinoWeaver/releases)
+
 HoshinoWeaver is a Python-based software project designed for image stacking, specifically tailored for creating star trail images from extensive amount of photos. It is also suitable for a wide range of slow shutter simulation scenes.
 
 HoshinoWeaver 是一款基于 Python 的图像堆栈软件项目，适用于从大量照片中创建星轨图像。它也适用于各种模拟慢门场景。
@@ -85,15 +87,16 @@ python launcher.py /path/to/your/work_dir --mode mean --output "img.tif"
 ### HoshinoWeaver已实现
 
 1. 叠加算法
-  * 常规最大值叠加/平均值叠加✅
-  * 带渐入渐出的最大值叠加✅
+  * 常规最大值叠加/平均值叠加
+  * 带渐入渐出的最大值叠加
   * 支持简单蒙版
   * 带排异的平均值叠加
-  * 多进程读入和叠加✅
+  * 多进程读入和叠加
 
 2. 输入和输出数据支持
-  * 颜色配置文件读入与嵌入✅
+  * 颜色配置文件读入与嵌入
   * 更高位数的叠加工作流和输出
+  * 插入/合理的修改EXIF信息
 
 3. 实验性功能
   * 基于亮度估算的混合叠加星轨算法
@@ -127,7 +130,6 @@ python launcher.py /path/to/your/work_dir --mode mean --output "img.tif"
 3. 输入和输出数据支持
   * 支持视频抽帧叠加
   * 适当的连接断掉的星轨
-  * 插入/合理的修改EXIF信息
   * 更好支持各种数据类型（Raw的XMP等）
 
 4. 实验性功能

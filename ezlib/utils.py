@@ -50,6 +50,11 @@ NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
 RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng"]
 SUPPORT_BITS = [8, 16]
 
+VERSION = "0.3.0-beta"
+
+SOFTWARE_NAME = f"HoshinoWeaver {VERSION}"
+
+
 def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
     """A simple implementation of dtype_sclaer.
     TODO: update in the future.
@@ -115,7 +120,8 @@ def time_cost_warpper(func: Callable) -> Callable:
     def do_func(*args, **kwargs):
         t0 = time.time()
         res = func(*args, **kwargs)
-        logger.info(f"{func.__name__} Time Cost: {(time.time()-t0):.2f}s.")
+        logger.info(
+            f"{func.__name__} Time Cost: {(time.time()-t0):.2f}s.")
         return res
 
     return do_func
@@ -278,7 +284,7 @@ class FastGaussianParam(object):
         assert mask_pos.dtype == np.dtype("bool"), "Invalid mask!"
         self.sum_mu *= mask_pos
         self.square_sum *= mask_pos
-        self.n = mask_pos
+        self.n = np.array(mask_pos, dtype=np.uint16)
 
 
 def test_GaussianParam():
