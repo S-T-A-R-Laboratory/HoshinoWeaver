@@ -67,6 +67,10 @@ def launch(img_files: list,
     """
     try:
         assert mode in modestr2func, f" Got unsupport mode `{mode}`. Should be selected from {modestr2func.keys()}"
+        # 前置检查：如果--output-bits选择非8位的情况下输出jpg，需要校正并警告。
+        if output_fname is not None and (output_fname.lower().split(".")[-1] in ["jpg","jpeg"] and output_bits!=8):
+            logger.warning("JPEG only supports 8-bit image output. output bits are forced fixing to 8.")
+            output_bits = 8
         runner = modestr2func[mode]()
         res = runner.run(fname_list=img_files,
                          fin_ratio=fin_ratio,
@@ -82,7 +86,7 @@ def launch(img_files: list,
                          max_iter=max_iter)
         if res.img is None:
             return {"success": False, "message": "空结果"}
-        else:
+        elif output_fname is not None:
             save_img(output_fname,
                      res.img,
                      png_compressing=png_compressing,
@@ -115,8 +119,7 @@ if __name__ == "__main__":
     arg_parser.add_argument("--png-compressing", type=int, default=0)
     arg_parser.add_argument("--output",
                             type=str,
-                            required=False,
-                            default="default.jpg")
+                            required=False)
     arg_parser.add_argument("--output-bits",
                             type=int,
                             choices=[8, 16, 32],

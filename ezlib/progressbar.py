@@ -6,7 +6,7 @@ from typing import Optional
 FAIL_FLAG = 0
 SUCC_FLAG = 1
 END_FLAG = -1
-
+DEFAULT_TIMEOUT = 60
 
 class QueueProgressbar(object):
     """ Master叠加进程使用的进程基类。Queue启动独立的线程管理进度条，并通过进程共享的队列更新当前进度。
@@ -53,9 +53,9 @@ class QueueProgressbar(object):
         try:
             status = None
             while (self.progress < self.tot_num and not self.stopped):
-                # TODO: timeout硬编码为60？
                 try:
-                    status = self.queue.get(timeout=60)
+                    # 60s兜底
+                    status = self.queue.get(timeout=DEFAULT_TIMEOUT)
                 except KeyboardInterrupt as e:
                     pass
                 if status == END_FLAG:

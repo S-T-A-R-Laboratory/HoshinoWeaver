@@ -118,5 +118,16 @@ class SigmaClippingMerger(MeanMerger):
                      img: np.ndarray,
                      index: Optional[int] = None) -> FastGaussianParam:
         new_img = FastGaussianParam(img)
-        new_img.mask((img > self.rej_high_img) | (img < self.rej_low_img))
+        new_img.mask((img >= self.rej_high_img) | (img <= self.rej_low_img))
         return new_img
+
+class CacheMerger(BaseMerger):
+    """用于创建缓存的Merger。保存所有原始数据
+
+    Args:
+        BaseMerger (_type_): _description_
+    """
+    def post_process(self,
+                     img: np.ndarray,
+                     index: Optional[int] = None):
+        return super().post_process(img, index)

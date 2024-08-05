@@ -1,6 +1,7 @@
 import multiprocessing as mp
 import sys
 from abc import ABCMeta, abstractclassmethod
+import threading
 from typing import Any, Optional, Union
 import fractions
 
@@ -239,16 +240,43 @@ class GenericMasterBase(object):
             "detail", "first_only"
         ], "info_load_mode only supports `detail` and `first-only`."
         # 直接继承的情况下不进行初始化
+        self.exif_thread = None
         self.base_info: Any = base_info
         self.sample_img = sample_img
         if self.base_info is not None and self.sample_img is not None:
             return
         self.sample_img = load_sample_img(fname_list)
-        # 获取EXIF信息和样本图像
+        # 兜底：先使用第一张图像获取EXIF信息。可能存在问题
+        self.base_info = load_info(fname_list[0])
+
         if info_load_mode == "detail":
             # detail模式下，会从所有文件中读取EXIF信息，并加和曝光时间。
-            # 同时会读取EXIF中的宽高信息。如果存在不匹配宽高，抛出警告（可以被ignore？）
-            time_cumsum = fractions.Fraction(0)
+            # TODO: 目前采用线程方式。期望更优雅的实现
+            self.exif_thread = threading.Thread(
+                target=self.cumsum_exposure_time, args=(fname_list, ))
+            self.exif_thread.start()
+        else:
+            # 直接使用张数估算总曝光时间
+            self.base_info.exif.update(
+                "Exif.Photo.ExposureTime", "/".join(
+                    map(str, (fractions.Fraction(
+                        self.base_info.exif.get("Exif.Photo.ExposureTime")) *
+                              len(fname_list)).as_integer_ratio())))
+            logger.info(
+                f"Estimated total exposure time = {self.base_info.exif.get('Exif.Photo.ExposureTime')}."
+            )
+        logger.info(
+            f"ICC_profile = {get_color_profile(self.base_info.colorprofile)}")
+        logger.info(f"EXIF TAG num = {len(self.base_info.exif)}")
+        logger.debug(f"Raw basic infomation={self.base_info}")
+        # 设置软体名称
+        self.base_info.exif["Exif.Image.Software"] = SOFTWARE_NAME
+
+    def cumsum_exposure_time(self, fname_list):
+        # 同时会读取EXIF中的宽高信息。如果存在不匹配宽高，抛出警告（可以被ignore？）
+        logger.info("Read EXIF ExposureTime from all files...")
+        time_cumsum = fractions.Fraction(0)
+        try:
             for fname in fname_list:
                 cur_info: Any = load_info(fname)
                 time = cur_info.exif.get("Exif.Photo.ExposureTime")
@@ -259,23 +287,13 @@ class GenericMasterBase(object):
             if self.base_info.exif.get("Exif.Photo.ExposureTime") is not None:
                 self.base_info.exif["Exif.Photo.ExposureTime"] = "/".join(
                     map(str, time_cumsum.as_integer_ratio()))
-        else:
-            # 直接使用张数估算总曝光时间
-            self.base_info = load_info(fname_list[0])
-            self.base_info.exif.update(
-                "Exif.Photo.ExposureTime", "/".join(
-                    map(str, (fractions.Fraction(
-                        self.base_info.exif.get("Exif.Photo.ExposureTime")) *
-                              len(fname_list)).as_integer_ratio())))
-        logger.info(
-            f"Calculated total exposure time = {self.base_info.exif.get('Exif.Photo.ExposureTime')}."
-        )
-        logger.info(
-            f"ICC_profile = {get_color_profile(self.base_info.colorprofile)}")
-        logger.info(f"EXIF TAG num = {len(self.base_info.exif)}")
-        logger.debug(f"Raw basic infomation={self.base_info}")
-        # 设置软体名称
-        self.base_info.exif["Exif.Image.Software"] = SOFTWARE_NAME
+            logger.info(
+                f"Calculated total exposure time = {self.base_info.exif.get('Exif.Photo.ExposureTime')}."
+            )
+        except Exception as e:
+            logger.error(
+                f"{e.__repr__()} encoutered when reading exif. ExposureTime will not be modified."
+            )
 
     def init_dtype_recorder(self,
                             sample_img: np.ndarray,
@@ -435,6 +453,8 @@ class SimpleMasterTemplate(GenericMasterBase):
             # 结束进度条
             pool.join()
             progressbar.stop()
+            if self.exif_thread is not None:
+                self.exif_thread.join()
             result_dict = self.construct_ret()
 
         except (KeyboardInterrupt, Exception) as e:
@@ -570,6 +590,7 @@ class SigmaClippingMaster(GenericMasterBase):
             rej_high: float = 3.0,
             rej_low: float = 3.0,
             max_iter: int = 5,
+            earlystop_prec: float = 100,
             **kwargs):
         assert max_iter > 0, "max_iter must >0 !"
         self.init_base_param(fname_list)
@@ -587,25 +608,25 @@ class SigmaClippingMaster(GenericMasterBase):
                                  int_weight=False,
                                  fin_ratio=None,
                                  fout_ratio=None)
-
+        # 
         base_mean_stacker = MeanStackMaster()
         base_result_dict = base_mean_stacker.run(fname_list=fname_list,
                                                  fin_ratio=fin_ratio,
                                                  fout_ratio=fout_ratio,
                                                  resize=resize,
                                                  int_weight=int_weight,
-                                                 output_bits=None,
+                                                 output_bits=output_bits,
                                                  ground_mask=ground_mask,
                                                  debug_mode=debug_mode,
                                                  base_info=self.base_info,
                                                  sample_img=self.sample_img,
                                                  progressbar=progressbar)
-        single_sigmaclipping = SingleSigmaClippingMaster()
         cur_iter = 0
         last_clip_num = base_result_dict.n
         iter_result = base_result_dict
         while cur_iter < max_iter:
             cur_iter += 1
+            single_sigmaclipping = SingleSigmaClippingMaster()
             logger.info(f"SigmaClipping iter#{cur_iter}...")
             iter_result = single_sigmaclipping.run(
                 fname_list=fname_list,
@@ -613,7 +634,7 @@ class SigmaClippingMaster(GenericMasterBase):
                 fout_ratio=fout_ratio,
                 resize=resize,
                 int_weight=int_weight,
-                output_bits=None,
+                output_bits=output_bits,
                 ground_mask=ground_mask,
                 debug_mode=debug_mode,
                 base_info=self.base_info,
@@ -624,9 +645,12 @@ class SigmaClippingMaster(GenericMasterBase):
                 rej_input_dtype=self.dtype_recorder.input_dtype,
                 rej_high=rej_high,
                 rej_low=rej_low)
-            if ((last_clip_num - iter_result.n).all() == 0):
+            cur_diff_num = np.sum(last_clip_num == iter_result.n)
+            cur_tot_num = last_clip_num.size
+            if (cur_diff_num == cur_tot_num):
                 logger.info("Early convergence detected.")
                 break
+            logger.info(f"Sigmaclipping convergence progress: {cur_diff_num}/{cur_tot_num}({(cur_diff_num/cur_tot_num*100):.2f}%)")
             last_clip_num = iter_result.n
         rescaled_main_img = self.dtype_recorder.rescale(iter_result.img)
         rescaled_var_img = self.dtype_recorder.rescale(iter_result.var,
@@ -726,7 +750,8 @@ class SimpleMixTrailMaster(GenericMasterBase):
         merged_img = reg_max_img * float_mask + (
             1 - float_mask) * mean_result_dict.img
         # 不需要处理放缩，仅需要转换格式
-        merged_img = np.array(merged_img, dtype = self.dtype_recorder.output_dtype)
+        merged_img = np.array(merged_img,
+                              dtype=self.dtype_recorder.output_dtype)
         return EasyDict(img=merged_img,
                         exif=self.base_info.exif,
                         colorprofile=self.base_info.colorprofile)

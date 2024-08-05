@@ -111,6 +111,7 @@ def load_img(fname: str,
                 We do not guarantee the stability of EXIF extraction and the output image quality."
                            )
         if (suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX):
+            # TODO: not sure if uint32/float is available.
             img = cv2.imdecode(np.fromfile(fname, dtype=np.uint16),
                                cv2.IMREAD_UNCHANGED)
         else:
@@ -181,7 +182,6 @@ def save_img(filename: str,
     Raises:
         NameError: 要求输出不支持的文件格式时出错。
     """
-    # TODO: 增加colorprofile转换的情况
     logger.info(f"Saving image to {filename} ...")
     suffix = filename.upper().split(".")[-1]
 
@@ -190,10 +190,8 @@ def save_img(filename: str,
         ext = ".png"
         params = [int(cv2.IMWRITE_PNG_COMPRESSION), png_compressing]
     elif suffix in ["JPG", "JPEG"]:
-        # 导出 jpg 时，位深度强制转换为8
-        # TODO: 目前仅支持从uint16降为uint8。部分情况下可能出现问题
-        if img.dtype == np.uint16:
-            img = np.array(img // 255, dtype=np.uint8)
+        # 导出 jpg 时，位深度强制校验为8
+        assert img.dtype == np.uint8, "Invalid: JPEG only supports 8-bit image!"
         ext = ".jpg"
         params = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
     elif suffix in ["TIF", "TIFF"]:
