@@ -1,4 +1,3 @@
-import inspect
 import multiprocessing as mp
 import time
 from math import floor, log, sqrt
@@ -123,11 +122,10 @@ def time_cost_warpper(func: Callable) -> Callable:
         t0 = time.time()
         res = func(*args, **kwargs)
         cls_name = ""
-        logger.info(f"{func.__name__} is {inspect.ismethod(func)} a method")
-        if inspect.ismethod(func):
+        if hasattr(args[0],func.__name__):
             cls_name = args[0].__class__.__name__ + "."
         logger.info(
-                f"{cls_name}{func.__name__} Time Cost: {(time.time()-t0):.2f}s.")
+                f"{cls_name}{func.__name__} time cost: {(time.time()-t0):.2f}s.")
         return res
 
     return do_func

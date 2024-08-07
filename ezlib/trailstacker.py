@@ -87,6 +87,7 @@ def run_merger_subprocess(proc_id: int,
     Args:
         object (_type_): _description_
     """
+    proc_name = f"{merger_type.__name__}Subprocessor#{proc_id}"
     # reset logger level
     logger.remove()
     if debug:
@@ -109,7 +110,7 @@ def run_merger_subprocess(proc_id: int,
             raw_img = img_loader.pop()
             if raw_img is None:
                 # TODO: 添加支持,对于可能预期外的叠加中间（读入失败，尺寸不匹配等）抛出额外错误
-                logger.warning("Skip the failed frame.")
+                logger.warning(f"{proc_name} Skip the {i+1}-th failed frame.")
                 failed_num += 1
                 if progressbar:
                     progressbar.put(FAIL_FLAG)
@@ -121,7 +122,7 @@ def run_merger_subprocess(proc_id: int,
             stacked_num += 1
     except (KeyboardInterrupt, Exception) as e:
         logger.error(
-            f"Fatal error:{e.__repr__()}. {merger_type.__name__}Subprocessor#{proc_id} will terminated."
+            f"Fatal error:{e.__repr__()}. {proc_name} will be terminated."
             + "The final result cam be unexpected.")
         if progressbar:
             progressbar.put(END_FLAG)
@@ -132,7 +133,7 @@ def run_merger_subprocess(proc_id: int,
         logger.warning(f"No valid frames are loaded!")
         return None
     logger.info(
-        f"{merger_type.__name__}Subprocessor#{proc_id} successfully stacked {stacked_num} "
+        f"{proc_name} successfully stacked {stacked_num} "
         + f"images from {tot_num} images. ({failed_num} fail(s)).")
     return merger.merged_image
 
@@ -445,6 +446,8 @@ class SimpleMasterTemplate(GenericMasterBase):
             self.main_merger.merged_image = None
             for i in range(self.mp_num):
                 cur_img = results.get()
+                if cur_img is None:
+                    continue
                 self.main_merger.merge(cur_img)
                 # A temp fix for datascaleup of MeanStacker.
                 # If this is used for main_merger that do not have upscale method,

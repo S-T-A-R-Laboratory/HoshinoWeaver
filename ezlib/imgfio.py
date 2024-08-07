@@ -60,6 +60,8 @@ class ImgSeriesLoader(object):
         self.stopped = True
 
     def pop(self) -> Optional[np.ndarray]:
+        if self.stopped and self.buffer.empty():
+            return None
         return self.buffer.get()
 
     def loop(self):
@@ -71,7 +73,7 @@ class ImgSeriesLoader(object):
                     load_img(imgname, dtype=self.dtype, resize=self.resize))
                 self.prog += 1
         except Exception as e:
-            raise e
+            logger.error(f"Fatal error:{e.__repr__()}. {self.__class__.__name__} will be terminated.")
         finally:
             logger.debug(f"{self.__class__.__name__} has successfully stopped.")
             self.stop()
