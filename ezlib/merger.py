@@ -102,24 +102,32 @@ class SigmaClippingMerger(MeanMerger):
         BaseMergerSubprocess (_type_): _description_
     """
 
-    def __init__(self, ref_img: FastGaussianParam, rej_high: float,
-                 rej_low: float, rej_input_dtype: np.dtype, **kwargs) -> None:
+    def __init__(self,
+                 ref_img: FastGaussianParam,
+                 rej_high: float,
+                 rej_low: float,
+                 **kwargs) -> None:
+        # TODO
+        # 迭代加速（对已收敛的区域取mask）？
         ref_mu = ref_img.mu
-        ref_var = np.sqrt(ref_img.var)
-        self.rej_high_img = np.array((ref_mu + ref_var * rej_high).clip(
-            min=0, max=DTYPE_MAX_VALUE[rej_input_dtype]),
-                                     dtype=rej_input_dtype)
-        self.rej_low_img = np.array((ref_var - ref_var * rej_low).clip(
-            min=0, max=DTYPE_MAX_VALUE[rej_input_dtype]),
-                                    dtype=rej_input_dtype)
+        ref_std = np.sqrt(ref_img.var)
+        rej_dtype = ref_img.sum_mu.dtype
+        self.rej_high_img = np.array(
+            np.floor(ref_mu + ref_std * rej_high).clip(
+                min=0, max=DTYPE_MAX_VALUE[rej_dtype]),
+            dtype=rej_dtype)
+        self.rej_low_img = np.array(np.ceil(ref_mu - ref_std * rej_low).clip(
+            min=0, max=DTYPE_MAX_VALUE[rej_dtype]),
+                                    dtype=rej_dtype)
         super().__init__()
 
     def post_process(self,
                      img: np.ndarray,
                      index: Optional[int] = None) -> FastGaussianParam:
         new_img = FastGaussianParam(img)
-        new_img.mask((img >= self.rej_high_img) | (img <= self.rej_low_img))
+        new_img.mask((img > self.rej_high_img) | (img < self.rej_low_img))
         return new_img
+
 
 class CacheMerger(BaseMerger):
     """用于创建缓存的Merger。保存所有原始数据
@@ -127,7 +135,6 @@ class CacheMerger(BaseMerger):
     Args:
         BaseMerger (_type_): _description_
     """
-    def post_process(self,
-                     img: np.ndarray,
-                     index: Optional[int] = None):
+
+    def post_process(self, img: np.ndarray, index: Optional[int] = None):
         return super().post_process(img, index)

@@ -1,3 +1,4 @@
+import inspect
 import multiprocessing as mp
 import time
 from math import floor, log, sqrt
@@ -49,6 +50,7 @@ COMMON_SUFFIX = ["tiff", "tif", "jpg", "png", "jpeg"]
 NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
 RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng"]
 SUPPORT_BITS = [8, 16]
+MAGIC_NUM = 3
 
 VERSION = "0.3.0-beta"
 
@@ -120,14 +122,18 @@ def time_cost_warpper(func: Callable) -> Callable:
     def do_func(*args, **kwargs):
         t0 = time.time()
         res = func(*args, **kwargs)
+        cls_name = ""
+        logger.info(f"{func.__name__} is {inspect.ismethod(func)} a method")
+        if inspect.ismethod(func):
+            cls_name = args[0].__class__.__name__ + "."
         logger.info(
-            f"{func.__name__} Time Cost: {(time.time()-t0):.2f}s.")
+                f"{cls_name}{func.__name__} Time Cost: {(time.time()-t0):.2f}s.")
         return res
 
     return do_func
 
 
-def get_mp_num(tot_num: int) -> tuple[int, float]:
+def get_mp_num(tot_num: int, prefer_num: Optional[int] = None) -> tuple[int, float]:
     """
     设置处理器使用数目，在不超出处理器数目限制的情况下，尽可能使每个处理器叠加sqrt(N)张图像
     推导：n 图像分 m 组叠加，时间开销近似为 [n/m]+m ；min([n/m]+m)-> m取得sqrt(N)
@@ -135,6 +141,8 @@ def get_mp_num(tot_num: int) -> tuple[int, float]:
     # TODO: 根据内存和图像规格增设限制
     psutil.virtual_memory().available
     mp_num = min(floor(sqrt(tot_num)), mp.cpu_count())
+    if prefer_num:
+        mp_num = min(mp_num, prefer_num)
     sub_length = tot_num / mp_num
     return mp_num, sub_length
 
@@ -247,7 +255,6 @@ class FastGaussianParam(object):
         sum_mu = np.array(self.sum_mu, dtype=self.square_sum.dtype)
         return (self.square_sum - np.square(sum_mu) / self.n) / (self.n -
                                                                  self.ddof)
-
     def upscale(self):
         upscaled_sum_mu_dtype = self.get_upscale_dtype_as(self.sum_mu)
         upscaled_sum_sq_dtype = self.get_upscale_dtype_as(self.square_sum)
@@ -260,6 +267,17 @@ class FastGaussianParam(object):
         """
         return DTYPE_UPSCALE_MAP[
             ref_array.dtype] if ref_array.dtype in DTYPE_UPSCALE_MAP else float
+
+    def apply_zero_var(self, full_img):
+        """修复n为0的情况。应用修复。
+        
+        TODO: 需要长期观测该逻辑。
+        """
+        zero_pos = (self.n == 0)
+        logger.info(f"Zero-mask {np.where(zero_pos)[0].size} pixels.")
+        self.n[zero_pos] = full_img.n[zero_pos]
+        self.sum_mu[zero_pos] = full_img.sum_mu[zero_pos]
+        self.square_sum[zero_pos] = full_img.square_sum[zero_pos]
 
     def __add__(self, g2):
         g1 = self

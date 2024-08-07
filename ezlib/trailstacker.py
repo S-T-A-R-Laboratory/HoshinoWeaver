@@ -224,10 +224,11 @@ class GenericMasterBase(object):
         # 该处的int_weight_switch特指255权重。
         self.int_weight_switch = False
 
-    def init_base_param(self, fname_list, **kwargs):
+    def init_base_param(self, fname_list, num_processor, **kwargs):
         self.fname_list = fname_list
         self.tot_length = len(fname_list)
-        self.mp_num, self.sub_length = get_mp_num(self.tot_length)
+        self.mp_num, self.sub_length = get_mp_num(self.tot_length,
+                                                  prefer_num=num_processor)
 
     @time_cost_warpper
     def init_base_and_exif(self,
@@ -358,6 +359,7 @@ class SimpleMasterTemplate(GenericMasterBase):
             base_info: Optional[EasyDict] = None,
             sample_img: Optional[np.ndarray] = None,
             progressbar: Optional[QueueProgressbar] = None,
+            num_processor: Optional[int] = None,
             **kwargs) -> Optional[EasyDict]:
         """星轨最大值叠加的入口函数。
 
@@ -372,7 +374,9 @@ class SimpleMasterTemplate(GenericMasterBase):
         Returns:
             Optional[EasyDict]: 叠加完成的图像及其exif，颜色配置等信息。如果无法得到图像，返回None。
         """
-        self.init_base_param(fname_list=fname_list, **kwargs)
+        self.init_base_param(fname_list=fname_list,
+                             num_processor=num_processor,
+                             **kwargs)
         has_scaled = False
         pool = mp.Pool(processes=self.mp_num)
         results = mp.Manager().Queue()
@@ -538,6 +542,7 @@ class SingleSigmaClippingMaster(MeanStackMaster):
     # It is not allowed to rescale the ref img, actually.
     def construct_ret(self) -> EasyDict:
         main_img_param = self.full_ref_img - self.main_merger.merged_image
+        main_img_param.apply_zero_var(self.full_ref_img)
         rescaled_main_img = self.dtype_recorder.rescale(main_img_param.mu)
         rescaled_var_img = self.dtype_recorder.rescale(main_img_param.var,
                                                        power=2)
@@ -549,10 +554,11 @@ class SingleSigmaClippingMaster(MeanStackMaster):
                         colorprofile=self.base_info.colorprofile)
 
     def init_base_param(self, fname_list: list[str],
+                        num_processor: Optional[int],
                         **kwargs) -> Optional[EasyDict]:
         self.ref_img: FastGaussianParam = kwargs["ref_img"]
         self.full_ref_img: FastGaussianParam = kwargs["full_ref_img"]
-        super().init_base_param(fname_list)
+        super().init_base_param(fname_list, num_processor)
 
 
 class SigmaClippingMaster(GenericMasterBase):
@@ -587,13 +593,14 @@ class SigmaClippingMaster(GenericMasterBase):
             base_info: Optional[EasyDict] = None,
             sample_img: Optional[np.ndarray] = None,
             progressbar: Optional[QueueProgressbar] = None,
+            num_processor: Optional[int] = None,
             rej_high: float = 3.0,
             rej_low: float = 3.0,
             max_iter: int = 5,
             earlystop_prec: float = 100,
             **kwargs):
         assert max_iter > 0, "max_iter must >0 !"
-        self.init_base_param(fname_list)
+        self.init_base_param(fname_list, num_processor)
         self.init_base_and_exif(fname_list,
                                 base_info=base_info,
                                 sample_img=sample_img)
@@ -608,7 +615,7 @@ class SigmaClippingMaster(GenericMasterBase):
                                  int_weight=False,
                                  fin_ratio=None,
                                  fout_ratio=None)
-        # 
+        #
         base_mean_stacker = MeanStackMaster()
         base_result_dict = base_mean_stacker.run(fname_list=fname_list,
                                                  fin_ratio=fin_ratio,
@@ -620,7 +627,8 @@ class SigmaClippingMaster(GenericMasterBase):
                                                  debug_mode=debug_mode,
                                                  base_info=self.base_info,
                                                  sample_img=self.sample_img,
-                                                 progressbar=progressbar)
+                                                 progressbar=progressbar,
+                                                 num_processor=num_processor)
         cur_iter = 0
         last_clip_num = base_result_dict.n
         iter_result = base_result_dict
@@ -640,9 +648,9 @@ class SigmaClippingMaster(GenericMasterBase):
                 base_info=self.base_info,
                 sample_img=self.sample_img,
                 progressbar=progressbar,
+                num_processor=num_processor,
                 full_ref_img=base_result_dict.raw,
                 ref_img=iter_result.raw,
-                rej_input_dtype=self.dtype_recorder.input_dtype,
                 rej_high=rej_high,
                 rej_low=rej_low)
             cur_diff_num = np.sum(last_clip_num == iter_result.n)
@@ -650,13 +658,15 @@ class SigmaClippingMaster(GenericMasterBase):
             if (cur_diff_num == cur_tot_num):
                 logger.info("Early convergence detected.")
                 break
-            logger.info(f"Sigmaclipping convergence progress: {cur_diff_num}/{cur_tot_num}({(cur_diff_num/cur_tot_num*100):.2f}%)")
+            logger.info(
+                f"Sigmaclipping convergence progress: {cur_diff_num}/{cur_tot_num}({(cur_diff_num/cur_tot_num*100):.2f}%)"
+            )
             last_clip_num = iter_result.n
-        rescaled_main_img = self.dtype_recorder.rescale(iter_result.img)
-        rescaled_var_img = self.dtype_recorder.rescale(iter_result.var,
-                                                       power=2)
-        return EasyDict(img=rescaled_main_img,
-                        var=rescaled_var_img,
+        #rescaled_main_img = self.dtype_recorder.rescale(iter_result.img)
+        #rescaled_var_img = self.dtype_recorder.rescale(iter_result.var,
+        #                                               power=2)
+        return EasyDict(img=iter_result.img,
+                        var=iter_result.var,
                         raw=iter_result,
                         n=iter_result.n,
                         exif=self.base_info.exif,
@@ -686,12 +696,13 @@ class SimpleMixTrailMaster(GenericMasterBase):
             base_info: Optional[EasyDict] = None,
             sample_img: Optional[np.ndarray] = None,
             progressbar: Optional[QueueProgressbar] = None,
+            num_processor: Optional[int] = None,
             rej_high: float = 3.0,
             rej_low: float = 3.0,
             max_iter: int = 5,
             **kwargs):
         assert max_iter > 0, "max_iter must >0 !"
-        self.init_base_param(fname_list)
+        self.init_base_param(fname_list, num_processor)
         self.init_base_and_exif(fname_list,
                                 base_info=base_info,
                                 sample_img=sample_img)
@@ -722,6 +733,7 @@ class SimpleMixTrailMaster(GenericMasterBase):
                                                   base_info=self.base_info,
                                                   sample_img=self.sample_img,
                                                   progressbar=progressbar,
+                                                  num_processor=num_processor,
                                                   rej_high=rej_high,
                                                   rej_low=rej_low,
                                                   max_iter=max_iter)
@@ -736,7 +748,8 @@ class SimpleMixTrailMaster(GenericMasterBase):
                                           debug_mode=debug_mode,
                                           base_info=self.base_info,
                                           sample_img=self.sample_img,
-                                          progressbar=progressbar)
+                                          progressbar=progressbar,
+                                          num_processor=num_processor)
 
         mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
         mask = np.repeat(mask[..., None], 3, axis=-1)
