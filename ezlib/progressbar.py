@@ -23,7 +23,7 @@ class QueueProgressbar(object):
 
     def __init__(self, tot_num: int = 0, desc: str = "") -> None:
         self.queue = mp.Manager().Queue()
-        self.thread = threading.Thread(target=self.loop, args=())
+        self.thread = threading.Thread(target=self.loop, args=(),daemon=True)
         self.progress = 0
         self.reset(tot_num, desc)
         self.stopped = True

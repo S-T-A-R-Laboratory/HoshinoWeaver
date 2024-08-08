@@ -255,7 +255,7 @@ class GenericMasterBase(object):
             # detail模式下，会从所有文件中读取EXIF信息，并加和曝光时间。
             # TODO: 目前采用线程方式。期望更优雅的实现
             self.exif_thread = threading.Thread(
-                target=self.cumsum_exposure_time, args=(fname_list, ))
+                target=self.cumsum_exposure_time, args=(fname_list, ),daemon=True)
             self.exif_thread.start()
         else:
             # 直接使用张数估算总曝光时间

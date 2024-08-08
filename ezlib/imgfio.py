@@ -47,7 +47,7 @@ class ImgSeriesLoader(object):
         self.stopped = True
         self.prog = 0
         self.tot_num = len(fname_list)
-        self.thread = threading.Thread(target=self.loop, args=())
+        self.thread = threading.Thread(target=self.loop, args=(),daemon=True)
 
     def start(self):
         self.stopped = False
