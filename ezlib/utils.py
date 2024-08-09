@@ -3,6 +3,7 @@ import time
 from math import floor, log, sqrt
 from typing import Callable, Optional, Union
 
+from functools import reduce
 import numpy as np
 import psutil
 from loguru import logger
@@ -22,11 +23,11 @@ BITS2DTYPE = {
 }
 
 DTYPE_REVERSE_MAP = {
-    np.dtype('uint8'): 0,
-    np.dtype('uint16'): 1,
-    np.dtype('uint32'): 2,
-    np.dtype('uint64'): 3,
-    float: 4
+    np.dtype('uint8'): 1,
+    np.dtype('uint16'): 2,
+    np.dtype('uint32'): 4,
+    np.dtype('uint64'): 8,
+    float: 8
 }
 
 # TODO: All these things will be fixed into one obj in the future
@@ -122,25 +123,29 @@ def time_cost_warpper(func: Callable) -> Callable:
         t0 = time.time()
         res = func(*args, **kwargs)
         cls_name = ""
-        if hasattr(args[0],func.__name__):
+        if hasattr(args[0], func.__name__):
             cls_name = args[0].__class__.__name__ + "."
         logger.info(
-                f"{cls_name}{func.__name__} time cost: {(time.time()-t0):.2f}s.")
+            f"{cls_name}{func.__name__} time cost: {(time.time()-t0):.2f}s.")
         return res
 
     return do_func
 
 
-def get_mp_num(tot_num: int, prefer_num: Optional[int] = None) -> tuple[int, float]:
+def get_mp_num(tot_num: int,
+               prefer_num: Optional[int] = None) -> tuple[int, float]:
     """
     设置处理器使用数目，在不超出处理器数目限制的情况下，尽可能使每个处理器叠加sqrt(N)张图像
     推导：n 图像分 m 组叠加，时间开销近似为 [n/m]+m ；min([n/m]+m)-> m取得sqrt(N)
     """
     # TODO: 根据内存和图像规格增设限制
-    psutil.virtual_memory().available
-    mp_num = min(floor(sqrt(tot_num)), mp.cpu_count())
     if prefer_num:
-        mp_num = min(mp_num, prefer_num)
+        mp_num = prefer_num
+    else:
+        psutil.virtual_memory().available
+        cpu_num = mp.cpu_count()
+        cpu_num = cpu_num // 4 + (1 if cpu_num <= 8 else 0)
+        mp_num = min(floor(sqrt(tot_num)), cpu_num)
     sub_length = tot_num / mp_num
     return mp_num, sub_length
 
@@ -253,6 +258,7 @@ class FastGaussianParam(object):
         sum_mu = np.array(self.sum_mu, dtype=self.square_sum.dtype)
         return (self.square_sum - np.square(sum_mu) / self.n) / (self.n -
                                                                  self.ddof)
+
     def upscale(self):
         upscaled_sum_mu_dtype = self.get_upscale_dtype_as(self.sum_mu)
         upscaled_sum_sq_dtype = self.get_upscale_dtype_as(self.square_sum)
@@ -301,6 +307,10 @@ class FastGaussianParam(object):
         self.sum_mu *= mask_pos
         self.square_sum *= mask_pos
         self.n = np.array(mask_pos, dtype=np.uint16)
+
+
+def get_scale_x(time: int, base: int = 256):
+    return sum([base**i for i in range(time + 1)])
 
 
 def test_GaussianParam():

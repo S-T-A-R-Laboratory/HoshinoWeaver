@@ -15,7 +15,7 @@ import rawpy
 from easydict import EasyDict
 from loguru import logger
 
-from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE,
+from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE, get_scale_x,
                     is_support_format, time_cost_warpper)
 
 
@@ -47,7 +47,7 @@ class ImgSeriesLoader(object):
         self.stopped = True
         self.prog = 0
         self.tot_num = len(fname_list)
-        self.thread = threading.Thread(target=self.loop, args=(),daemon=True)
+        self.thread = threading.Thread(target=self.loop, args=(), daemon=True)
 
     def start(self):
         self.stopped = False
@@ -73,9 +73,12 @@ class ImgSeriesLoader(object):
                     load_img(imgname, dtype=self.dtype, resize=self.resize))
                 self.prog += 1
         except Exception as e:
-            logger.error(f"Fatal error:{e.__repr__()}. {self.__class__.__name__} will be terminated.")
+            logger.error(
+                f"Fatal error:{e.__repr__()}. {self.__class__.__name__} will be terminated."
+            )
         finally:
-            logger.debug(f"{self.__class__.__name__} has successfully stopped.")
+            logger.debug(
+                f"{self.__class__.__name__} has successfully stopped.")
             self.stop()
 
 
@@ -123,7 +126,12 @@ def load_img(fname: str,
                     output_bps=16,
                     output_color=rawpy.rawpy.ColorSpace(4))  # type: ignore
         if dtype:
-            img = np.array(img, dtype=dtype)
+            # TODO: 目前属于临时解决方案。以后需要更通用的写法。
+            # 这部分有一些问题。例如，仅有星轨模式会使用整数权重（并在此处上升dtype范围）
+            if dtype == np.dtype("uint8") and img.dtype == np.dtype("uint16"):
+                img = np.array(img // get_scale_x(1), dtype=np.uint8)
+            else:
+                img = np.array(img, dtype=dtype)
         if resize is not None:
             # resize is in shape order (i.e, [h,w])
             # so when using OpenCV resize, it should be reversed.
@@ -206,7 +214,7 @@ def save_img(filename: str,
     assert status, "imencode failed."
 
     with pyexiv2.ImageData(buf.tobytes()) as image_data:
-        if colorprofile is not None:
+        if colorprofile is not None and colorprofile != b"":
             image_data.modify_icc(colorprofile)
         if exif is not None:
             image_data.modify_exif(exif)

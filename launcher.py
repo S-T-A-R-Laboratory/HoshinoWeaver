@@ -114,8 +114,8 @@ if __name__ == "__main__":
                             type=str,
                             help="/path/to/the/mask.file",
                             default=None)
-    arg_parser.add_argument("--fade-in", type=float, default=0.1)
-    arg_parser.add_argument("--fade-out", type=float, default=0.1)
+    arg_parser.add_argument("--fade-in", type=float, default=0)
+    arg_parser.add_argument("--fade-out", type=float, default=0)
     arg_parser.add_argument("--int-weight", action="store_true")
     arg_parser.add_argument("--jpg-quality", type=int, default=90)
     arg_parser.add_argument("--png-compressing", type=int, default=0)
@@ -124,7 +124,7 @@ if __name__ == "__main__":
                             required=False)
     arg_parser.add_argument("--output-bits",
                             type=int,
-                            choices=[8, 16, 32],
+                            choices=[8, 16],
                             help="the bit of output image.")
     arg_parser.add_argument("--resize", type=str, default=None)
     arg_parser.add_argument("--num-processor",

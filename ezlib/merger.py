@@ -102,11 +102,8 @@ class SigmaClippingMerger(MeanMerger):
         BaseMergerSubprocess (_type_): _description_
     """
 
-    def __init__(self,
-                 ref_img: FastGaussianParam,
-                 rej_high: float,
-                 rej_low: float,
-                 **kwargs) -> None:
+    def __init__(self, ref_img: FastGaussianParam, rej_high: float,
+                 rej_low: float, **kwargs) -> None:
         # TODO
         # 迭代加速（对已收敛的区域取mask）？
         ref_mu = ref_img.mu
@@ -136,5 +133,9 @@ class CacheMerger(BaseMerger):
         BaseMerger (_type_): _description_
     """
 
+    def _merge(self, base_img, new_img: np.ndarray):
+        return np.concatenate([base_img, new_img], axis=0)
+
     def post_process(self, img: np.ndarray, index: Optional[int] = None):
-        return super().post_process(img, index)
+        # convert to [1, h, w, c]
+        return img[None, ...]

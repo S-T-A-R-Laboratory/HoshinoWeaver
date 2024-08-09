@@ -18,20 +18,22 @@ from .progressbar import (QueueProgressbar, TqdmProgressbar, SUCC_FLAG,
 from .utils import (BITS2DTYPE, DTYPE_MAX_VALUE, DTYPE_REVERSE_MAP,
                     DTYPE_UPSCALE_MAP, SOFTWARE_NAME, FastGaussianParam,
                     dtype_scaler, error_raiser, get_max_expmean, get_mp_num,
-                    get_resize, time_cost_warpper)
+                    get_resize, get_scale_x, time_cost_warpper)
 
 
-def generate_weight(length: int,
-                    fin: float,
-                    fout: float,
-                    int_weight=False) -> np.ndarray:
+def generate_weight(
+    length: int,
+    fin: float,
+    fout: float,
+    int_weight=False,
+    input_dtype=np.dtype("uint8")) -> np.ndarray:
     """为渐入渐出星轨生成每张图像分配的权重。
 
     Args:
         length (int): 序列长度。
         fin (float): 渐入比例(0-1)。
         fout (float): 渐出比例(0-1)。
-        int_weight (bool, optional): 是否将权重转换为uint8（范围将从0-1映射到0-255）以加速运算。Defaults to False.
+        int_weight (bool, optional): 是否将权重转换为uint8/uint16（范围将从0-1映射到0-256/0-65536）以加速运算。Defaults to False.
 
     Returns:
         list[float,int]: 权重序列
@@ -40,6 +42,12 @@ def generate_weight(length: int,
     in_len = int(length * fin)
     out_len = int(length * fout)
     ret_weight = np.ones((length, ), dtype=np.float16)
+    multi_base = get_scale_x({
+        np.dtype("uint8"): 1,
+        np.dtype("uint16"): 2
+    }[input_dtype])
+    print(multi_base)
+    dtype = DTYPE_UPSCALE_MAP[input_dtype]
     if in_len > 0:
         l = np.arange(1, 100, 99 / in_len) / 100
         ret_weight[:in_len] = l
@@ -47,11 +55,11 @@ def generate_weight(length: int,
         r = np.arange(1, 100, 99 / out_len)[::-1] / 100
         ret_weight[-out_len:] = r
     if int_weight:
-        # 启用uint8权重时，权重转换为uint8；
-        # 非渐入渐出模式时，不乘以255（以进一步减少格式转换，加速计算）
+        # 启用uint8/16权重时，权重转换为uint8/16；
+        # 非渐入渐出模式时，不乘以multi_base（以进一步减少格式转换，加速计算）
         if in_len + out_len > 0:
-            return np.array(ret_weight * 255, dtype=np.uint8)
-        return np.array(ret_weight, dtype=np.uint8)
+            return np.array(ret_weight * multi_base, dtype=dtype)
+        return np.array(ret_weight, dtype=dtype)
     return ret_weight
 
 
@@ -122,8 +130,8 @@ def run_merger_subprocess(proc_id: int,
             stacked_num += 1
     except (KeyboardInterrupt, Exception) as e:
         logger.error(
-            f"Fatal error:{e.__repr__()}. {proc_name} will be terminated."
-            + "The final result cam be unexpected.")
+            f"Fatal error:{e.__repr__()}. {proc_name} will be terminated." +
+            "The final result cam be unexpected.")
         if progressbar:
             progressbar.put(END_FLAG)
 
@@ -132,9 +140,8 @@ def run_merger_subprocess(proc_id: int,
     if stacked_num == 0:
         logger.warning(f"No valid frames are loaded!")
         return None
-    logger.info(
-        f"{proc_name} successfully stacked {stacked_num} "
-        + f"images from {tot_num} images. ({failed_num} fail(s)).")
+    logger.info(f"{proc_name} successfully stacked {stacked_num} " +
+                f"images from {tot_num} images. ({failed_num} fail(s)).")
     return merger.merged_image
 
 
@@ -157,9 +164,11 @@ class DtypeRecorder(object):
         # 视情况对运行中数据类型做变更
         if int_weight_switch:
             self.apply_int_weight(fin_ratio, fout_ratio)
-            if self.int_weight and self.input_dtype != self.runtime_dtype:
-                # 应用int_weight时，相当于已上放缩一次，此处还原。
-                self.upscale_time -= 1
+            if self.int_weight and self.input_dtype != self.runtime_dtype and self.input_dtype != float:
+                # 应用int_weight时，需要根据输入确定已上放缩的次数，并在此处还原。
+                # 此处写法比较Tricky，因为对uint，DTYPE_REVERSE_MAP中数据规格对应了需要下放缩的次数。
+                if self.input_dtype in DTYPE_REVERSE_MAP:
+                    self.upscale_time -= DTYPE_REVERSE_MAP[input_dtype]
         if DTYPE_REVERSE_MAP[self.output_dtype] > DTYPE_REVERSE_MAP[
                 self.runtime_dtype]:
             # 如果希望输出高于运行时精度的数据，警告（但仍然按需求输出）
@@ -190,9 +199,9 @@ class DtypeRecorder(object):
     def rescale(self, image: np.ndarray, power: int = 1):
         if self.upscale_time > 0:
             image = np.array(image, dtype=self.output_dtype)
-            image *= (255**self.upscale_time)**(power)
+            image *= get_scale_x(self.upscale_time)
         elif self.upscale_time:
-            image = np.array(image // (255**(abs(self.upscale_time)))**(power),
+            image = np.array(image // get_scale_x(abs(self.upscale_time)),
                              dtype=self.output_dtype)
         else:
             image = np.array(image, dtype=self.output_dtype)
@@ -226,6 +235,14 @@ class GenericMasterBase(object):
         self.int_weight_switch = False
 
     def init_base_param(self, fname_list, num_processor, **kwargs):
+        """初始化多进程相关的基础参数，包括最适线程数。
+
+        推荐在已经初始化样本图像后开始
+
+        Args:
+            fname_list (list): _description_
+            num_processor (int): _description_
+        """
         self.fname_list = fname_list
         self.tot_length = len(fname_list)
         self.mp_num, self.sub_length = get_mp_num(self.tot_length,
@@ -255,7 +272,9 @@ class GenericMasterBase(object):
             # detail模式下，会从所有文件中读取EXIF信息，并加和曝光时间。
             # TODO: 目前采用线程方式。期望更优雅的实现
             self.exif_thread = threading.Thread(
-                target=self.cumsum_exposure_time, args=(fname_list, ),daemon=True)
+                target=self.cumsum_exposure_time,
+                args=(fname_list, ),
+                daemon=True)
             self.exif_thread.start()
         else:
             # 直接使用张数估算总曝光时间
@@ -329,12 +348,26 @@ class SimpleMasterTemplate(GenericMasterBase):
         super().__init__()
         # 如果需要做对应改动，则需要实例化，并对实例化的模板执行对应操作
         self.subprocessor = run_merger_subprocess
-        self.rt_upscale_num = 0
+
         self.default_progressbar = TqdmProgressbar(
             desc=f"Executing {self.__class__.__name__}")
+
+        # rt_upscale_num 表示运行时使用的数据类型相比输入的提升次数。
+        # 例如，叠加不超过255张图像时，使用FastGaussianParam的Master进程配置该项为1即可。
+        self.rt_upscale_num = 0
+
+        # gen_weight_list 表示该Master是否支持渐入渐出权重。通常对星轨类为True，均值类为False。
         self.gen_weight_list = False
+
+        # sub_merger_type 表示子进程使用的Merger类。
         self.sub_merger_type = MaxMerger
+
+        # main_merger_type 表示主进程在收集子进程结果时使用的Merger类。
+        # 通常与sub_merger_type相同，但在部分叠加方式中可以不同（如SigmaClipping均值）
         self.main_merger_type = MaxMerger
+
+        # main_upscale 表示主merger是否支持在分merger的基础上提升数据范围以确保不会溢出。
+        # 主要是使用FastGaussianParam的Master进程需要配置该项为True。
         self.main_upscale = False
 
     def construct_ret(self) -> EasyDict:
@@ -375,6 +408,10 @@ class SimpleMasterTemplate(GenericMasterBase):
         Returns:
             Optional[EasyDict]: 叠加完成的图像及其exif，颜色配置等信息。如果无法得到图像，返回None。
         """
+        self.init_base_and_exif(fname_list=fname_list,
+                                base_info=base_info,
+                                sample_img=sample_img,
+                                **kwargs)
         self.init_base_param(fname_list=fname_list,
                              num_processor=num_processor,
                              **kwargs)
@@ -382,11 +419,6 @@ class SimpleMasterTemplate(GenericMasterBase):
         pool = mp.Pool(processes=self.mp_num)
         results = mp.Manager().Queue()
         self.main_merger = self.main_merger_type()
-
-        self.init_base_and_exif(fname_list=fname_list,
-                                base_info=base_info,
-                                sample_img=sample_img,
-                                **kwargs)
         # 如果无法获得样本图像，说明序列完全没有可用图像。直接退出。
         if self.sample_img is None:
             logger.error(
@@ -400,10 +432,12 @@ class SimpleMasterTemplate(GenericMasterBase):
             f"Data scaling: Runtime scaling = {self.rt_upscale_num}; Output scaling = {self.dtype_recorder.upscale_time}."
         )
         if self.gen_weight_list:
-            weight_list = generate_weight(self.tot_length,
-                                          fin_ratio,
-                                          fout_ratio,
-                                          int_weight=int_weight)
+            weight_list = generate_weight(
+                self.tot_length,
+                fin_ratio,
+                fout_ratio,
+                int_weight=int_weight,
+                input_dtype=self.dtype_recorder.input_dtype)
         else:
             # default. for filling param only.
             weight_list = np.ones((self.tot_length, ), dtype=np.int8)
@@ -449,6 +483,7 @@ class SimpleMasterTemplate(GenericMasterBase):
                 if cur_img is None:
                     continue
                 self.main_merger.merge(cur_img)
+                logger.debug(f"Main merger gets {i+1}-th result.")
                 # A temp fix for datascaleup of MeanStacker.
                 # If this is used for main_merger that do not have upscale method,
                 # this could raise an Exception.
@@ -488,6 +523,7 @@ class MinStackMaster(SimpleMasterTemplate):
     def __init__(self) -> None:
         super().__init__()
         self.sub_merger_type = MinMerger
+        self.gen_weight_list = True
         self.main_merger_type = MinMerger
 
 
@@ -603,10 +639,10 @@ class SigmaClippingMaster(GenericMasterBase):
             earlystop_prec: float = 100,
             **kwargs):
         assert max_iter > 0, "max_iter must >0 !"
-        self.init_base_param(fname_list, num_processor)
         self.init_base_and_exif(fname_list,
                                 base_info=base_info,
                                 sample_img=sample_img)
+        self.init_base_param(fname_list, num_processor)
         # 如果无法获得样本图像，说明序列完全没有可用图像。直接退出。
         if self.sample_img is None:
             logger.error(
@@ -705,10 +741,10 @@ class SimpleMixTrailMaster(GenericMasterBase):
             max_iter: int = 5,
             **kwargs):
         assert max_iter > 0, "max_iter must >0 !"
-        self.init_base_param(fname_list, num_processor)
         self.init_base_and_exif(fname_list,
                                 base_info=base_info,
                                 sample_img=sample_img)
+        self.init_base_param(fname_list, num_processor)
         # 如果无法获得样本图像，说明序列完全没有可用图像。直接退出。
         if self.sample_img is None:
             logger.error(
