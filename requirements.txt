@@ -1,6 +1,6 @@
 easydict>=1.11
 loguru>=0.7.2
-numpy>=1.26.0
+numpy<2.0
 opencv_python>=4.9.0.80
-pyexiv2>=2.10.0
+pyexiv2==2.12.0
 rawpy>=0.20.0
