@@ -46,7 +46,6 @@ def generate_weight(
         np.dtype("uint8"): 1,
         np.dtype("uint16"): 2
     }[input_dtype])
-    print(multi_base)
     dtype = DTYPE_UPSCALE_MAP[input_dtype]
     if in_len > 0:
         l = np.arange(1, 100, 99 / in_len) / 100

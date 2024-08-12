@@ -58,7 +58,7 @@ SOFTWARE_NAME = f"HoshinoWeaver {VERSION}"
 
 
 def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
-    """A simple implementation of dtype_sclaer.
+    """A simple implementation of dtype_scaler, get up-scaled data-type with given times.
     TODO: update in the future.
     """
     assert times >= 0 and isinstance(times, int), "invalid scale times!"

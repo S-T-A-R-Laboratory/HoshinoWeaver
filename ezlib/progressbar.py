@@ -23,7 +23,6 @@ class QueueProgressbar(object):
 
     def __init__(self, tot_num: int = 0, desc: str = "") -> None:
         self.queue = mp.Manager().Queue()
-        self.thread = threading.Thread(target=self.loop, args=(),daemon=True)
         self.progress = 0
         self.reset(tot_num, desc)
         self.stopped = True
@@ -35,10 +34,14 @@ class QueueProgressbar(object):
             self.desc = desc
 
     def start(self, desc=None):
+        self.thread = threading.Thread(target=self.loop, args=(),daemon=True)
         self.progress = 0
         self.stopped = False
         if desc is not None:
             self.desc = desc
+        # 清空队列
+        while not self.queue.empty():
+            self.queue.get()
         self.thread.start()
 
     def stop(self):

@@ -1,4 +1,6 @@
 *.jpg
 *.tif
 ezlib/__pycache__
+ui/__pycache__
+__pycache__/
 .vscode/
