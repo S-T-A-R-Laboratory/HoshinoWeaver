@@ -10,13 +10,14 @@ from typing import Optional, Union
 
 import cv2
 import numpy as np
+import PIL.Image
 import pyexiv2
 import rawpy
 from easydict import EasyDict
 from loguru import logger
 
-from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SUPPORT_COLOR_SPACE, get_scale_x,
-                    is_support_format, time_cost_warpper)
+from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SAME_SUFFIX_MAPPING, SUPPORT_COLOR_SPACE,
+                    get_scale_x, is_support_format, time_cost_warpper)
 
 
 class ImgSeriesLoader(object):
@@ -222,3 +223,56 @@ def save_img(filename: str,
         # 写入文件
         with open(filename, mode='wb') as f:
             f.write(image_data.get_bytes())
+
+
+def get_img_attrs_by_pil(fname: str) -> dict:
+    """使用Pillow接口获取图像基本信息。
+
+    Pillow支持的EXIF信息相对有限。
+
+    Args:
+        fname (str): 文件名。
+
+    Returns:
+        dict: _description_
+    """
+    img_obj = PIL.Image.open(fname)
+    suffix = fname.split(".")[-1].lower()
+    if suffix in SAME_SUFFIX_MAPPING:
+        suffix = SAME_SUFFIX_MAPPING[suffix]
+    size = (getattr(img_obj, "width", None), getattr(img_obj, "height", None))
+    return dict(fname=fname,
+                suffix=suffix,
+                size=size,
+                size_str=f"{size[0]}x{size[1]}",
+                bits=getattr(img_obj, "bits", None))
+
+
+def analyze_attr(attr_list: list[dict], attr_name: str) -> dict:
+    """分析输入符合给定属性的情况。
+
+    Args:
+        attr_list (list): _description_
+
+    Returns:
+        dict: _description_
+    """
+    attrs = [attr_dict[attr_name] for attr_dict in attr_list]
+    sorted_attr_count = sorted([(attr, attrs.count(attr))
+                                for attr in set(attrs)],
+                               key=lambda x: x[-1],
+                               reverse=True)
+    other_attr = [x[0] for x in sorted_attr_count[1:]]
+    if other_attr:
+        other_fname_list = [
+            attr_dict["fname"] for attr_dict in attr_list
+            if attr_dict[attr_name] in other_attr
+        ]
+    else:
+        other_fname_list = None
+    assert len(sorted_attr_count) > 0
+    return dict(attr_name=attr_name,
+                mode_attr=sorted_attr_count[0][0],
+                mode_num=sorted_attr_count[0][1],
+                other_dist=sorted_attr_count[1:],
+                other_fname_list=other_fname_list)

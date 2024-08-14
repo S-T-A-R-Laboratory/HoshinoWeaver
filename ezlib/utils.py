@@ -45,6 +45,8 @@ DTYPE_MAX_VALUE = {
     np.dtype('uint64'): 2**64 - 1,
 }
 
+SAME_SUFFIX_MAPPING = {"tiff": "tif", "jpeg": "jpg"}
+
 SUPPORT_COLOR_SPACE = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
 COMMON_SUFFIX = ["tiff", "tif", "jpg", "png", "jpeg"]
 NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
@@ -139,11 +141,15 @@ def get_mp_num(tot_num: int,
     推导：n 图像分 m 组叠加，时间开销近似为 [n/m]+m ；min([n/m]+m)-> m取得sqrt(N)
     """
     # TODO: 根据内存和图像规格增设限制
+    cpu_num = mp.cpu_count()
     if prefer_num:
         mp_num = prefer_num
+        if prefer_num > cpu_num:
+            logger.warning(
+                f"Preferred multiprocessing num ({prefer_num}) is larger " +
+                f"than cpu num ({cpu_num})!")
     else:
         psutil.virtual_memory().available
-        cpu_num = mp.cpu_count()
         cpu_num = cpu_num // 4 + (1 if cpu_num <= 8 else 0)
         mp_num = min(floor(sqrt(tot_num)), cpu_num)
     sub_length = tot_num / mp_num
@@ -307,6 +313,10 @@ class FastGaussianParam(object):
         self.sum_mu *= mask_pos
         self.square_sum *= mask_pos
         self.n = np.array(mask_pos, dtype=np.uint16)
+
+    @property
+    def shape(self):
+        return self.sum_mu.shape
 
 
 def get_scale_x(time: int, base: int = 256):

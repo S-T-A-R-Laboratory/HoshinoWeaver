@@ -1,6 +1,5 @@
 import multiprocessing as mp
 import sys
-from abc import ABCMeta, abstractclassmethod
 import threading
 from typing import Any, Optional, Union
 import fractions
@@ -19,7 +18,6 @@ from .utils import (BITS2DTYPE, DTYPE_MAX_VALUE, DTYPE_REVERSE_MAP,
                     DTYPE_UPSCALE_MAP, SOFTWARE_NAME, FastGaussianParam,
                     dtype_scaler, error_raiser, get_max_expmean, get_mp_num,
                     get_resize, get_scale_x, time_cost_warpper)
-
 
 def generate_weight(
     length: int,
@@ -504,7 +502,6 @@ class SimpleMasterTemplate(GenericMasterBase):
             pool.join()
             progressbar.stop()
             raise e
-        # TODO: 异常处理
         return result_dict
 
 

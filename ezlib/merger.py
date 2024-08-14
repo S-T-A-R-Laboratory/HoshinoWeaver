@@ -17,6 +17,11 @@ class BaseMerger(metaclass=ABCMeta):
         if self.merged_image is None:
             self.merged_image = new_img
         else:
+            assert self.merged_image.shape == new_img.shape, (
+                f"{self.__class__.__name__} failed to merge new image. It should have the same shape as "
+                +
+                f"merged image {self.merged_image.shape}, but {new_img.shape} got."
+            )
             self.merged_image = self._merge(self.merged_image, new_img)
 
     @abstractmethod
