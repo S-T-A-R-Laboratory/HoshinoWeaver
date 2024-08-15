@@ -63,11 +63,19 @@ def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
     """A simple implementation of dtype_scaler, get up-scaled data-type with given times.
     TODO: update in the future.
     """
-    assert times >= 0 and isinstance(times, int), "invalid scale times!"
-    while times > 0 and raw_type != float:
-        raw_type = DTYPE_UPSCALE_MAP[raw_type]
-        times -= 1
-    return raw_type
+    if times >= 0:
+        while times > 0 and raw_type != float:
+            raw_type = DTYPE_UPSCALE_MAP[raw_type]
+            times -= 1
+        return raw_type
+    else:
+        # downscale. For now only uint16->uint8 is used.
+        # this will be updated in the future.
+        if times == -1 and raw_type == np.dtype("uint16"):
+            return np.dtype("uint8")
+        else:
+            raise NotImplementedError(
+                f"not supported dtype scaling time {times}!")
 
 
 def error_raiser(error):

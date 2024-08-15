@@ -10,7 +10,7 @@ from easydict import EasyDict
 from loguru import logger
 
 from .imgfio import ImgSeriesLoader, get_color_profile, load_img, load_info
-from .merger import (BaseMerger, MaxMerger, MeanMerger, MinMerger,
+from .merger import (BaseMerger, CacheMerger, MaxMerger, MeanMerger, MinMerger, OrderedCacheMerger,
                      SigmaClippingMerger)
 from .progressbar import (QueueProgressbar, TqdmProgressbar, SUCC_FLAG,
                           FAIL_FLAG, END_FLAG)
@@ -18,6 +18,7 @@ from .utils import (BITS2DTYPE, DTYPE_MAX_VALUE, DTYPE_REVERSE_MAP,
                     DTYPE_UPSCALE_MAP, SOFTWARE_NAME, FastGaussianParam,
                     dtype_scaler, error_raiser, get_max_expmean, get_mp_num,
                     get_resize, get_scale_x, time_cost_warpper)
+
 
 def generate_weight(
     length: int,
@@ -105,7 +106,7 @@ def run_merger_subprocess(proc_id: int,
     stacked_num = 0
     failed_num = 0
     img_loader = img_loader_type(**kwargs)
-    merger = merger_type(**kwargs)
+    merger = merger_type(proc_id=proc_id, **kwargs)
     tot_num = img_loader.tot_num
 
     # main progress
@@ -392,7 +393,7 @@ class SimpleMasterTemplate(GenericMasterBase):
             progressbar: Optional[QueueProgressbar] = None,
             num_processor: Optional[int] = None,
             **kwargs) -> Optional[EasyDict]:
-        """星轨最大值叠加的入口函数。
+        """叠加的入口函数。
 
         Args:
             fname_list (list[str]): 图像名列表
@@ -473,8 +474,6 @@ class SimpleMasterTemplate(GenericMasterBase):
                     error_callback=lambda error: error_raiser(error))
             pool.close()
             # 合并多线程叠加结果
-            # refresh in case
-            self.main_merger.merged_image = None
             for i in range(self.mp_num):
                 cur_img = results.get()
                 if cur_img is None:
@@ -594,6 +593,24 @@ class SingleSigmaClippingMaster(MeanStackMaster):
         self.ref_img: FastGaussianParam = kwargs["ref_img"]
         self.full_ref_img: FastGaussianParam = kwargs["full_ref_img"]
         super().init_base_param(fname_list, num_processor)
+
+class CacheArrayMaster(SimpleMasterTemplate):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sub_merger_type = CacheMerger
+        self.main_merger_type = OrderedCacheMerger
+    
+    def init_dtype_recorder(self,
+                            sample_img: np.ndarray,
+                            output_bits: Optional[int] = None,
+                            int_weight: bool = False,
+                            fin_ratio: Optional[float] = None,
+                            fout_ratio: Optional[float] = None):
+        # 处理如果输入为uint16，降级回uint8
+        if sample_img.dtype == np.dtype("uint16"):
+                self.rt_upscale_num = -1
+        super().init_dtype_recorder(sample_img, output_bits, int_weight,
+                                    fin_ratio, fout_ratio)
 
 
 class SigmaClippingMaster(GenericMasterBase):

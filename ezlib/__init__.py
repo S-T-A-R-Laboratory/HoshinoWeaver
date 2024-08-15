@@ -8,14 +8,14 @@ from .imgfio import analyze_attr, get_img_attrs_by_pil, save_img
 from .progressbar import QueueProgressbar
 from .trailstacker import (MeanStackMaster, MinStackMaster,
                            SigmaClippingMaster, SimpleMixTrailMaster,
-                           StarTrailMaster)
+                           StarTrailMaster, CacheArrayMaster)
 
 modestr2func = {
     "max": StarTrailMaster,
     "min": MinStackMaster,
     "mean": MeanStackMaster,
     "sigmaclip-mean": SigmaClippingMaster,
-    "mask-mix": SimpleMixTrailMaster
+    "mask-mix": SimpleMixTrailMaster,
 }
 
 
@@ -131,3 +131,41 @@ def scan_all_exif(fname_list: list[str]) -> list:
     # 位数检查
     bits_dict = analyze_attr(attr_list, "bits")
     return [suffix_dict, size_dict, bits_dict]
+
+
+def create_cache(img_files: list,
+                 resize: Optional[str] = "960",
+                 output_bits: Optional[int] = 8,
+                 debug_mode: bool = False,
+                 progressbar: Optional[QueueProgressbar] = None,
+                 num_processor: Optional[int] = None,
+                 check_exif: bool = False,
+                 **kwargs):
+    """从给定文件序列创建缓存。
+
+    Args:
+        img_files (list): _description_
+        resize (Optional[str], optional): _description_. Defaults to None.
+        debug_mode (bool, optional): _description_. Defaults to False.
+        progressbar (Optional[QueueProgressbar], optional): _description_. Defaults to None.
+        num_processor (Optional[int], optional): _description_. Defaults to None.
+        check_exif (bool, optional): _description_. Defaults to False.
+    """
+    try:
+        if check_exif:
+            logger.info(scan_all_exif(img_files))
+        cache_runner = CacheArrayMaster()
+        # TODO: 缺省参数优化
+        res = cache_runner.run(fname_list=img_files,
+                               fin_ratio=0,
+                               fout_ratio=0,
+                               int_weight=False,
+                               resize=resize,
+                               output_bits=output_bits,
+                               debug_mode=debug_mode,
+                               progressbar=progressbar,
+                               num_processor=num_processor)
+    except (KeyboardInterrupt, Exception) as e:
+        return None
+
+    return res
