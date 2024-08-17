@@ -46,7 +46,7 @@ class BaseMerger(metaclass=ABCMeta):
         raise NotImplementedError(
             "this merger does not support `upscale` method.")
 
-    def merge_array(self, array: np.ndarray) -> np.ndarray:
+    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
         """ `merge_array` should be called when handling input array in shape (n, h, w, c).
         It merges n images to the result (h, w, c) in one step.
 
@@ -87,8 +87,9 @@ class MaxMerger(BaseMerger):
         else:
             return img
 
-    def merge_array(self, array: np.ndarray) -> np.ndarray:
-        return np.max(array, axis=0)
+    def merge_array(self, array: np.ndarray, weight_list: np.ndarray,
+                    **kwargs) -> np.ndarray:
+        return np.max(np.einsum("abcd,a->abcd", array, weight_list), axis=0)
 
 
 class MinMerger(BaseMerger):
@@ -112,8 +113,8 @@ class MinMerger(BaseMerger):
             return img * self.weight_list[index]
         else:
             return img
-        
-    def merge_array(self, array: np.ndarray) -> np.ndarray:
+
+    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
         return np.min(array, axis=0)
 
 
@@ -130,8 +131,8 @@ class MeanMerger(BaseMerger):
             super().upscale()
         else:
             self.result.upscale()
-    
-    def merge_array(self, array: np.ndarray) -> np.ndarray:
+
+    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
         return np.mean(array, axis=0)
 
 
@@ -166,18 +167,19 @@ class SigmaClippingMerger(MeanMerger):
         new_img = FastGaussianParam(img)
         new_img.mask((img > self.rej_high_img) | (img < self.rej_low_img))
         return new_img
-    
-    def merge_array(self, array: np.ndarray) -> np.ndarray:
+
+    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
         # not tested.
-        array_mask = (array > self.rej_high_img[None,...]) | (array < self.rej_low_img[None,...])
-        array_num = np.sum(np.array(array_mask,dtype=np.uint16),axis=0)
-        return np.sum(array * array_mask,axis=0)/array_num
+        array_mask = (array > self.rej_high_img[None, ...]) | (
+            array < self.rej_low_img[None, ...])
+        array_num = np.sum(np.array(array_mask, dtype=np.uint16), axis=0)
+        return np.sum(array * array_mask, axis=0) / array_num
 
 
-
-class CacheMerger(BaseMerger):
+class DataMerger(BaseMerger):
     """用于创建缓存的Merger。保存所有原始数据。
-    返回tuple而非其他可直接加和的Merger，因此需要和OrderedCacheMerger搭配使用。
+    返回包含顺序id的tuple，不支持直接其他Merger进一步合并，
+    因此需要和OrderedDataMerger搭配使用。
 
     Args:
         BaseMerger (_type_): _description_
@@ -200,9 +202,9 @@ class CacheMerger(BaseMerger):
         return (self.proc_id, self.result)
 
 
-class OrderedCacheMerger(BaseMerger):
+class OrderedDataMerger(BaseMerger):
     """用于汇总缓存的Merger。
-    接受tuple而非其他可直接加和的Merger，因此需要和 CacheMerger 搭配使用。
+    接受tuple而非其他可直接加和的Merger，因此需要和 DataMerger 搭配使用。
 
     Args:
         BaseMerger (_type_): _description_

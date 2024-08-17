@@ -99,10 +99,22 @@ def is_support_format(fname) -> bool:
 
 
 def get_resize(opt: Optional[str], raw_wh: Union[list, tuple]):
+    """
+    accept raw_wh in any order. [h, w] is recommended to avoid misuse.
+    
+    but if opt is given as "1920x1080", it will return in [h, w] order.
+
+    Args:
+        opt (Optional[str]): _description_
+        raw_wh (Union[list, tuple]): _description_
+
+    Returns:
+        _type_: _description_
+    """
     if not opt: return None
     # 如果直接以类似"1280x720"的方式指定，则直接返回值
     if "x" in opt and len(opt.split("x")) == 2:
-        return list(reversed(list(map(int, opt.split("x")))))
+        return list(map(int, opt.split("x")))[::-1]
     tgt_wh = None
     try:
         tgt_wh = int(opt)
@@ -111,8 +123,7 @@ def get_resize(opt: Optional[str], raw_wh: Union[list, tuple]):
             f"Got invalid resize option {opt}. Except format like \"1280x720\""
             + " or an int like \"720\" that specify the length.")
         return None
-    w, h = raw_wh
-    tgt_wh_list = [tgt_wh, -1] if w > h else [-1, tgt_wh]
+    tgt_wh_list = [tgt_wh, -1] if raw_wh[0] > raw_wh[1] else [-1, tgt_wh]
     idn = 0 if tgt_wh_list[0] <= 0 else 1
     idx = 1 - idn
     tgt_wh_list[idn] = int(raw_wh[idn] * tgt_wh_list[idx] / raw_wh[idx])
