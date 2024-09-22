@@ -6,7 +6,7 @@ imgfio包含了与图像IO相关的函数和类。
 
 import queue
 import threading
-from typing import Optional, Union
+from typing import Optional, Union, Sequence
 
 import cv2
 import numpy as np
@@ -16,8 +16,9 @@ import rawpy
 from easydict import EasyDict
 from loguru import logger
 
-from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SAME_SUFFIX_MAPPING, SUPPORT_COLOR_SPACE,
-                    get_scale_x, is_support_format, time_cost_warpper)
+from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SAME_SUFFIX_MAPPING,
+                    SUPPORT_COLOR_SPACE, get_scale_x, is_support_format,
+                    time_cost_warpper)
 
 
 class ImgSeriesLoader(object):
@@ -28,18 +29,18 @@ class ImgSeriesLoader(object):
     """
 
     def __init__(self,
-                 fname_list,
-                 dtype=None,
-                 resize=None,
-                 max_poolsize=2,
+                 fname_list: Sequence,
+                 dtype: Optional[np.dtype] = None,
+                 resize: Optional[list[int]] = None,
+                 max_poolsize: int = 2,
                  **kwargs):
         """_summary_
 
         Args:
-            fname_list (_type_): _description_
-            dtype (_type_): 如果读出图像需要强制类型转换，在此项配置。
-            resize (_type_): 如果读出图像需要尺寸变换，在此项配置。
-            max_poolsize (int, optional): _description_. Defaults to 2.
+            fname_list (Sequence): _description_
+            dtype (Optional[np.dtype]): 如果读出图像需要强制类型转换，在此项配置。
+            resize (Optional[list[int]]): 如果读出图像需要尺寸变换，在此项配置。
+            max_poolsize (int): 线程最大缓冲图像大小。 Defaults to 2.
         """
         self.fname_list = fname_list
         self.dtype = dtype
