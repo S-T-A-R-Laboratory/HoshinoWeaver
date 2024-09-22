@@ -45,6 +45,8 @@ DTYPE_MAX_VALUE = {
     np.dtype('uint64'): 2**64 - 1,
 }
 
+SAME_SUFFIX_MAPPING = {"tiff": "tif", "jpeg": "jpg"}
+
 SUPPORT_COLOR_SPACE = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
 COMMON_SUFFIX = ["tiff", "tif", "jpg", "png", "jpeg"]
 NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
@@ -61,11 +63,19 @@ def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
     """A simple implementation of dtype_scaler, get up-scaled data-type with given times.
     TODO: update in the future.
     """
-    assert times >= 0 and isinstance(times, int), "invalid scale times!"
-    while times > 0 and raw_type != float:
-        raw_type = DTYPE_UPSCALE_MAP[raw_type]
-        times -= 1
-    return raw_type
+    if times >= 0:
+        while times > 0 and raw_type != float:
+            raw_type = DTYPE_UPSCALE_MAP[raw_type]
+            times -= 1
+        return raw_type
+    else:
+        # downscale. For now only uint16->uint8 is used.
+        # this will be updated in the future.
+        if times == -1 and raw_type == np.dtype("uint16"):
+            return np.dtype("uint8")
+        else:
+            raise NotImplementedError(
+                f"not supported dtype scaling time {times}!")
 
 
 def error_raiser(error):
@@ -89,10 +99,22 @@ def is_support_format(fname) -> bool:
 
 
 def get_resize(opt: Optional[str], raw_wh: Union[list, tuple]):
+    """
+    accept raw_wh in any order. [h, w] is recommended to avoid misuse.
+    
+    but if opt is given as "1920x1080", it will return in [h, w] order.
+
+    Args:
+        opt (Optional[str]): _description_
+        raw_wh (Union[list, tuple]): _description_
+
+    Returns:
+        _type_: _description_
+    """
     if not opt: return None
     # 如果直接以类似"1280x720"的方式指定，则直接返回值
     if "x" in opt and len(opt.split("x")) == 2:
-        return list(reversed(list(map(int, opt.split("x")))))
+        return list(map(int, opt.split("x")))[::-1]
     tgt_wh = None
     try:
         tgt_wh = int(opt)
@@ -101,8 +123,7 @@ def get_resize(opt: Optional[str], raw_wh: Union[list, tuple]):
             f"Got invalid resize option {opt}. Except format like \"1280x720\""
             + " or an int like \"720\" that specify the length.")
         return None
-    w, h = raw_wh
-    tgt_wh_list = [tgt_wh, -1] if w > h else [-1, tgt_wh]
+    tgt_wh_list = [tgt_wh, -1] if raw_wh[0] > raw_wh[1] else [-1, tgt_wh]
     idn = 0 if tgt_wh_list[0] <= 0 else 1
     idx = 1 - idn
     tgt_wh_list[idn] = int(raw_wh[idn] * tgt_wh_list[idx] / raw_wh[idx])
@@ -139,11 +160,15 @@ def get_mp_num(tot_num: int,
     推导：n 图像分 m 组叠加，时间开销近似为 [n/m]+m ；min([n/m]+m)-> m取得sqrt(N)
     """
     # TODO: 根据内存和图像规格增设限制
+    cpu_num = mp.cpu_count()
     if prefer_num:
         mp_num = prefer_num
+        if prefer_num > cpu_num:
+            logger.warning(
+                f"Preferred multiprocessing num ({prefer_num}) is larger " +
+                f"than cpu num ({cpu_num})!")
     else:
         psutil.virtual_memory().available
-        cpu_num = mp.cpu_count()
         cpu_num = cpu_num // 4 + (1 if cpu_num <= 8 else 0)
         mp_num = min(floor(sqrt(tot_num)), cpu_num)
     sub_length = tot_num / mp_num
@@ -307,6 +332,10 @@ class FastGaussianParam(object):
         self.sum_mu *= mask_pos
         self.square_sum *= mask_pos
         self.n = np.array(mask_pos, dtype=np.uint16)
+
+    @property
+    def shape(self):
+        return self.sum_mu.shape
 
 
 def get_scale_x(time: int, base: int = 256):

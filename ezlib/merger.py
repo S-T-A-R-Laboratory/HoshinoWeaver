@@ -11,25 +11,58 @@ from .utils import FastGaussianParam, DTYPE_MAX_VALUE
 class BaseMerger(metaclass=ABCMeta):
 
     def __init__(self, **kwargs) -> None:
-        self.merged_image = None
+        self.result = None
+        self.shape_check = True
 
     def merge(self, new_img):
-        if self.merged_image is None:
-            self.merged_image = new_img
+        """ `merge` should be called when combining new image to the stack.
+
+        If `shape_check` is true, it will first do shape-checking to make sure that they can be merged.
+        This requires image (or other data) have `shape` attributes.
+
+        Args:
+            new_img (Any): the new image.
+        """
+        if self.result is None:
+            self.result = new_img
         else:
-            self.merged_image = self._merge(self.merged_image, new_img)
+            if self.shape_check:
+                assert self.result.shape == new_img.shape, (
+                    f"{self.__class__.__name__} failed to merge new image. It should have the same shape as "
+                    +
+                    f"merged image {self.result.shape}, but {new_img.shape} got."
+                )
+            self.result = self._merge(self.result, new_img)
 
     @abstractmethod
     def _merge(self, base_img, new_img):
         raise NotImplementedError
 
-    @abstractmethod
     def post_process(self, img: np.ndarray, index: Optional[int] = None):
-        raise NotImplementedError
+        # no post-processing by default.
+        return img
 
     def upscale(self):
         raise NotImplementedError(
             "this merger does not support `upscale` method.")
+
+    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
+        """ `merge_array` should be called when handling input array in shape (n, h, w, c).
+        It merges n images to the result (h, w, c) in one step.
+
+        This requires all data in memory.
+
+        Args:
+            array (np.ndarray): _description_
+
+        Returns:
+            np.ndarray: _description_
+        """
+        raise NotImplementedError
+
+    @property
+    def merged_image(self):
+        return self.result
 
 
 class MaxMerger(BaseMerger):
@@ -54,6 +87,10 @@ class MaxMerger(BaseMerger):
         else:
             return img
 
+    def merge_array(self, array: np.ndarray, weight_list: np.ndarray,
+                    **kwargs) -> np.ndarray:
+        return np.max(np.einsum("abcd,a->abcd", array, weight_list), axis=0)
+
 
 class MinMerger(BaseMerger):
 
@@ -77,6 +114,9 @@ class MinMerger(BaseMerger):
         else:
             return img
 
+    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
+        return np.min(array, axis=0)
+
 
 class MeanMerger(BaseMerger):
 
@@ -87,10 +127,13 @@ class MeanMerger(BaseMerger):
         return FastGaussianParam(img)
 
     def upscale(self):
-        if self.merged_image is None:
+        if self.result is None:
             super().upscale()
         else:
-            self.merged_image.upscale()
+            self.result.upscale()
+
+    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
+        return np.mean(array, axis=0)
 
 
 class SigmaClippingMerger(MeanMerger):
@@ -104,7 +147,7 @@ class SigmaClippingMerger(MeanMerger):
 
     def __init__(self, ref_img: FastGaussianParam, rej_high: float,
                  rej_low: float, **kwargs) -> None:
-        # TODO
+        # TODO:
         # 迭代加速（对已收敛的区域取mask）？
         ref_mu = ref_img.mu
         ref_std = np.sqrt(ref_img.var)
@@ -125,13 +168,27 @@ class SigmaClippingMerger(MeanMerger):
         new_img.mask((img > self.rej_high_img) | (img < self.rej_low_img))
         return new_img
 
+    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
+        # not tested.
+        array_mask = (array > self.rej_high_img[None, ...]) | (
+            array < self.rej_low_img[None, ...])
+        array_num = np.sum(np.array(array_mask, dtype=np.uint16), axis=0)
+        return np.sum(array * array_mask, axis=0) / array_num
 
-class CacheMerger(BaseMerger):
-    """用于创建缓存的Merger。保存所有原始数据
+
+class DataMerger(BaseMerger):
+    """用于创建缓存的Merger。保存所有原始数据。
+    返回包含顺序id的tuple，不支持直接其他Merger进一步合并，
+    因此需要和OrderedDataMerger搭配使用。
 
     Args:
         BaseMerger (_type_): _description_
     """
+
+    def __init__(self, **kwargs) -> None:
+        self.proc_id = kwargs["proc_id"]
+        self.result = None
+        self.shape_check = False
 
     def _merge(self, base_img, new_img: np.ndarray):
         return np.concatenate([base_img, new_img], axis=0)
@@ -139,3 +196,30 @@ class CacheMerger(BaseMerger):
     def post_process(self, img: np.ndarray, index: Optional[int] = None):
         # convert to [1, h, w, c]
         return img[None, ...]
+
+    @property
+    def merged_image(self) -> tuple:
+        return (self.proc_id, self.result)
+
+
+class OrderedDataMerger(BaseMerger):
+    """用于汇总缓存的Merger。
+    接受tuple而非其他可直接加和的Merger，因此需要和 DataMerger 搭配使用。
+
+    Args:
+        BaseMerger (_type_): _description_
+    """
+
+    def __init__(self, **kwargs) -> None:
+        self.result = []
+        self.shape_check = False
+
+    def _merge(self, base_img: list, new_img: tuple):
+        base_img.append(new_img)
+        return base_img
+
+    @property
+    def merged_image(self) -> np.ndarray:
+        return np.concatenate(
+            [array for (_, array) in sorted(self.result, key=lambda x: x[0])],
+            axis=0)
