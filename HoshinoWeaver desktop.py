@@ -648,9 +648,11 @@ class HNW_window(QMainWindow, Ui_HNW):
 
 
 if __name__ == '__main__':
-    myappid = 'mycompany.myproduct.subproduct.version'
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-
+    try:
+        myappid = 'mycompany.myproduct.subproduct.version'
+         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except:
+        pass
     app = QApplication()
     app.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))
 
