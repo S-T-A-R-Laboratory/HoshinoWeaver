@@ -3,7 +3,7 @@ imgfio contains functions and classes about image file i/o.
 
 imgfio包含了与图像IO相关的函数和类。
 """
-
+from __future__ import annotations
 import queue
 import threading
 from typing import Optional, Union, Sequence

@@ -1,5 +1,6 @@
 """ merger管理所有合并器类型。该类型定义不同堆栈模式时的后处理和合并逻辑，并暂存叠加结果。
 """
+from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 from typing import Optional, Union
 
