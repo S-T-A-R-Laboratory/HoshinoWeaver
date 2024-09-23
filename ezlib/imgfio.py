@@ -121,6 +121,13 @@ def load_img(fname: str,
             # TODO: not sure if uint32/float is available.
             img = cv2.imdecode(np.fromfile(fname, dtype=np.uint16),
                                cv2.IMREAD_UNCHANGED)
+            if img is None:
+                # some images can not be decoded using option dtype=np.uint16.
+                # this is a temp fix.
+                logger.info(
+                    "Uint16 decoding failed. Fallback to uint8 loading...")
+                img = cv2.imdecode(np.fromfile(fname, dtype=np.uint8),
+                                   cv2.IMREAD_UNCHANGED)
         else:
             # load images with rawpy
             with rawpy.imread(fname) as raw:
