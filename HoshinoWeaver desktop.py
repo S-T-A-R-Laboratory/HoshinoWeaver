@@ -75,8 +75,6 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.binding_slot()
         self.initial_settings()
 
-        self.alter_png_level.setEnabled(False)
-
         
 
     def hover_border_frame(self):
