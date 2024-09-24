@@ -38,7 +38,7 @@ def nuitka_compile(header, options, target):
         target,
     ]
 
-    ret_code = subprocess.run(merged)
+    ret_code = subprocess.run(merged).returncode
     print(f"Compiled {target} finished with return code = {ret_code}.")
 
     # 异常提前终止
@@ -72,7 +72,7 @@ platform_mapping = {
 platform2icon_option = {
     "win": "--windows-icon-from",
     "linux": "--linux-icon",
-    "macos": "--macos-app-icon"
+    "macos13+": "--macos-app-icon"
 }
 
 argparser = argparse.ArgumentParser()
@@ -145,6 +145,8 @@ gui_cfg = {
     "--disable-console": True,
     platform2icon_option[platform]: "./imgs/HNW.jpg"
 }
+if platform.startswith("macos"):
+    gui_cfg["--macos-create-app-bundle"] = True
 
 gui_cfg.update(nuitka_base)
 nuitka_compile(gui_cfg, target=join_path(work_path, f"{GUI_FILENAME}.py"))
