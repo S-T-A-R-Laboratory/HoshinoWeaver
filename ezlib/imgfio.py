@@ -11,7 +11,6 @@ from typing import Optional, Union, Sequence
 import cv2
 import numpy as np
 import PIL.Image
-import pyexiv2
 import rawpy
 from easydict import EasyDict
 from loguru import logger
@@ -165,17 +164,24 @@ def load_info(fname: str) -> EasyDict:
         fname (str): /path/to/the/image.file
 
     Returns:
-        EasyDict: a Easydict that stores EXIF information.
+        Optional[EasyDict]: a Easydict that stores EXIF information.
+        When exception occurs, an easyDict with no EXIF data and empty colorprofile will be returned instead.
     """
-    info = None
+    info = EasyDict(exif=EasyDict(), colorprofile=b"")
     with open(fname, mode='rb') as f:
-        with pyexiv2.ImageData(f.read()) as image_data:
-            # 基础信息
-            exifdata = image_data.read_exif()
-            colorprofile = image_data.read_icc()
-            info = EasyDict(
-                exif=EasyDict(exifdata),
-                colorprofile=colorprofile,
+        try:
+            import pyexiv2
+            with pyexiv2.ImageData(f.read()) as image_data:
+                # 基础信息
+                exifdata = image_data.read_exif()
+                colorprofile = image_data.read_icc()
+                info = EasyDict(
+                    exif=EasyDict(exifdata),
+                    colorprofile=colorprofile,
+                )
+        except (ImportError, OSError) as e:
+            logger.error(
+                "Failed to load pyexiv2. EXIF data and colorprofile can not be loaded from files."
             )
     return info
 
@@ -221,16 +227,23 @@ def save_img(filename: str,
         raise NameError(f"Unsupported suffix \"{suffix}\".")
     status, buf = cv2.imencode(ext, img, params)
     assert status, "imencode failed."
-
-    with pyexiv2.ImageData(buf.tobytes()) as image_data:
-        if colorprofile is not None and colorprofile != b"":
-            image_data.modify_icc(colorprofile)
-        if exif is not None:
-            image_data.modify_exif(exif)
-
-        # 写入文件
+    try:
+        import pyexiv2
+        with pyexiv2.ImageData(buf.tobytes()) as image_data:
+            if colorprofile is not None and colorprofile != b"":
+                image_data.modify_icc(colorprofile)
+            if exif is not None and len(exif) > 0:
+                image_data.modify_exif(exif)
+            # 写入文件
+            with open(filename, mode='wb') as f:
+                f.write(image_data.get_bytes())
+    except (ImportError, OSError) as e:
+        logger.error(
+            "Failed to load pyexiv2. EXIF data and colorprofile can not be written to files."
+        )
+        # 降级写入文件
         with open(filename, mode='wb') as f:
-            f.write(image_data.get_bytes())
+            f.write(buf.tobytes())
 
 
 def get_img_attrs_by_pil(fname: str) -> dict:
