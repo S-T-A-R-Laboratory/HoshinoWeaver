@@ -70,7 +70,7 @@ platform_mapping = {
 }
 
 platform2icon_option = {
-    "win": "--windows-icon-from",
+    "win": "--windows-icon-from-ico",
     "linux": "--linux-icon",
     "macos13+": "--macos-app-icon"
 }
@@ -137,12 +137,14 @@ if apply_upx:
         nuitka_base["--plugin-enable"] = "upx"
         nuitka_base["--upx-binary"] = upx_cmd.stdout
 
+nuitka_base["--standalone"] = True
+
 # 编译GUI
 gui_cfg = {
-    "--standalone": True,
     "--output-dir": compile_path,
     "--enable-plugin": "pyside6",
     "--disable-console": True,
+    "--nofollow-import-to": "opencv,matplotlib",
     platform2icon_option[platform]: "./imgs/HNW.jpg"
 }
 if platform.startswith("macos"):
@@ -153,7 +155,11 @@ nuitka_compile(gui_cfg, target=join_path(work_path, f"{GUI_FILENAME}.py"))
 
 # 编译CLI
 
-cli_cfg = {"--standalone": True, "--output-dir": compile_path}
+cli_cfg = {
+    "--standalone": True,
+    "--output-dir": compile_path,
+    "--nofollow-import-to": "pyside6,opencv,matplotlib",
+}
 cli_cfg.update(nuitka_base)
 nuitka_compile(cli_cfg, target=join_path(work_path, f"{CLI_FILENAME}.py"))
 
