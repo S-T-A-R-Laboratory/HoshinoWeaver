@@ -851,7 +851,7 @@ class SlotHandler(QMainWindow):
                 int_weight = self.window._int_weight,
                 resize = None,
                 output_bits = self.window._output_bits,
-                ground_mask = self.window._input_files['蒙版'][0] if len(self.window._input_files['蒙版'])>1 and self.window._mask_able else None,
+                ground_mask = self.window._input_files['蒙版'][0] if len(self.window._input_files['蒙版'])>0 and self.window._mask_able else None,
                 debug_mode = False,
                 rej_high = self.window._rej_high,
                 rej_low = self.window._rej_low,
