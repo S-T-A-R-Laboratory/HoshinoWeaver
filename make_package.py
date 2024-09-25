@@ -93,6 +93,11 @@ argparser.add_argument(
     action="store_true",
     help="Generate .zip files after packaging.",
 )
+argparser.add_argument(
+    "--debug-gui",
+    action="store_true",
+    help="Generate gui version with console.",
+)
 
 args = argparser.parse_args()
 apply_upx = args.apply_upx
@@ -137,13 +142,15 @@ if apply_upx:
         nuitka_base["--plugin-enable"] = "upx"
         nuitka_base["--upx-binary"] = upx_cmd.stdout
 
+if not platform.startswith("macos"):
+    nuitka_base["--include-package"] = "pyexiv2"
 nuitka_base["--standalone"] = True
 
 # 编译GUI
 gui_cfg = {
     "--output-dir": compile_path,
     "--enable-plugin": "pyside6",
-    "--disable-console": True,
+    "--disable-console": (not args.debug_gui),
     "--nofollow-import-to": "opencv,matplotlib",
     platform2icon_option[platform]: "./imgs/HNW.jpg"
 }
@@ -152,6 +159,14 @@ if platform.startswith("macos"):
 
 gui_cfg.update(nuitka_base)
 nuitka_compile(gui_cfg, target=join_path(work_path, f"{GUI_FILENAME}.py"))
+
+# 但基本还是要把pyexiv2复制到输出目录下
+import pyexiv2
+
+pyexiv_path, init_file = os.path.split(pyexiv2.__file__)
+shutil.copytree(
+    pyexiv_path,
+    join_path(compile_path, os.path.join(f"{GUI_FILENAME}.dist", "pyexiv2")))
 
 # 编译CLI
 

@@ -518,7 +518,7 @@ class SlotHandler(QMainWindow):
     @Slot()
     def save_img(self):
         # 打开文件浏览对话框
-        options = QFileDialog.Options()
+        options = QFileDialog.Options(0)
         # 允许保存的文件类型
         filter = 'JPG (*.jpg);;PNG (*.png);;TIFF (*.tif)'
         # 根据当前已选择的文件类型选择默认类型
