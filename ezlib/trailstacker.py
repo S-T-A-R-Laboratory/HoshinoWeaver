@@ -886,15 +886,23 @@ class SimpleMixTrailMaster(GenericMasterBase):
                                           progressbar=progressbar,
                                           num_processor=num_processor)
 
+        ratio = get_max_expmean(self.tot_length)
+        diff_img = ratio * np.sqrt(mean_result_dict.var)
+        # TODO: A temp fix for OutofRange pixels. Should be fixed in the future.
+        allow_diff_area = (max_result_dict.img < diff_img)
+        diff_img[allow_diff_area] = 0
+
+        reg_max_img = max_result_dict.img - diff_img
+        logger.info(f"fix ratio = {ratio:.4f}")
+        # prepare mask
         mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
         mask = np.repeat(mask[..., None], 3, axis=-1)
+        if mask.shape != reg_max_img.shape:
+            h, w, c = reg_max_img.shape
+            mask = cv2.resize(mask, (w, h))
         div_num = DTYPE_MAX_VALUE[
             mask.dtype] if mask.dtype in DTYPE_MAX_VALUE else np.max(mask)
         float_mask = np.array(mask, dtype=float) / div_num
-        ratio = get_max_expmean(self.tot_length)
-        diff_img = ratio * np.sqrt(mean_result_dict.var)
-        reg_max_img = max_result_dict.img - diff_img
-        logger.info(f"fix ratio = {ratio:.4f}")
         merged_img = reg_max_img * float_mask + (
             1 - float_mask) * mean_result_dict.img
         # 不需要处理放缩，仅需要转换格式
