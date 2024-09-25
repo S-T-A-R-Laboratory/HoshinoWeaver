@@ -179,6 +179,9 @@ cli_cfg.update(nuitka_base)
 nuitka_compile(cli_cfg, target=join_path(work_path, f"{CLI_FILENAME}.py"))
 
 # postprocessing
+
+FINAL_DIR_NAME = f"{GUI_FILENAME}_{platform}_{VERSION}-{'debug' if args.debug_gui else ''}"
+
 # remove duplicate files of launcher
 print("Merging...", end="", flush=True)
 shutil.move(
@@ -190,15 +193,14 @@ print("Done.")
 # rename executable file and folder
 print("Renaming executable files...", end="", flush=True)
 shutil.move(join_path(compile_path, f"{GUI_FILENAME}.dist"),
-            join_path(compile_path, f"{GUI_FILENAME}"))
+            join_path(compile_path, FINAL_DIR_NAME))
 print("Done.")
 
 # shared postprocessing
 # copy configuration file
 # package codes with zip(if applied).
 if apply_zip:
-    zip_fname = join_path(compile_path,
-                          f"{GUI_FILENAME}_{platform}_{VERSION}.zip")
+    zip_fname = join_path(compile_path, f"{FINAL_DIR_NAME}.zip")
     print(f"Zipping files to {zip_fname} ...", end="", flush=True)
     with zipfile.ZipFile(zip_fname, mode='w') as zipfile_op:
         file_to_zip(join_path(compile_path, f"{GUI_FILENAME}"), zipfile_op)
