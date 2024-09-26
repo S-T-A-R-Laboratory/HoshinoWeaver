@@ -180,7 +180,7 @@ def load_info(fname: str) -> EasyDict:
                     colorprofile=colorprofile,
                 )
         except (ImportError, OSError) as e:
-            logger.error(
+            logger.warning(
                 "Failed to load pyexiv2. EXIF data and colorprofile can not be loaded from files."
             )
     return info
@@ -238,7 +238,7 @@ def save_img(filename: str,
             with open(filename, mode='wb') as f:
                 f.write(image_data.get_bytes())
     except (ImportError, OSError) as e:
-        logger.error(
+        logger.warning(
             "Failed to load pyexiv2. EXIF data and colorprofile can not be written to files."
         )
         # 降级写入文件

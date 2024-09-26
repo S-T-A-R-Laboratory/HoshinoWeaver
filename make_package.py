@@ -10,6 +10,7 @@ import zipfile
 from functools import partial
 from pathlib import Path
 from typing import Any
+from loguru import logger
 
 from ezlib.utils import VERSION, SOFTWARE_NAME, time_cost_warpper
 
@@ -19,6 +20,8 @@ join_path = os.path.join
 CLI_FILENAME = "launcher"
 GUI_FILENAME = "HoshinoWeaver desktop"
 
+logger.remove()
+logger.add(sys.stdout, level="INFO")
 
 @time_cost_warpper
 def nuitka_compile(header, options, target):
@@ -39,11 +42,11 @@ def nuitka_compile(header, options, target):
     ]
 
     ret_code = subprocess.run(merged).returncode
-    print(f"Compiled {target} finished with return code = {ret_code}.")
+    logger.info(f"Compiled {target} finished with return code = {ret_code}.")
 
     # 异常提前终止
     if ret_code != 0:
-        print(
+        logger.error(
             f"Fatal compile error occured when compiling {target}. Compile terminated."
         )
         exit(-1)
@@ -132,7 +135,7 @@ nuitka_base: dict[str, Any] = {
     "--remove-output": True,
 }
 if platform == "win" and args.mingw64:
-    print("Apply mingw64 as compiler.")
+    logger.info("Apply mingw64 as compiler.")
     nuitka_base["--mingw64"] = True
 
 # upx启用时，利用which获取upx路径
@@ -154,19 +157,24 @@ gui_cfg = {
     "--nofollow-import-to": "opencv,matplotlib",
     platform2icon_option[platform]: "./imgs/HNW.jpg"
 }
-if platform.startswith("macos"):
+if platform.startswith("macos") and (not args.debug_gui):
     gui_cfg["--macos-create-app-bundle"] = True
 
 gui_cfg.update(nuitka_base)
 nuitka_compile(gui_cfg, target=join_path(work_path, f"{GUI_FILENAME}.py"))
 
 # 但基本还是要把pyexiv2复制到输出目录下
-import pyexiv2
-
-pyexiv_path, init_file = os.path.split(pyexiv2.__file__)
-shutil.copytree(
-    pyexiv_path,
-    join_path(compile_path, os.path.join(f"{GUI_FILENAME}.dist", "pyexiv2")))
+try:
+    import pyexiv2
+    pyexiv_path, init_file = os.path.split(pyexiv2.__file__)
+    shutil.copytree(
+        pyexiv_path,
+        join_path(compile_path, os.path.join(f"{GUI_FILENAME}.dist",
+                                             "pyexiv2")))
+except Exception as e:
+    logger.warning(
+        "Failed to load pyexiv2. Related function can be unavailable in release verion."
+    )
 
 # 编译CLI
 
@@ -183,27 +191,28 @@ nuitka_compile(cli_cfg, target=join_path(work_path, f"{CLI_FILENAME}.py"))
 FINAL_DIR_NAME = f"{GUI_FILENAME}_{platform}_{VERSION}-{'debug' if args.debug_gui else ''}"
 
 # remove duplicate files of launcher
-print("Merging...", end="", flush=True)
-shutil.move(
-    join_path(compile_path, f"{CLI_FILENAME}.dist",
-              f"{CLI_FILENAME}{exec_suffix}"),
-    join_path(compile_path, f"{GUI_FILENAME}.dist"))
-shutil.rmtree(join_path(compile_path, f"{CLI_FILENAME}.dist"))
-print("Done.")
-# rename executable file and folder
-print("Renaming executable files...", end="", flush=True)
-shutil.move(join_path(compile_path, f"{GUI_FILENAME}.dist"),
-            join_path(compile_path, FINAL_DIR_NAME))
-print("Done.")
+if (not platform.startswith("macos")) or args.debug_gui:
+    print("Merging...", end="", flush=True)
+    shutil.move(
+        join_path(compile_path, f"{CLI_FILENAME}.dist",
+                f"{CLI_FILENAME}{exec_suffix}"),
+        join_path(compile_path, f"{GUI_FILENAME}.dist"))
+    shutil.rmtree(join_path(compile_path, f"{CLI_FILENAME}.dist"))
+    print("Done.")
+    # rename executable file and folder
+    print("Renaming executable files...", end="", flush=True)
+    shutil.move(join_path(compile_path, f"{GUI_FILENAME}.dist"),
+                join_path(compile_path, FINAL_DIR_NAME))
+    print("Done.")
 
 # shared postprocessing
 # copy configuration file
 # package codes with zip(if applied).
 if apply_zip:
-    zip_fname = join_path(compile_path, f"{FINAL_DIR_NAME}.zip")
+    zip_fname = join_path(compile_path, f"{SOFTWARE_NAME}.zip")
     print(f"Zipping files to {zip_fname} ...", end="", flush=True)
     with zipfile.ZipFile(zip_fname, mode='w') as zipfile_op:
         file_to_zip(join_path(compile_path, f"{GUI_FILENAME}"), zipfile_op)
     print("Done.")
 
-print(f"Package script finished. Total time cost {(time.time()-t0):.2f}s.")
+logger.info(f"Package script finished. Total time cost {(time.time()-t0):.2f}s.")
