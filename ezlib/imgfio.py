@@ -95,7 +95,7 @@ def get_color_profile(color_bstring):
 
 
 def load_img(fname: str,
-             dtype: Optional[type] = None,
+             dtype: Union[type, None, np.dtype] = None,
              resize=None) -> Optional[np.ndarray]:
     """ Using OpenCV API to load a single image from the given path.
     

@@ -114,8 +114,9 @@ def launch(img_files: list,
                              rej_high=rej_high,
                              rej_low=rej_low,
                              max_iter=max_iter)
+        print(res.err_msg)
         if res.img is None:
-            return {"status": False, "message": "空结果"}
+            return {"status": False, "message": res.err_msg}
         elif output_fname is not None:
             save_img(output_fname,
                      res.img,
@@ -123,7 +124,7 @@ def launch(img_files: list,
                      jpg_quality=jpg_quality,
                      exif=res.exif,
                      colorprofile=res.colorprofile)
-            return {"status": True, "message": None}
+        return {"status": True, "message": res.err_msg}
     except (KeyboardInterrupt, Exception) as e:
         return {
             "status": False,

@@ -21,6 +21,9 @@ from .utils import (BITS2DTYPE, DTYPE_MAX_VALUE, DTYPE_REVERSE_MAP,
                     dtype_scaler, error_raiser, get_max_expmean, get_mp_num,
                     get_resize, get_scale_x, time_cost_warpper)
 
+ON_ERR_CONTINUE = "continue"
+ON_ERR_STOP = "break"
+
 
 def generate_weight(
     length: int,
@@ -87,8 +90,8 @@ def run_merger_subprocess(proc_id: int,
                           merger_type: type[BaseMerger],
                           progressbar=None,
                           debug=False,
-                          on_error: str = "continue",
-                          **kwargs):
+                          on_error_action: str = ON_ERR_CONTINUE,
+                          **kwargs) -> EasyDict:
     """通用的叠加子进程。
     使用时需要定义图像的加载函数和融合函数。
 
@@ -110,27 +113,46 @@ def run_merger_subprocess(proc_id: int,
     img_loader = img_loader_type(**kwargs)
     merger = merger_type(proc_id=proc_id, **kwargs)
     tot_num = img_loader.tot_num
+    err_msg_collector = []
 
     # main progress
     try:
         img_loader.start()
         for i in range(tot_num):
+            cur_filename = "the {i+1}-th frame"
+            fname_list: Optional[list] = kwargs.get("fname_list")
+            if fname_list is not None:
+                cur_filename = fname_list[i]
             raw_img = img_loader.pop()
             if raw_img is None:
+                # add err msg
+                warning_msg = f"{proc_name} failed to load {cur_filename}."
+                err_msg_collector.append(warning_msg)
+                logger.warning(warning_msg)
+                # When on_error_action = ON_ERR_STOP, stop iteration immediately
+                if on_error_action == ON_ERR_STOP:
+                    logger.warning(f"{proc_name} will stop immediately.")
+                    break
                 # TODO: 添加支持,对于可能预期外的叠加中间（读入失败，尺寸不匹配等）抛出额外错误
-                logger.warning(f"{proc_name} Skip the {i+1}-th failed frame.")
+                logger.warning(f"Skip {cur_filename}.")
                 failed_num += 1
                 if progressbar:
                     progressbar.put(FAIL_FLAG)
                 continue
             cur_img = merger.post_process(raw_img, index=i)
-            merger.merge(cur_img)
+            # TODO: this looks ugly. Optimize this in the future.
+            try:
+                merger.merge(cur_img)
+            except AssertionError as e:
+                err_msg_collector.append(
+                    f"Shape of {cur_filename} does not match.")
+                raise e
             if progressbar:
                 progressbar.put(SUCC_FLAG)
             stacked_num += 1
     except (KeyboardInterrupt, Exception) as e:
         logger.error(
-            f"Fatal error:{e.__repr__()}. {proc_name} will be terminated." +
+            f"Fatal error:{e.__repr__()}. {proc_name} will be terminated. " +
             "The final result cam be unexpected.")
         if progressbar:
             progressbar.put(END_FLAG)
@@ -142,7 +164,7 @@ def run_merger_subprocess(proc_id: int,
         return None
     logger.info(f"{proc_name} successfully stacked {stacked_num} " +
                 f"images from {tot_num} images. ({failed_num} fail(s)).")
-    return merger.merged_image
+    return EasyDict(img=merger.merged_image, err_msg=err_msg_collector)
 
 
 class DtypeRecorder(object):
@@ -233,6 +255,8 @@ class GenericMasterBase(object):
         # int_weight_switch 表示该模式是否支持int_weight。
         # 该处的int_weight_switch特指255权重。
         self.int_weight_switch = False
+        # err_msg_collector 用于收集过程中的所有错误信息。
+        self.err_msg_collector = []
 
     def init_base_param(self, fname_list, num_processor, **kwargs):
         """初始化多进程相关的基础参数，包括最适线程数。
@@ -381,7 +405,8 @@ class SimpleMasterTemplate(GenericMasterBase):
             rescaled_main_img = None
         return EasyDict(img=rescaled_main_img,
                         exif=self.base_info.exif,
-                        colorprofile=self.base_info.colorprofile)
+                        colorprofile=self.base_info.colorprofile,
+                        err_msg=self.err_msg_collector)
 
     @time_cost_warpper
     def run(self,
@@ -440,6 +465,7 @@ class SimpleMasterTemplate(GenericMasterBase):
         pool = mp.Pool(processes=self.mp_num)
         results = mp.Manager().Queue()
         self.main_merger = self.main_merger_type()
+        self.err_msg_collector = []
         # 如果无法获得样本图像，说明序列完全没有可用图像。直接退出。
         if self.sample_img is None:
             logger.error(
@@ -498,10 +524,17 @@ class SimpleMasterTemplate(GenericMasterBase):
             pool.close()
             # 合并多线程叠加结果
             for i in range(self.mp_num):
-                cur_img = results.get()
+                cur_result = results.get()
+                cur_img = cur_result.img
+                self.err_msg_collector.extend(cur_result.err_msg)
                 if cur_img is None:
                     continue
-                self.main_merger.merge(cur_img)
+                try:
+                    self.main_merger.merge(cur_img)
+                except AssertionError as e:
+                    main_fail_msg = f"Failed to merge subprocessor result: {e.__repr__()}"
+                    self.err_msg_collector.append(main_fail_msg)
+                    logger.error(main_fail_msg)
                 logger.debug(f"Main merger process: {i+1}/{self.mp_num}")
                 # A temp fix for datascaleup of MeanStacker.
                 # If this is used for main_merger that do not have upscale method,
@@ -555,7 +588,7 @@ class SimpleMasterTemplate(GenericMasterBase):
         data_array: np.ndarray = cache.img
         assert len(
             data_array.shape
-        ) == 4, f"Provided data array is not allowed to be used in `run_in_memory`. data_array be (n, h, w, c)"
+        ) == 4, f"Provided data array is not allowed to be used in `run_in_memory`. data_array must have a shape of (n, h, w, c)."
         self.tot_length = data_array.shape[0]
         self.init_dtype_recorder(data_array[0, ...], output_bits, int_weight,
                                  fin_ratio, fout_ratio)
@@ -581,6 +614,7 @@ class SimpleMasterTemplate(GenericMasterBase):
         result = self.dtype_recorder.rescale(result, power=1)
         result_dict = copy.deepcopy(cache)
         result_dict.img = result
+        result_dict.err_msg = self.err_msg_collector
         return result_dict
 
 
@@ -643,7 +677,8 @@ class MeanStackMaster(SimpleMasterTemplate):
                         raw=self.main_merger.merged_image,
                         n=num,
                         exif=self.base_info.exif,
-                        colorprofile=self.base_info.colorprofile)
+                        colorprofile=self.base_info.colorprofile,
+                        err_msg=self.err_msg_collector)
 
 
 class SingleSigmaClippingMaster(MeanStackMaster):
@@ -665,7 +700,8 @@ class SingleSigmaClippingMaster(MeanStackMaster):
                         raw=main_img_param,
                         n=main_img_param.n,
                         exif=self.base_info.exif,
-                        colorprofile=self.base_info.colorprofile)
+                        colorprofile=self.base_info.colorprofile,
+                        err_msg=self.err_msg_collector)
 
     def init_base_param(self, fname_list: list[str],
                         num_processor: Optional[int],
@@ -767,6 +803,7 @@ class SigmaClippingMaster(GenericMasterBase):
         cur_iter = 0
         last_clip_num = base_result_dict.n
         iter_result = base_result_dict
+        self.err_msg_collector.extend(base_result_dict.err_msg)
         while cur_iter < max_iter:
             cur_iter += 1
             single_sigmaclipping = SingleSigmaClippingMaster()
@@ -805,7 +842,8 @@ class SigmaClippingMaster(GenericMasterBase):
                         raw=iter_result,
                         n=iter_result.n,
                         exif=self.base_info.exif,
-                        colorprofile=self.base_info.colorprofile)
+                        colorprofile=self.base_info.colorprofile,
+                        err_msg=self.err_msg_collector)
 
 
 class SimpleMixTrailMaster(GenericMasterBase):
@@ -885,7 +923,8 @@ class SimpleMixTrailMaster(GenericMasterBase):
                                           sample_img=self.sample_img,
                                           progressbar=progressbar,
                                           num_processor=num_processor)
-
+        self.err_msg_collector.extend(mean_result_dict.err_msg)
+        self.err_msg_collector.extend(max_result_dict.err_msg)
         ratio = get_max_expmean(self.tot_length)
         diff_img = ratio * np.sqrt(mean_result_dict.var)
         # TODO: A temp fix for OutofRange pixels. Should be fixed in the future.
@@ -910,4 +949,5 @@ class SimpleMixTrailMaster(GenericMasterBase):
                               dtype=self.dtype_recorder.output_dtype)
         return EasyDict(img=merged_img,
                         exif=self.base_info.exif,
-                        colorprofile=self.base_info.colorprofile)
+                        colorprofile=self.base_info.colorprofile,
+                        err_msg=self.err_msg_collector)
