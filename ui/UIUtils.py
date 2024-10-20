@@ -6,7 +6,7 @@ from qasync import asyncSlot
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from PySide6.QtCore import Slot,QSize, Qt, QPoint, QSize
-from PySide6.QtWidgets import QFileDialog, QMainWindow,QDialog,QTreeWidgetItem,QPushButton,QHBoxLayout,QWidget
+from PySide6.QtWidgets import QFileDialog, QMainWindow,QDialog,QTreeWidgetItem,QPushButton,QHBoxLayout,QWidget,QMenu
 from PySide6.QtGui import QIcon, QCursor, QBrush, QColor
 
 # 导入自定义组件
@@ -205,6 +205,19 @@ class SlotHandler(QMainWindow):
         self.window.choose_mode_window.timer.start(5000)
 
     @Slot()
+    def show_guide_window(self):
+        '''
+        显示使用说明的的弹窗 置于主窗口的中心位置
+        '''
+        guide_geometry = self.window.guide_window.frameGeometry()
+        HNW_geometry = self.window.frameGeometry()
+        pos_x = HNW_geometry.x() + HNW_geometry.width() / 2 - guide_geometry.width() / 2
+        pos_y = HNW_geometry.y() + HNW_geometry.height() / 2 - guide_geometry.height() / 2
+        guide_window_pos = QPoint(0 if pos_x < 0 else pos_x, 0 if pos_y < 0 else pos_y)
+        self.window.guide_window.move(guide_window_pos)
+        self.window.guide_window.show()
+
+    @Slot()
     def change_mode(self, mode):
         '''
         响应选择的模式
@@ -295,6 +308,16 @@ class SlotHandler(QMainWindow):
         # 更新两个标记 避免点击顶部按钮切换到子页面后 主页面无法响应鼠标release事件导致两个参数保持True，后续引发预期之外的事件
         self.window.dragging = False
         self.window.resizing = False
+
+    @Slot()
+    def show_setting_menu(self):
+        self.menu = QMenu(self)
+        self.menu_show_guide = self.menu.addAction("使用指南")
+        self.menu_show_guide.triggered.connect(self.show_guide_window)
+
+        # 将按钮点击与显示菜单绑定
+        button_pos = self.window.menu_setting.mapToGlobal(QPoint(0, self.window.menu_setting.height()))
+        self.menu.popup(button_pos)  # 弹出菜单，位置是按钮下方
 
     @Slot()
     def output_file_option_2_switch(self):
@@ -851,7 +874,7 @@ class SlotHandler(QMainWindow):
                 int_weight = self.window._int_weight,
                 resize = None,
                 output_bits = self.window._output_bits,
-                ground_mask = self.window._input_files['蒙版'][0] if len(self.window._input_files['蒙版'])>0 and self.window._mask_able else None,
+                ground_mask = self.window._input_files['蒙版'][0] if len(self.window._input_files['蒙版'])>1 and self.window._mask_able else None,
                 debug_mode = False,
                 rej_high = self.window._rej_high,
                 rej_low = self.window._rej_low,
