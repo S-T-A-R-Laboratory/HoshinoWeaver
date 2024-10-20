@@ -4,17 +4,20 @@
 import sys
 import os
 
+import time
 import platform
+import json
 
 from qasync import QEventLoop
 import asyncio
 
 from PySide6.QtCore import Qt, QPoint, QTimer
-from PySide6.QtWidgets import QApplication, QMainWindow, QHeaderView,QTreeWidgetItem, QAbstractItemView, QFrame
+from PySide6.QtWidgets import QApplication, QMainWindow, QHeaderView,QTreeWidgetItem, QAbstractItemView, QDialog
 from PySide6.QtGui import QFont, QMouseEvent, QCursor, QColor, QIcon
 
 from ui.UI import Ui_HNW
 from ui.UI_choose_mode import HNW_choose_mode
+from ui.UI_guide import Ui_guide
 from ui.UIUtils import SlotHandler
 from ui.UILibs import qtProgressBar
 from ui.UILibs import borderFrame
@@ -22,7 +25,65 @@ from ui.UILibs import borderFrame
 import ctypes
 
 
+class HNW_guide(QMainWindow, Ui_guide):
+    def __init__(self, callback, display_always_flag=True):
+        super().__init__()
+        self.setupUi(self)  # 初始化通过 Qt Designer 生成的 UI
+        
+        # self.setWindowFlags(Qt.Popup)  # 设置为弹出窗口
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowSystemMenuHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowTitle("")
 
+        self.next.clicked.connect(self.next_image)
+        self.pre.clicked.connect(self.prev_image)
+        self.close_guide.clicked.connect(self.close)
+
+        self.set_guide_always_display = callback
+        self.display_always.stateChanged.connect(self.guide_always_display)
+
+
+        self.guide_area.setCurrentIndex(0)
+        self.pre.setEnabled(False)
+        self.pre.setText(f'上一页（1/9）')
+        self.next.setText(f'下一页（2/9）')
+        if display_always_flag:
+            self.display_always.setChecked(True)
+        else:
+            self.display_always.setChecked(False)
+
+
+    def guide_always_display(self):
+        if self.display_always.isChecked():
+            val = True
+        else:
+            val = False
+        self.set_guide_always_display('guide_always_display', val)
+        
+    def next_image(self):
+        # 切换到下一张图片
+        self.pre.setEnabled(True)
+        current_index = self.guide_area.currentIndex()
+        next_index = current_index + 1
+        self.guide_area.setCurrentIndex(next_index)
+        self.pre.setText(f'上一页（{current_index+1}/{self.guide_area.count()}）')
+        if next_index == self.guide_area.count()-1:
+            self.next.setEnabled(False)
+        else:
+            self.next.setText(f'下一页（{next_index+2}/{self.guide_area.count()}）')
+
+
+    def prev_image(self):
+        # 切换到上一张图片
+        self.next.setEnabled(True)
+        current_index = self.guide_area.currentIndex()
+        pre_index = current_index - 1
+        self.guide_area.setCurrentIndex(pre_index)
+        self.next.setText(f'下一页（{current_index+1}/{self.guide_area.count()}）')
+        if pre_index == 0:
+            self.pre.setEnabled(False)
+        else:
+            self.pre.setText(f'上一页（{pre_index}/{self.guide_area.count()}）')
 
 class HNW_choose_mode_window(QMainWindow, HNW_choose_mode):
     def __init__(self, callback):
@@ -68,7 +129,6 @@ class HNW_choose_mode_window(QMainWindow, HNW_choose_mode):
             else:
                 self.timer.start(3000)
 
-
 class HNW_window(QMainWindow, Ui_HNW):
     def __init__(self):
         super().__init__()
@@ -79,9 +139,12 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.binding_slot()
         self.initial_settings()
 
-        self.alter_png_level.setEnabled(False)
+        # self.alter_png_level.setEnabled(False)
 
-        
+        # 启动guide页面
+        if self._CONFIG['guide_always_display']:
+            time.sleep(1)
+            self.slot_handler.show_guide_window()
 
     def hover_border_frame(self):
         '''
@@ -363,12 +426,35 @@ class HNW_window(QMainWindow, Ui_HNW):
         '''
         self.setupUi(self)
 
+        # 初始化软件配置信息
+        self._CONFIG = {
+            'config_file' : 'config',
+            'config_path_win' : f'{os.path.expanduser("~")}\\AppData\\Roaming\\HoshiNoWeaver', 
+            'config_path_mac' : f'{os.path.expanduser("~")}\\Library\\Application Support\\HoshiNoWeaver', 
+            'guide_always_display' : True
+        }
+        if platform.system() == 'Windows':
+            self._CONFIG['OS'] = 'Windows'
+            self._CONFIG['config_path'] = self._CONFIG['config_path_win']
+        elif platform.system() == 'Darwin':
+            self._CONFIG['OS'] = 'MacOS' 
+            self._CONFIG['config_path'] = self._CONFIG['config_path_mac']
+        else:
+            self._CONFIG['OS'] = 'Others' 
+            self._CONFIG['config_path'] = ''
+        # 读取配置信息
+        self.read_config()
+        # 更新配置信息 主要是将当前启动后获取到的新的配置信息写入配置文件
+        self.update_config_file()
+
         # 设置窗口的标题
         self.setWindowTitle("HNW-织此星辰")
         # 设置窗口的图标
         self.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))
         # 设置无边框
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
+        # self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowSystemMenuHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
+        
         # 启用鼠标跟踪
         self.setMouseTracking(True)
 
@@ -404,6 +490,8 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.choose_mode_window = HNW_choose_mode_window(self.slot_handler.change_mode)
         # 2 添加主界面缩放检测边框
         self.hover_border_frame()
+        # 3 guide页面
+        self.guide_window = HNW_guide(callback=self.update_config, display_always_flag=self._CONFIG['guide_always_display'])
 
     def initial_attr(self, workspace='星轨叠加'):
         '''
@@ -578,7 +666,6 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 设置进度条颜色
         self.star_trail_process_bar.setStyleSheet("#star_trail_process_bar {background-color: rgb(96, 200, 120);}")
 
-        
     def binding_slot(self):
         '''
         绑定槽函数
@@ -592,6 +679,9 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.ui_close.clicked.connect(self.slot_handler.ui_close)
         self.ui_max.clicked.connect(lambda: self.slot_handler.ui_max(target_type = 'window' if self.isMaximized() else 'max' ))
         self.ui_min.clicked.connect(self.slot_handler.ui_min)
+
+        # setting按钮
+        self.menu_setting.clicked.connect(self.slot_handler.show_setting_menu)
 
         # 图像列表选项卡
         # 6 添加文件
@@ -652,11 +742,40 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.view_next_img.clicked.connect(lambda: self.slot_handler.view_next_img())
         self.view_pre_img.clicked.connect(lambda: self.slot_handler.view_pre_img())
 
+    def read_config(self):
+        config_path = self._CONFIG['config_path']
+        config_file = self._CONFIG['config_file']
+        if os.path.exists(os.path.join(config_path, config_file)):
+            with open(os.path.join(config_path, config_file),'r',encoding='utf-8') as f:
+                try:
+                    data = json.loads(f.read())
+                    self._CONFIG['guide_always_display'] = data['guide_always_display']
+                except:
+                    self.update_config()
+        else:
+            try:
+                os.makedirs(config_path)
+            except FileExistsError:
+                pass
+            with open(os.path.join(config_path, config_file),'w',encoding='utf-8') as f:
+                f.write(json.dumps(self._CONFIG))
+
+    def update_config(self,key,val):
+        self._CONFIG[key] = val
+        self.update_config_file()
+
+    def update_config_file(self): 
+        config_path = self._CONFIG['config_path']
+        config_file = self._CONFIG['config_file']
+        try:
+            os.makedirs(config_path)
+        except FileExistsError:
+            pass
+        with open(os.path.join(config_path, config_file),'w',encoding='utf-8') as f:
+            f.write(json.dumps(self._CONFIG))
+
 
 if __name__ == '__main__':
-    print(platform.system())
-    print(os.path.expanduser("~"))
-    # 存储的配置信息包括：最后一次打开的文件夹位置，缓存文件夹位置，启动时是否打开教程
     myappid = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
