@@ -4,6 +4,8 @@
 import sys
 import os
 
+import platform
+
 from qasync import QEventLoop
 import asyncio
 
@@ -18,6 +20,8 @@ from ui.UILibs import qtProgressBar
 from ui.UILibs import borderFrame
 
 import ctypes
+
+
 
 
 class HNW_choose_mode_window(QMainWindow, HNW_choose_mode):
@@ -74,6 +78,8 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 先绑定再初始化ui设置，避免初始化选项时部分关联槽函数未触发
         self.binding_slot()
         self.initial_settings()
+
+        self.alter_png_level.setEnabled(False)
 
         
 
@@ -648,11 +654,12 @@ class HNW_window(QMainWindow, Ui_HNW):
 
 
 if __name__ == '__main__':
-    try:
-        myappid = 'mycompany.myproduct.subproduct.version'
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-    except:
-        pass
+    print(platform.system())
+    print(os.path.expanduser("~"))
+    # 存储的配置信息包括：最后一次打开的文件夹位置，缓存文件夹位置，启动时是否打开教程
+    myappid = 'mycompany.myproduct.subproduct.version'
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+
     app = QApplication()
     app.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))
 
