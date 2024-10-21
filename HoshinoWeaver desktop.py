@@ -5,8 +5,9 @@ import sys
 import os
 
 import time
-import platform
 import json
+import ctypes
+import platform
 
 from qasync import QEventLoop
 import asyncio
@@ -15,22 +16,18 @@ from PySide6.QtCore import Qt, QPoint, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QHeaderView,QTreeWidgetItem, QAbstractItemView, QDialog
 from PySide6.QtGui import QFont, QMouseEvent, QCursor, QColor, QIcon
 
-from ui.UI import Ui_HNW
-from ui.UI_choose_mode import HNW_choose_mode
-from ui.UI_guide import Ui_guide
+from ui.UI import Ui_HNW,ui_choose_mode,Ui_guide
 from ui.UIUtils import SlotHandler
-from ui.UILibs import qtProgressBar
-from ui.UILibs import borderFrame
+from ui.UILibs import qtProgressBar,borderFrame
 
-import ctypes
-
-
-class HNW_guide(QMainWindow, Ui_guide):
-    def __init__(self, callback, display_always_flag=True):
-        super().__init__()
+class HNW_guide(QDialog, Ui_guide):
+    def __init__(self, callback, display_always_flag=True,parent=None):
+        super().__init__(parent)
         self.setupUi(self)  # 初始化通过 Qt Designer 生成的 UI
-        
-        # self.setWindowFlags(Qt.Popup)  # 设置为弹出窗口
+        self.setModal(True)
+
+        self.setWindowTitle("使用指南")
+        self.setWindowFlags(Qt.Dialog)  # 设置为弹出窗口
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowSystemMenuHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowTitle("")
@@ -45,7 +42,7 @@ class HNW_guide(QMainWindow, Ui_guide):
 
         self.guide_area.setCurrentIndex(0)
         self.pre.setEnabled(False)
-        self.pre.setText(f'上一页（1/9）')
+        self.pre.setText(f'前面没有了')
         self.next.setText(f'下一页（2/9）')
         if display_always_flag:
             self.display_always.setChecked(True)
@@ -69,6 +66,7 @@ class HNW_guide(QMainWindow, Ui_guide):
         self.pre.setText(f'上一页（{current_index+1}/{self.guide_area.count()}）')
         if next_index == self.guide_area.count()-1:
             self.next.setEnabled(False)
+            self.next.setText('后面没有了')
         else:
             self.next.setText(f'下一页（{next_index+2}/{self.guide_area.count()}）')
 
@@ -82,10 +80,11 @@ class HNW_guide(QMainWindow, Ui_guide):
         self.next.setText(f'下一页（{current_index+1}/{self.guide_area.count()}）')
         if pre_index == 0:
             self.pre.setEnabled(False)
+            self.pre.setText('前面没有了')
         else:
             self.pre.setText(f'上一页（{pre_index}/{self.guide_area.count()}）')
 
-class HNW_choose_mode_window(QMainWindow, HNW_choose_mode):
+class ui_choose_mode_window(QMainWindow, ui_choose_mode):
     def __init__(self, callback):
         super().__init__()
         self.setWindowFlags(Qt.Popup)  # 设置为弹出窗口
@@ -143,7 +142,7 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # 启动guide页面
         if self._CONFIG['guide_always_display']:
-            time.sleep(1)
+            time.sleep(0.5)
             self.slot_handler.show_guide_window()
 
     def hover_border_frame(self):
@@ -487,11 +486,11 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 0 激活SlotHandler
         self.slot_handler = SlotHandler(self)
         # 1 模式切换窗口
-        self.choose_mode_window = HNW_choose_mode_window(self.slot_handler.change_mode)
+        self.choose_mode_window = ui_choose_mode_window(self.slot_handler.change_mode)
         # 2 添加主界面缩放检测边框
         self.hover_border_frame()
         # 3 guide页面
-        self.guide_window = HNW_guide(callback=self.update_config, display_always_flag=self._CONFIG['guide_always_display'])
+        self.guide_window = HNW_guide(callback=self.update_config, display_always_flag=self._CONFIG['guide_always_display'],parent=self)
 
     def initial_attr(self, workspace='星轨叠加'):
         '''
