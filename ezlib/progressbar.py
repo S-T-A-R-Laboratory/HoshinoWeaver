@@ -1,3 +1,4 @@
+from __future__ import annotations
 import multiprocessing as mp
 import threading
 from tqdm import tqdm
@@ -7,6 +8,7 @@ FAIL_FLAG = 0
 SUCC_FLAG = 1
 END_FLAG = -1
 DEFAULT_TIMEOUT = 60
+
 
 class QueueProgressbar(object):
     """ Master叠加进程使用的进程基类。Queue启动独立的线程管理进度条，并通过进程共享的队列更新当前进度。
@@ -34,7 +36,7 @@ class QueueProgressbar(object):
             self.desc = desc
 
     def start(self, desc=None):
-        self.thread = threading.Thread(target=self.loop, args=(),daemon=True)
+        self.thread = threading.Thread(target=self.loop, args=(), daemon=True)
         self.progress = 0
         self.stopped = False
         if desc is not None:
@@ -89,7 +91,7 @@ class TqdmProgressbar(QueueProgressbar):
 
     def update(self):
         self.tqdm_manager.update(1)
-    
+
     def stop(self):
         self.tqdm_manager.close()
         super().stop()

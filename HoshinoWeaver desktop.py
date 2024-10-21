@@ -1,6 +1,7 @@
 '''
 
 '''
+from __future__ import annotations
 import sys
 import os
 
@@ -96,7 +97,6 @@ class ui_choose_mode_window(QMainWindow, ui_choose_mode):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.close)  # 超时后关闭窗口
 
-
         self.setupUi(self)
         # 回调函数
         self.callback = callback
@@ -105,8 +105,7 @@ class ui_choose_mode_window(QMainWindow, ui_choose_mode):
         self.label_4.clicked.connect(self.avg_clicked)
         self.img_avg.clicked.connect(self.avg_clicked)
         # self.back.clicked.connect(self.close)   去掉了关闭按钮
-        
-    
+
     def startrail_clicked(self):
         # 当按钮点击时，调用传递的回调函数
         self.callback('星轨叠加')
@@ -116,7 +115,7 @@ class ui_choose_mode_window(QMainWindow, ui_choose_mode):
         # 当按钮点击时，调用传递的回调函数
         self.callback('堆栈降噪')
         self.close()
-     
+
     def mouseMoveEvent(self, event: QMouseEvent):
         if self.rect().contains(self.mapFromGlobal(QCursor.pos())):
             # 鼠标在窗口内，取消定时器
@@ -129,9 +128,10 @@ class ui_choose_mode_window(QMainWindow, ui_choose_mode):
                 self.timer.start(3000)
 
 class HNW_window(QMainWindow, Ui_HNW):
+
     def __init__(self):
         super().__init__()
-        
+
         self.init_window()
         self.initial_attr()
         # 先绑定再初始化ui设置，避免初始化选项时部分关联槽函数未触发
@@ -149,12 +149,15 @@ class HNW_window(QMainWindow, Ui_HNW):
         '''
         创建覆盖在四周的8个边框frame 实现缩放检测并完成缩放
         '''
+
         def set_border_style(frame: borderFrame):
             """ 
             设置 QFrame 的外观 
             """
-            frame.setStyleSheet("background-color: rgba(200,200,0,0);border: 0px solid rgba(0, 220, 0, 250)")
-            
+            frame.setStyleSheet(
+                "background-color: rgba(200,200,0,0);border: 0px solid rgba(0, 220, 0, 250)"
+            )
+
         # 创建8个 QFrame
         self.top_border = borderFrame(position='top', parent=self)
         self.bottom_border = borderFrame(position='bottom', parent=self)
@@ -162,8 +165,10 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.right_border = borderFrame(position='right', parent=self)
         self.top_left_corner = borderFrame(position='top_left', parent=self)
         self.top_right_corner = borderFrame(position='top_right', parent=self)
-        self.bottom_left_corner = borderFrame(position='bottom_left', parent=self)
-        self.bottom_right_corner = borderFrame(position='bottom_right', parent=self)
+        self.bottom_left_corner = borderFrame(position='bottom_left',
+                                              parent=self)
+        self.bottom_right_corner = borderFrame(position='bottom_right',
+                                               parent=self)
 
         # 设置 QFrame 的样式 (红色背景)
         set_border_style(self.top_border)
@@ -184,24 +189,35 @@ class HNW_window(QMainWindow, Ui_HNW):
         window_width = self.width()
         window_height = self.height()
         border_width = 3  # 设定边框的宽度
-        
+
         # 顶部
-        self.top_border.setGeometry(border_width, 0, window_width - 2 * border_width, border_width)
+        self.top_border.setGeometry(border_width, 0,
+                                    window_width - 2 * border_width,
+                                    border_width)
         # 底部
-        self.bottom_border.setGeometry(border_width, window_height - border_width, window_width - 2 * border_width, border_width)
+        self.bottom_border.setGeometry(border_width,
+                                       window_height - border_width,
+                                       window_width - 2 * border_width,
+                                       border_width)
         # 左侧
-        self.left_border.setGeometry(0, border_width, border_width, window_height - 2 * border_width)
+        self.left_border.setGeometry(0, border_width, border_width,
+                                     window_height - 2 * border_width)
         # 右侧
-        self.right_border.setGeometry(window_width - border_width, border_width, border_width, window_height - 2 * border_width)
+        self.right_border.setGeometry(window_width - border_width,
+                                      border_width, border_width,
+                                      window_height - 2 * border_width)
         # 左上
         self.top_left_corner.setGeometry(0, 0, border_width, border_width)
         # 右上
-        self.top_right_corner.setGeometry(window_width - border_width, 0, border_width, border_width)
+        self.top_right_corner.setGeometry(window_width - border_width, 0,
+                                          border_width, border_width)
         # 左下
-        self.bottom_left_corner.setGeometry(0, window_height - border_width, border_width, border_width)
+        self.bottom_left_corner.setGeometry(0, window_height - border_width,
+                                            border_width, border_width)
         # 右下
-        self.bottom_right_corner.setGeometry(window_width - border_width, window_height - border_width, border_width, border_width)
-
+        self.bottom_right_corner.setGeometry(window_width - border_width,
+                                             window_height - border_width,
+                                             border_width, border_width)
 
         super().resizeEvent(event)  # 保持父类的 resizeEvent 行为
 
@@ -217,20 +233,37 @@ class HNW_window(QMainWindow, Ui_HNW):
         if self.isMaximized():
             pass
         else:
-            self.resize_x_y = [self.width(),self.height()]
+            self.resize_x_y = [self.width(), self.height()]
         if event.button() == Qt.LeftButton:
             # 记录按下的位置，用于拖动或调整大小
-            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self.drag_position = event.globalPosition().toPoint(
+            ) - self.frameGeometry().topLeft()
             # 如果鼠标在边缘，则标记为正在调整大小
             self.cursor_shape = {
-                'top': True if self.top_border.cursor().shape() == Qt.SizeVerCursor else False,
-                'top_right' : True if self.top_right_corner.cursor().shape() == Qt.SizeBDiagCursor else False,
-                'right': True if self.right_border.cursor().shape() == Qt.SizeHorCursor else False,
-                'bottom_right' : True if self.bottom_right_corner.cursor().shape() == Qt.SizeFDiagCursor else False,
-                'bottom' : True if self.bottom_border.cursor().shape() == Qt.SizeVerCursor else False,
-                'bottom_left' : True if self.bottom_left_corner.cursor().shape() == Qt.SizeBDiagCursor else False,
-                'left' : True if self.left_border.cursor().shape() == Qt.SizeHorCursor else False,
-                'top_left' : True if self.top_left_corner.cursor().shape() == Qt.SizeFDiagCursor else False
+                'top':
+                True if self.top_border.cursor().shape() == Qt.SizeVerCursor
+                else False,
+                'top_right':
+                True if self.top_right_corner.cursor().shape()
+                == Qt.SizeBDiagCursor else False,
+                'right':
+                True if self.right_border.cursor().shape() == Qt.SizeHorCursor
+                else False,
+                'bottom_right':
+                True if self.bottom_right_corner.cursor().shape()
+                == Qt.SizeFDiagCursor else False,
+                'bottom':
+                True if self.bottom_border.cursor().shape() == Qt.SizeVerCursor
+                else False,
+                'bottom_left':
+                True if self.bottom_left_corner.cursor().shape()
+                == Qt.SizeBDiagCursor else False,
+                'left':
+                True if self.left_border.cursor().shape() == Qt.SizeHorCursor
+                else False,
+                'top_left':
+                True if self.top_left_corner.cursor().shape()
+                == Qt.SizeFDiagCursor else False
             }
             if any(self.cursor_shape.values()):
                 self.resizing = True
@@ -258,19 +291,25 @@ class HNW_window(QMainWindow, Ui_HNW):
                 y_p = pos.y()
                 x_n = x_p - x_p / self.screen_width * self.resize_x_y[0]
                 y_n = y_p - y_p / self.screen_height * self.resize_x_y[1]
-                self.setGeometry(x_n, y_n, self.resize_x_y[0],self.resize_x_y[1])
-                self.slot_handler.ui_max(target_type = 'window')
+                self.setGeometry(x_n, y_n, self.resize_x_y[0],
+                                 self.resize_x_y[1])
+                self.slot_handler.ui_max(target_type='window')
                 # 这里移动了窗口 需要更新drag_position
-                self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self.drag_position = event.globalPosition().toPoint(
+                ) - self.frameGeometry().topLeft()
             # 如果移动到窗口顶部、侧部 则最大化
-            elif event.globalPosition().toPoint().x() <= 0 or event.globalPosition().toPoint().x() >= self.screen_width - 0 or event.globalPosition().toPoint().y() <= 0:
+            elif event.globalPosition().toPoint().x(
+            ) <= 0 or event.globalPosition().toPoint().x(
+            ) >= self.screen_width - 0 or event.globalPosition().toPoint().y(
+            ) <= 0:
                 self.max_flag = True
             # 如果移动到窗口下侧 则最小化
             # 不支持这个选项了 会出发一些bug（移动上边框到最底部最小化后 无法恢复窗口）
             # elif event.globalPosition().toPoint().y() >= self.screen_height - 0:
-                # self.min_flag = True
+            # self.min_flag = True
             else:
-                self.move(event.globalPosition().toPoint() - self.drag_position)
+                self.move(event.globalPosition().toPoint() -
+                          self.drag_position)
                 self.max_flag = False
         else:
             pass
@@ -289,8 +328,8 @@ class HNW_window(QMainWindow, Ui_HNW):
         if self.max_flag:
             self.slot_handler.ui_max(target_type='max')
             self.max_flag = False
-        
-    def mouseDoubleClickEvent(self, event : QMouseEvent):
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent):
         ''' 
         双击切换最大化/窗口化
         '''
@@ -301,10 +340,11 @@ class HNW_window(QMainWindow, Ui_HNW):
                 y_p = pos.y()
                 x_n = x_p - x_p / self.screen_width * self.resize_x_y[0]
                 y_n = y_p - y_p / self.screen_height * self.resize_x_y[1]
-                self.setGeometry(x_n, y_n, self.resize_x_y[0],self.resize_x_y[1])
-                self.slot_handler.ui_max(target_type = 'window')
+                self.setGeometry(x_n, y_n, self.resize_x_y[0],
+                                 self.resize_x_y[1])
+                self.slot_handler.ui_max(target_type='window')
             else:
-                self.slot_handler.ui_max(target_type = 'max')
+                self.slot_handler.ui_max(target_type='max')
 
     def resize_window(self, event: QMouseEvent):
         '''
@@ -323,7 +363,7 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # 如果鼠标移动到屏幕边缘 最大化
         _detect_width = 2
-        if x_p >= self.screen_width-_detect_width or y_p >= self.screen_height-_detect_width or x_p <= _detect_width or y_p <= _detect_width:
+        if x_p >= self.screen_width - _detect_width or y_p >= self.screen_height - _detect_width or x_p <= _detect_width or y_p <= _detect_width:
             self.slot_handler.ui_max(target_type='max')
         # 如果从最大化移动 执行窗口化
         elif self.isMaximized():
@@ -367,7 +407,7 @@ class HNW_window(QMainWindow, Ui_HNW):
                 else:
                     h = h_n
                     y = y_p
-                    
+
                 w_n = w - (x_p - x)
                 if w_n < self.minimumWidth() or w_n > self.maximumWidth():
                     pass
@@ -405,7 +445,7 @@ class HNW_window(QMainWindow, Ui_HNW):
                     pass
                 else:
                     h = h_n
-                
+
                 w_n = w - (x_p - x)
                 if w_n < self.minimumWidth() or w_n > self.maximumWidth():
                     pass
@@ -459,23 +499,23 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # 控件基础属性
         # 标记是否正在调整窗口大小
-        self.resizing = False  
-         # 标记是否正在拖动窗口
-        self.dragging = False 
+        self.resizing = False
+        # 标记是否正在拖动窗口
+        self.dragging = False
         self.drag_position = QPoint()
         # 标记边缘缩放事件触发情况
         self.cursor_shape = {
             'top': False,
-            'top_right' : False,
+            'top_right': False,
             'right': False,
-            'bottom_right' : False,
-            'bottom' : False,
-            'bottom_left' : False,
-            'left' : False,
-            'top_left' : False,
+            'bottom_right': False,
+            'bottom': False,
+            'bottom_left': False,
+            'left': False,
+            'top_left': False,
         }
         # 记录最大化前的状态 不直接使用内置的normalGeometry
-        self.resize_x_y = [self.width(),self.height()]
+        self.resize_x_y = [self.width(), self.height()]
         # 屏幕大小
         self.screen_height = QApplication.primaryScreen().geometry().bottom()
         self.screen_width = QApplication.primaryScreen().geometry().right()
@@ -499,35 +539,32 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 属性定义
         # 任务运行状态(notStart/running/cancelled/successed/failed)和任务
         self._task = None
-        self._status = 'notStart' 
-        self._status_n = {
-            'status' : '未就绪',
-            'tips'   : '请添加图像文件',
-            'tips_2' : ''
-        }
+        self._status = 'notStart'
+        self._status_n = {'status': '未就绪', 'tips': '请添加图像文件', 'tips_2': ''}
 
         self._workspace = workspace
 
         self._input_files = {
-            '亮场' : list(),
-            '平场' : list(),
-            '暗场' : list(),
-            '偏置场' : list(),
-            '蒙版' : list()
+            '亮场': list(),
+            '平场': list(),
+            '暗场': list(),
+            '偏置场': list(),
+            '蒙版': list()
         }
         # 文件格式及文件路径
         self._output_file_type = 'JPG'
         # 缓存数据 用于在切换格式后保存之前输入的数据 切换回来之后不用重新输入
         self._output_file_path_cache = {
-            'JPG' : None,
-            'PNG' : None,
-            'TIFF' : None,
+            'JPG': None,
+            'PNG': None,
+            'TIFF': None,
         }
-        self._output_file_path = self._output_file_path_cache[self._output_file_type]
+        self._output_file_path = self._output_file_path_cache[
+            self._output_file_type]
         # 算法
         self._mode = 'max'
         # 最大迭代次数 1-10 默认5
-        self._max_iter = 5   
+        self._max_iter = 5
         # 蒙版是否可用 可用的前提下 传入参数self._input_files['蒙版']
         self._mask_able = False
         self._mask_able = True
@@ -547,13 +584,11 @@ class HNW_window(QMainWindow, Ui_HNW):
         self._preview_useable = True
 
         self._resize = None
-        self._input_size = [0,0]
+        self._input_size = [0, 0]
 
         # 进度条定义
         self.star_trail_process_bar.setValue(0)
-        self.qtbar_star_trail = qtProgressBar(
-            tot_num = 0
-        )
+        self.qtbar_star_trail = qtProgressBar(tot_num=0)
 
         self._preview_img = ['', None]
 
@@ -563,19 +598,17 @@ class HNW_window(QMainWindow, Ui_HNW):
         '''
         # 设置窗口为窗口化
         self.slot_handler.ui_max(target_type='window')
-        
-        # 页面初始化设置 
+
+        # 页面初始化设置
         # 1 设置三个tab窗口的默认页面
         # self.main_tab.setCurrentIndex(0)
         self.star_trail_option_box.setCurrentIndex(0)
 
-        
         # 2 设置按钮默认选中状态
-        # 默认输出jpg 
+        # 默认输出jpg
         # 更改setCurrentText为png再改回jpg确保槽函数触发
         self.alter_output_type_2.setCurrentText('PNG')
         self.alter_output_type_2.setCurrentText('JPG')
-        
 
         # 3 设置图像质量滑块默认值
         self.alter_jpg_level.setValue(85)
@@ -587,17 +620,19 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.star_trail_file_tree.setIndentation(10)
         # 隐藏标题行
         self.star_trail_file_tree.setHeaderHidden(True)
-        self.star_trail_file_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.star_trail_file_tree_l = QTreeWidgetItem(self.star_trail_file_tree, ['星空图像（0）'])
+        self.star_trail_file_tree.header().setSectionResizeMode(
+            0, QHeaderView.Stretch)
+        self.star_trail_file_tree_l = QTreeWidgetItem(
+            self.star_trail_file_tree, ['星空图像（0）'])
         # self.star_trail_file_tree_f = QTreeWidgetItem(self.star_trail_file_tree, ['平场（0）'])
         # self.star_trail_file_tree_d = QTreeWidgetItem(self.star_trail_file_tree, ['暗场（0）'])
         # self.star_trail_file_tree_b = QTreeWidgetItem(self.star_trail_file_tree, ['偏置场（0）'])
         # self.star_trail_file_tree_m = QTreeWidgetItem(self.star_trail_file_tree, ['蒙版（0）'])
         self.star_trail_file_tree_categore = {
-            "亮场" : self.star_trail_file_tree_l, 
-            # "平场" : self.star_trail_file_tree_f, 
-            # "暗场" : self.star_trail_file_tree_d, 
-            # "偏置场" : self.star_trail_file_tree_b, 
+            "亮场": self.star_trail_file_tree_l,
+            # "平场" : self.star_trail_file_tree_f,
+            # "暗场" : self.star_trail_file_tree_d,
+            # "偏置场" : self.star_trail_file_tree_b,
             # "蒙版" : self.star_trail_file_tree_m
         }
 
@@ -609,7 +644,8 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 6 设置图标
 
         # 7 设置文件列表允许允许多选
-        self.star_trail_file_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.star_trail_file_tree.setSelectionMode(
+            QAbstractItemView.ExtendedSelection)
 
         # s设置输出文件路径框为不可修改
         self.output_path_2.setReadOnly(True)
@@ -634,7 +670,8 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.alter_rejection.track_width = 120
         self.alter_rejection.track_color = QColor("#66cc66")
         self.alter_rejection.track_left_able_color = QColor(190, 190, 190, 190)
-        self.alter_rejection.track_right_able_color = QColor(190, 190, 190, 190)
+        self.alter_rejection.track_right_able_color = QColor(
+            190, 190, 190, 190)
         self.alter_rejection.min_value = -60
         self.alter_rejection.max_value = 60
         self.alter_rejection.left_handdle_min_value = None
@@ -673,10 +710,12 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.slot_handler = SlotHandler(self)
 
         # 模式切换按钮
-        self.label_current_mode.clicked.connect(self.slot_handler.show_choose_mode_window)
+        self.label_current_mode.clicked.connect(
+            self.slot_handler.show_choose_mode_window)
         # 最小化、最大化/窗口化、关闭按钮
         self.ui_close.clicked.connect(self.slot_handler.ui_close)
-        self.ui_max.clicked.connect(lambda: self.slot_handler.ui_max(target_type = 'window' if self.isMaximized() else 'max' ))
+        self.ui_max.clicked.connect(lambda: self.slot_handler.ui_max(
+            target_type='window' if self.isMaximized() else 'max'))
         self.ui_min.clicked.connect(self.slot_handler.ui_min)
 
         # setting按钮
@@ -688,51 +727,67 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 7 添加文件夹
         self.add_folder.clicked.connect(self.slot_handler.add_folder)
         # 8 清空文件列表
-        self.clear_files.clicked.connect(lambda: self.slot_handler.clear_tree(categore_to_clear=None))
-        
+        self.clear_files.clicked.connect(
+            lambda: self.slot_handler.clear_tree(categore_to_clear=None))
+
         # 10 文件列表菜单按钮
-        self.star_trail_file_tree.menu_action_triggered_signal.connect(self.slot_handler.trigger_file_tree_item_menu)
+        self.star_trail_file_tree.menu_action_triggered_signal.connect(
+            self.slot_handler.trigger_file_tree_item_menu)
 
         # 叠加选项 选项卡
         # 算法选择切换
-        self.alter_algorithm_startrail.currentTextChanged.connect(lambda: self.slot_handler.choose_algorithm_max())
-        self.alter_algorithm_mean.currentTextChanged.connect(lambda: self.slot_handler.choose_algorithm_mean())
-        self.alter_algorithm_min.currentTextChanged.connect(lambda: self.slot_handler.choose_algorithm_min())
+        self.alter_algorithm_startrail.currentTextChanged.connect(
+            lambda: self.slot_handler.choose_algorithm_max())
+        self.alter_algorithm_mean.currentTextChanged.connect(
+            lambda: self.slot_handler.choose_algorithm_mean())
+        self.alter_algorithm_min.currentTextChanged.connect(
+            lambda: self.slot_handler.choose_algorithm_min())
         # 3 fade in out双滑块
-        self.alter_fade_in_out.valueChanged.connect(self.slot_handler.alter_fade_in_out)
+        self.alter_fade_in_out.valueChanged.connect(
+            self.slot_handler.alter_fade_in_out)
         # rej low、high双滑块
-        self.alter_rejection.valueChanged.connect(self.slot_handler.alter_rejection)
+        self.alter_rejection.valueChanged.connect(
+            self.slot_handler.alter_rejection)
         # 9 质量与速度选项
-        self.int_weight_able.stateChanged.connect(self.slot_handler.int_weight_able)
+        self.int_weight_able.stateChanged.connect(
+            self.slot_handler.int_weight_able)
         # 启用蒙版
         self.mask_able.stateChanged.connect(self.slot_handler.mask_able)
         # 选择蒙版
         self.alter_mask_file.clicked.connect(self.slot_handler.alter_mask_file)
         # 最大迭代次数
-        self.alter_max_iter.valueChanged.connect(self.slot_handler.alter_max_iter)
+        self.alter_max_iter.valueChanged.connect(
+            self.slot_handler.alter_max_iter)
 
         # 输出选项 选项卡
         # 2 星轨页面的文件格式下拉框
-        self.alter_output_type_2.currentTextChanged.connect(self.slot_handler.output_file_option_2_switch)
+        self.alter_output_type_2.currentTextChanged.connect(
+            self.slot_handler.output_file_option_2_switch)
         # 4 输出文件选择框
         self.alter_output_2.clicked.connect(self.slot_handler.save_img)
         # 5 图像质量值显示
-        self.alter_png_level.valueChanged.connect(lambda value: self.slot_handler.alter_png_level(int(value)))
-        self.alter_jpg_level.valueChanged.connect(lambda value: self.slot_handler.alter_jpg_level(int(value)))
+        self.alter_png_level.valueChanged.connect(
+            lambda value: self.slot_handler.alter_png_level(int(value)))
+        self.alter_jpg_level.valueChanged.connect(
+            lambda value: self.slot_handler.alter_jpg_level(int(value)))
 
         # self.alter_png_level.valueChanged.connect(lambda value: self.slot_handler.update_png_compressing(int(value)))
         # self.alter_jpg_level.valueChanged.connect(lambda value: self.slot_handler.update_jpg_quality(int(value)))
         # self.alter_png_level.valueChanged.connect(lambda value: self.png_level.setText(str(value)))
         # self.alter_jpg_level.valueChanged.connect(lambda value: self.jpg_level.setText(str(value)))
         # 色深
-        self.alter_output_bits.currentTextChanged.connect(self.slot_handler.alter_output_bits)
+        self.alter_output_bits.currentTextChanged.connect(
+            self.slot_handler.alter_output_bits)
         # 输出尺寸
-        self.alter_resize.valueChanged.connect(lambda value: self.slot_handler.update_resize(int(value)))
+        self.alter_resize.valueChanged.connect(
+            lambda value: self.slot_handler.update_resize(int(value)))
 
         # 开始按钮
-        self.btn_star_trail_start.clicked.connect(self.slot_handler.star_trail_start_process)
+        self.btn_star_trail_start.clicked.connect(
+            self.slot_handler.star_trail_start_process)
         # 进度条
-        self.qtbar_star_trail.progress_signal.connect(self.slot_handler.update_progress_bar)
+        self.qtbar_star_trail.progress_signal.connect(
+            self.slot_handler.update_progress_bar)
 
         # 分隔条拖动 先不用了
         # self.splitter.splitterMoved.connect(self.img_view_label.setImage)

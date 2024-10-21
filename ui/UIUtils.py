@@ -543,7 +543,7 @@ class SlotHandler(QMainWindow):
     @Slot()
     def save_img(self):
         # 打开文件浏览对话框
-        options = QFileDialog.Options()
+        options = QFileDialog.Options(0)
         # 允许保存的文件类型
         filter = 'JPG (*.jpg);;PNG (*.png);;TIFF (*.tif)'
         # 根据当前已选择的文件类型选择默认类型
@@ -1107,9 +1107,9 @@ class SlotHandler(QMainWindow):
             if len(self.window._input_files['亮场']) == 0:
                 self.window._status_n['status'] = '未就绪'
                 self.window._status_n['tips'] = '请添加图像文件'
-            elif len(self.window._input_files['亮场']) < 5:
+            elif len(self.window._input_files['亮场']) < 3:
                 self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加5张或以上图像文件'
+                self.window._status_n['tips'] = '请添加3张或以上图像文件'
             elif self.window._output_file_path_cache[self.window._output_file_type] is None:
                 self.window._status_n['status'] = '未就绪'
                 self.window._status_n['tips'] = '请选择存储路径'
@@ -1120,9 +1120,9 @@ class SlotHandler(QMainWindow):
             if len(self.window._input_files['亮场']) == 0:
                 self.window._status_n['status'] = '未就绪'
                 self.window._status_n['tips'] = '请添加图像文件'
-            elif len(self.window._input_files['亮场']) < 5:
+            elif len(self.window._input_files['亮场']) < 3:
                 self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加5张或以上图像文件'
+                self.window._status_n['tips'] = '请添加3张或以上图像文件'
             elif len(self.window._input_files['蒙版']) == 0:
                 self.window._status_n['status'] = '未就绪'
                 self.window._status_n['tips'] = '请选择蒙版文件'
@@ -1136,9 +1136,9 @@ class SlotHandler(QMainWindow):
             if len(self.window._input_files['亮场']) == 0:
                 self.window._status_n['status'] = '未就绪'
                 self.window._status_n['tips'] = '请添加图像文件'
-            elif len(self.window._input_files['亮场']) < 5:
+            elif len(self.window._input_files['亮场']) < 3:
                 self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加5张或以上图像文件'
+                self.window._status_n['tips'] = '请添加3张或以上图像文件'
             elif self.window._output_file_path_cache[self.window._output_file_type] is None:
                 self.window._status_n['status'] = '未就绪'
                 self.window._status_n['tips'] = '请选择存储路径'
@@ -1149,9 +1149,9 @@ class SlotHandler(QMainWindow):
             if len(self.window._input_files['亮场']) == 0:
                 self.window._status_n['status'] = '未就绪'
                 self.window._status_n['tips'] = '请添加图像文件'
-            elif len(self.window._input_files['亮场']) < 5:
+            elif len(self.window._input_files['亮场']) < 3:
                 self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加5张或以上图像文件'
+                self.window._status_n['tips'] = '请添加3张或以上图像文件'
             elif self.window._output_file_path_cache[self.window._output_file_type] is None:
                 self.window._status_n['status'] = '未就绪'
                 self.window._status_n['tips'] = '请选择存储路径'
