@@ -21,9 +21,21 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
     QSizePolicy, QSlider, QSpacerItem, QSplitter,
     QTabWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from ui.UILibs import (ClickableLabel, DoubleSlider, ImgTreeWidget, hoverDisplayButton,
-    imgDisplayQFrame)
+from PySide6.QtCore import (QCoreApplication, QDate, QDateTime, QLocale,
+    QMetaObject, QObject, QPoint, QRect,
+    QSize, QTime, QUrl, Qt)
+from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
+    QFont, QFontDatabase, QGradient, QIcon,
+    QImage, QKeySequence, QLinearGradient, QPainter,
+    QPalette, QPixmap, QRadialGradient, QTransform)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QFrame,
+    QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+    QSpacerItem, QStackedWidget, QVBoxLayout, QWidget)
+
+
+from ui.UILibs import ClickableLabel, DoubleSlider, ImgTreeWidget, hoverDisplayButton,imgDisplayQFrame,ClickableLabel
 from ui import resource
+
 
 class Ui_HNW(object):
     def setupUi(self, HNW):
@@ -2178,5 +2190,365 @@ class Ui_HNW(object):
         self.btn_star_trail_start.setText("")
         self.label_7.setText("")
         self.star_trial_tips.setText(QCoreApplication.translate("HNW", u"\u6587\u5b57\u663e\u793a", None))
+    # retranslateUi
+class Ui_guide(object):
+    def setupUi(self, guide):
+        if not guide.objectName():
+            guide.setObjectName(u"guide")
+        guide.resize(815, 657)
+        guide.setMinimumSize(QSize(815, 0))
+        guide.setMaximumSize(QSize(815, 16777215))
+        self.horizontalLayout = QHBoxLayout(guide)
+        self.horizontalLayout.setObjectName(u"horizontalLayout")
+        self.frame = QFrame(guide)
+        self.frame.setObjectName(u"frame")
+        self.frame.setStyleSheet(u"#frame {\n"
+"	background-color: rgba(230, 229, 228, 200);\n"
+"	border: 1px solid rgba(220, 220, 220, 220);\n"
+"	border-radius: 5px;\n"
+"	padding: 5px 5px 5px 5px;\n"
+"}\n"
+"#frame *{\n"
+"	background-color:  rgba(255, 255, 255, 0);\n"
+"}")
+        self.frame.setFrameShape(QFrame.Shape.StyledPanel)
+        self.frame.setFrameShadow(QFrame.Shadow.Raised)
+        self.verticalLayout = QVBoxLayout(self.frame)
+        self.verticalLayout.setSpacing(0)
+        self.verticalLayout.setObjectName(u"verticalLayout")
+        self.verticalLayout.setContentsMargins(0, 0, 0, 0)
+        self.title = QFrame(self.frame)
+        self.title.setObjectName(u"title")
+        self.title.setMinimumSize(QSize(0, 20))
+        self.title.setMaximumSize(QSize(16777215, 20))
+        self.title.setStyleSheet(u"#title {\n"
+"	\n"
+"	border-bottom: 1px solid rgba(220, 220, 220, 150);\n"
+"}")
+        self.title.setFrameShape(QFrame.Shape.StyledPanel)
+        self.title.setFrameShadow(QFrame.Shadow.Raised)
+        self.horizontalLayout_4 = QHBoxLayout(self.title)
+        self.horizontalLayout_4.setSpacing(0)
+        self.horizontalLayout_4.setObjectName(u"horizontalLayout_4")
+        self.horizontalLayout_4.setContentsMargins(0, 0, 0, 0)
+        self.label = QLabel(self.title)
+        self.label.setObjectName(u"label")
+        self.label.setStyleSheet(u"QLabel {\n"
+"	qproperty-alignment: 'AlignCenter';\n"
+"	background-color: rgba(255, 255, 255, 0);\n"
+"	border:None;\n"
+"	font: 14pt \"\u5b8b\u4f53\";\n"
+"\n"
+"\n"
+"}")
+
+        self.horizontalLayout_4.addWidget(self.label)
+
+
+        self.verticalLayout.addWidget(self.title)
+
+        self.guide_area = QStackedWidget(self.frame)
+        self.guide_area.setObjectName(u"guide_area")
+        self.guide_area.setMinimumSize(QSize(0, 577))
+        self.guide_area.setMaximumSize(QSize(16777215, 577))
+        self.guide_area.setStyleSheet(u"")
+        self.guide01 = QWidget()
+        self.guide01.setObjectName(u"guide01")
+        self.guide01.setStyleSheet(u"#guide01 {\n"
+"	image: url(:/guide/resource/guide/01.png);\n"
+"}")
+        self.hboxLayout = QHBoxLayout(self.guide01)
+        self.hboxLayout.setSpacing(0)
+        self.hboxLayout.setObjectName(u"hboxLayout")
+        self.hboxLayout.setContentsMargins(0, 0, 0, 0)
+        self.guide_area.addWidget(self.guide01)
+        self.guide02 = QWidget()
+        self.guide02.setObjectName(u"guide02")
+        self.guide02.setStyleSheet(u"#guide02 {\n"
+"	image: url(:/guide/resource/guide/02.png);\n"
+"}")
+        self.guide_area.addWidget(self.guide02)
+        self.guide03 = QWidget()
+        self.guide03.setObjectName(u"guide03")
+        self.guide03.setStyleSheet(u"#guide03 {\n"
+"	image: url(:/guide/resource/guide/03.png);\n"
+"}")
+        self.guide_area.addWidget(self.guide03)
+        self.guide04 = QWidget()
+        self.guide04.setObjectName(u"guide04")
+        self.guide04.setStyleSheet(u"#guide04 {\n"
+"	image: url(:/guide/resource/guide/04.png);\n"
+"}")
+        self.guide_area.addWidget(self.guide04)
+        self.guide05 = QWidget()
+        self.guide05.setObjectName(u"guide05")
+        self.guide05.setStyleSheet(u"#guide05 {\n"
+"	image: url(:/guide/resource/guide/05.png);\n"
+"}")
+        self.guide_area.addWidget(self.guide05)
+        self.guide06 = QWidget()
+        self.guide06.setObjectName(u"guide06")
+        self.guide06.setStyleSheet(u"#guide06 {\n"
+"	image: url(:/guide/resource/guide/06.png);\n"
+"}")
+        self.guide_area.addWidget(self.guide06)
+        self.guide07 = QWidget()
+        self.guide07.setObjectName(u"guide07")
+        self.guide07.setStyleSheet(u"#guide07 {\n"
+"	image: url(:/guide/resource/guide/07.png);\n"
+"}")
+        self.guide_area.addWidget(self.guide07)
+        self.guide08 = QWidget()
+        self.guide08.setObjectName(u"guide08")
+        self.guide08.setStyleSheet(u"#guide08 {\n"
+"	image: url(:/guide/resource/guide/08.png);\n"
+"}")
+        self.guide_area.addWidget(self.guide08)
+        self.guide09 = QWidget()
+        self.guide09.setObjectName(u"guide09")
+        self.guide09.setStyleSheet(u"#guide09 {\n"
+"	image: url(:/guide/resource/guide/09.png);\n"
+"}")
+        self.guide_area.addWidget(self.guide09)
+
+        self.verticalLayout.addWidget(self.guide_area)
+
+        self.btn = QFrame(self.frame)
+        self.btn.setObjectName(u"btn")
+        self.btn.setMinimumSize(QSize(0, 30))
+        self.btn.setMaximumSize(QSize(16777215, 30))
+        self.btn.setStyleSheet(u"QPushButton {\n"
+"	width: 80px\n"
+"}\n"
+"QPushButton {\n"
+"	background-color: rgba(250,250,250,220);\n"
+"	color:rgba(35,35,35,210);\n"
+"	padding: 0px;\n"
+"	border: 0px solid #ccc;\n"
+"	border-radius: 5px;\n"
+"	width:25px;\n"
+"	height:80px;\n"
+"	padding-left: 3px;\n"
+"	padding-top: 3px;\n"
+"	margin-bottom: 1px;\n"
+"	margin-left: 2px\n"
+"\n"
+"}\n"
+"QPushButton:hover{\n"
+"	padding-bottom: 3px;\n"
+"}\n"
+"QPushButton:disabled{\n"
+"	background-color: rgba(210,210,210,200);\n"
+"}")
+        self.btn.setFrameShape(QFrame.Shape.StyledPanel)
+        self.btn.setFrameShadow(QFrame.Shadow.Raised)
+        self.horizontalLayout_2 = QHBoxLayout(self.btn)
+        self.horizontalLayout_2.setSpacing(0)
+        self.horizontalLayout_2.setObjectName(u"horizontalLayout_2")
+        self.horizontalLayout_2.setContentsMargins(0, 0, 0, 0)
+        self.horizontalSpacer_2 = QSpacerItem(257, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.horizontalLayout_2.addItem(self.horizontalSpacer_2)
+
+        self.pre = QPushButton(self.btn)
+        self.pre.setObjectName(u"pre")
+        self.pre.setMinimumSize(QSize(100, 0))
+        self.pre.setMaximumSize(QSize(100, 16777215))
+
+        self.horizontalLayout_2.addWidget(self.pre)
+
+        self.close_guide = QPushButton(self.btn)
+        self.close_guide.setObjectName(u"close_guide")
+        self.close_guide.setMinimumSize(QSize(100, 0))
+        self.close_guide.setMaximumSize(QSize(100, 16777215))
+
+        self.horizontalLayout_2.addWidget(self.close_guide)
+
+        self.next = QPushButton(self.btn)
+        self.next.setObjectName(u"next")
+        self.next.setMinimumSize(QSize(100, 0))
+        self.next.setMaximumSize(QSize(100, 16777215))
+
+        self.horizontalLayout_2.addWidget(self.next)
+
+        self.horizontalSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.horizontalLayout_2.addItem(self.horizontalSpacer)
+
+        self.display_always = QCheckBox(self.btn)
+        self.display_always.setObjectName(u"display_always")
+        self.display_always.setMinimumSize(QSize(120, 0))
+        self.display_always.setMaximumSize(QSize(120, 16777215))
+        self.display_always.setChecked(True)
+
+        self.horizontalLayout_2.addWidget(self.display_always)
+
+
+        self.verticalLayout.addWidget(self.btn)
+
+
+        self.horizontalLayout.addWidget(self.frame)
+
+
+        self.retranslateUi(guide)
+
+        self.guide_area.setCurrentIndex(0)
+
+
+        QMetaObject.connectSlotsByName(guide)
+    # setupUi
+
+    def retranslateUi(self, guide):
+        guide.setWindowTitle(QCoreApplication.translate("guide", u"Dialog", None))
+        self.label.setText(QCoreApplication.translate("guide", u"\u4f7f\u7528\u6307\u5357", None))
+        self.pre.setText(QCoreApplication.translate("guide", u"\u4e0a\u4e00\u6b65", None))
+        self.close_guide.setText(QCoreApplication.translate("guide", u"\u5173\u95ed", None))
+        self.next.setText(QCoreApplication.translate("guide", u"\u5f00\u59cb", None))
+        self.display_always.setText(QCoreApplication.translate("guide", u"\u6bcf\u6b21\u542f\u52a8\u65f6\u5f39\u51fa", None))
+    # retranslateUi
+
+
+
+class ui_choose_mode(object):
+    def setupUi(self, HNW_choose_mode):
+        if not HNW_choose_mode.objectName():
+            HNW_choose_mode.setObjectName(u"HNW_choose_mode")
+        HNW_choose_mode.resize(200, 120)
+        HNW_choose_mode.setMinimumSize(QSize(200, 120))
+        HNW_choose_mode.setMaximumSize(QSize(200, 150))
+        self.centralwidget = QWidget(HNW_choose_mode)
+        self.centralwidget.setObjectName(u"centralwidget")
+        self.centralwidget.setStyleSheet(u"#centralwidget QPushButton, QLabel, ClickableLabel{\n"
+"	font-size: 11px;                         /* \u8bbe\u7f6e\u5b57\u4f53\u5927\u5c0f */\n"
+"     color:  rgba(30,30,30,200);       /* \u8bbe\u7f6e\u5b57\u4f53\u989c\u8272 */\n"
+"	font-weight: 400;                      /* \u8bbe\u7f6e\u5b57\u4f53\u539a\u5ea6 */\n"
+"	qproperty-alignment: 'AlignCenter';\n"
+"}\n"
+"\n"
+"#centralwidget ClickableLabel {\n"
+"	background-color: rgba(255, 255, 255, 0);\n"
+"	margin:5px;\n"
+"}\n"
+"#centralwidget ClickableLabel:hover{\n"
+"	padding-bottom: 5px;\n"
+"}\n"
+"\n"
+"#centralwidget ClickableLabel:pressed {\n"
+"	margin:0px 0px 0px 0px ;\n"
+"	padding:0px 0px 0px 0px ;\n"
+"}\n"
+"#centralwidget {\n"
+"	border: 1px solid rgba(240, 240, 240, 200);\n"
+"}\n"
+"")
+        self.horizontalLayout = QHBoxLayout(self.centralwidget)
+        self.horizontalLayout.setSpacing(0)
+        self.horizontalLayout.setObjectName(u"horizontalLayout")
+        self.horizontalLayout.setContentsMargins(0, 0, 0, 0)
+        self.frame = QFrame(self.centralwidget)
+        self.frame.setObjectName(u"frame")
+        self.frame.setStyleSheet(u"#frame {\n"
+"	border-left: 1px solid rgba(0, 240, 240, 200);\n"
+"}")
+        self.frame.setFrameShape(QFrame.Shape.StyledPanel)
+        self.frame.setFrameShadow(QFrame.Shadow.Raised)
+        self.verticalLayout = QVBoxLayout(self.frame)
+        self.verticalLayout.setSpacing(0)
+        self.verticalLayout.setObjectName(u"verticalLayout")
+        self.verticalLayout.setContentsMargins(0, 0, 0, 0)
+        self.frame_3 = QFrame(self.frame)
+        self.frame_3.setObjectName(u"frame_3")
+        self.frame_3.setStyleSheet(u"#frame_3 > QFrame {\n"
+"	margin: 2px 2px 2px 2px;\n"
+"	\n"
+"	background-color: rgb(220, 220, 220);\n"
+"}")
+        self.frame_3.setFrameShape(QFrame.Shape.StyledPanel)
+        self.frame_3.setFrameShadow(QFrame.Shadow.Raised)
+        self.horizontalLayout_2 = QHBoxLayout(self.frame_3)
+        self.horizontalLayout_2.setSpacing(0)
+        self.horizontalLayout_2.setObjectName(u"horizontalLayout_2")
+        self.horizontalLayout_2.setContentsMargins(0, 0, 0, 0)
+        self.frame_4 = QFrame(self.frame_3)
+        self.frame_4.setObjectName(u"frame_4")
+        self.frame_4.setFrameShape(QFrame.Shape.StyledPanel)
+        self.frame_4.setFrameShadow(QFrame.Shadow.Raised)
+        self.verticalLayout_2 = QVBoxLayout(self.frame_4)
+        self.verticalLayout_2.setSpacing(0)
+        self.verticalLayout_2.setObjectName(u"verticalLayout_2")
+        self.verticalLayout_2.setContentsMargins(0, 0, 0, 0)
+        self.img_startrail = ClickableLabel(self.frame_4)
+        self.img_startrail.setObjectName(u"img_startrail")
+        self.img_startrail.setMinimumSize(QSize(90, 90))
+        self.img_startrail.setMaximumSize(QSize(90, 90))
+        self.img_startrail.setStyleSheet(u"#img_startrail {\n"
+"	border:none;\n"
+"	border-image: url(:/img/resource/img/01.jpg);\n"
+"	background-repeat: no-repeat;                     /* \u4e0d\u91cd\u590d\u80cc\u666f\u56fe */\n"
+"    background-position: center;                      /* \u5c45\u4e2d\u663e\u793a\u80cc\u666f\u56fe */\n"
+"}")
+
+        self.verticalLayout_2.addWidget(self.img_startrail, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.label_3 = ClickableLabel(self.frame_4)
+        self.label_3.setObjectName(u"label_3")
+        self.label_3.setMinimumSize(QSize(0, 20))
+        self.label_3.setMaximumSize(QSize(16777215, 20))
+
+        self.verticalLayout_2.addWidget(self.label_3)
+
+
+        self.horizontalLayout_2.addWidget(self.frame_4)
+
+        self.frame_5 = QFrame(self.frame_3)
+        self.frame_5.setObjectName(u"frame_5")
+        self.frame_5.setFrameShape(QFrame.Shape.StyledPanel)
+        self.frame_5.setFrameShadow(QFrame.Shadow.Raised)
+        self.verticalLayout_3 = QVBoxLayout(self.frame_5)
+        self.verticalLayout_3.setSpacing(0)
+        self.verticalLayout_3.setObjectName(u"verticalLayout_3")
+        self.verticalLayout_3.setContentsMargins(0, 0, 0, 0)
+        self.img_avg = ClickableLabel(self.frame_5)
+        self.img_avg.setObjectName(u"img_avg")
+        self.img_avg.setMinimumSize(QSize(90, 90))
+        self.img_avg.setMaximumSize(QSize(90, 90))
+        self.img_avg.setStyleSheet(u"#img_avg {\n"
+"	border:none;\n"
+"	border-image: url(:/img/resource/img/02.jpg);\n"
+"	background-repeat: no-repeat;                     /* \u4e0d\u91cd\u590d\u80cc\u666f\u56fe */\n"
+"    background-position: center;                      /* \u5c45\u4e2d\u663e\u793a\u80cc\u666f\u56fe */\n"
+"}")
+
+        self.verticalLayout_3.addWidget(self.img_avg, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.label_4 = ClickableLabel(self.frame_5)
+        self.label_4.setObjectName(u"label_4")
+        self.label_4.setMinimumSize(QSize(0, 20))
+        self.label_4.setMaximumSize(QSize(16777215, 20))
+
+        self.verticalLayout_3.addWidget(self.label_4)
+
+
+        self.horizontalLayout_2.addWidget(self.frame_5)
+
+
+        self.verticalLayout.addWidget(self.frame_3)
+
+
+        self.horizontalLayout.addWidget(self.frame)
+
+        HNW_choose_mode.setCentralWidget(self.centralwidget)
+
+        self.retranslateUi(HNW_choose_mode)
+
+        QMetaObject.connectSlotsByName(HNW_choose_mode)
+    # setupUi
+
+    def retranslateUi(self, HNW_choose_mode):
+        HNW_choose_mode.setWindowTitle(QCoreApplication.translate("HNW_choose_mode", u"MainWindow", None))
+        self.img_startrail.setText("")
+        self.label_3.setText(QCoreApplication.translate("HNW_choose_mode", u"\u661f\u8f68\u53e0\u52a0", None))
+        self.img_avg.setText("")
+        self.label_4.setText(QCoreApplication.translate("HNW_choose_mode", u"\u5806\u6808\u964d\u566a", None))
     # retranslateUi
 

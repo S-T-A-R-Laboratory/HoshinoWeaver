@@ -1,5 +1,7 @@
-# 用于存放函数
-from __future__ import annotations
+'''
+界面操作响应函数或方法
+'''
+
 import re
 import asyncio
 from qasync import asyncSlot
