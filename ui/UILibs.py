@@ -1,3 +1,7 @@
+'''
+该文件为重写、或自定义的QT组件
+'''
+
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal, QObject, QSize, QPointF, QRect, QPoint
