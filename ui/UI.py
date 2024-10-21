@@ -123,7 +123,8 @@ class Ui_HNW(object):
         self.label.setObjectName(u"label")
         self.label.setStyleSheet(u"QLabel {\n"
 "	background-color: rgba(255, 255, 255, 0);\n"
-"	font: 16pt \"\u6c49\u4eea\u4e2d\u9ed1 197\";\n"
+"	font: 400 13pt ;\n"
+"	color : rgba(45, 45, 45, 220);\n"
 "}")
 
         self.horizontalLayout_3.addWidget(self.label)
@@ -153,7 +154,8 @@ class Ui_HNW(object):
 "	qproperty-alignment: 'AlignCenter';\n"
 "	background-color: rgba(255, 255, 255, 0);\n"
 "	border:None;\n"
-"	font: 14pt \"\u5b8b\u4f53\";\n"
+"	font: 400 14pt ;\n"
+"	color : rgba(45, 45, 45, 220);\n"
 "}")
 
         self.horizontalLayout_4.addWidget(self.label_current_mode)
@@ -385,7 +387,7 @@ class Ui_HNW(object):
 "}\n"
 "QTabBar::tab:selected {\n"
 "	background-color: transparent ; \n"
-"	font: 550 10pt \"Microsoft YaHei UI\";\n"
+"	font: 550 10pt ;\n"
 "	color:rgba(40,40,40,245);\n"
 "	border: 0px solid #dcdcdc;\n"
 "	border-bottom: none;\n"
@@ -396,8 +398,8 @@ class Ui_HNW(object):
 "}\n"
 "* QToolTip {\n"
 "	/* \u5168\u5c40\u5e94\u7528 */\n"
-"    background-color: rgba(250, 250, 250, 240) !important;  /* \u8bbe"
-                        "\u7f6e\u5de5\u5177\u63d0\u793a\u7684\u80cc\u666f\u4e3a\u534a\u900f\u660e\u767d\u8272 */\n"
+"    background-color: rgba(250, 250, 250, 240) !important;  /* \u8bbe\u7f6e\u5de5\u5177\u63d0"
+                        "\u793a\u7684\u80cc\u666f\u4e3a\u534a\u900f\u660e\u767d\u8272 */\n"
 "    color:rgba(35,35,35,210) !important;  /* \u8bbe\u7f6e\u6587\u5b57\u989c\u8272\u4e3a\u9ed1\u8272 */\n"
 "    border: 1px solid rgba(220, 220, 220, 250) !important;  /* \u53ef\u9009\uff1a\u4e3a\u5de5\u5177\u63d0\u793a\u6dfb\u52a0\u8fb9\u6846 */\n"
 "}\n"
@@ -428,8 +430,8 @@ class Ui_HNW(object):
 "    background: #66cc66;\n"
 "}\n"
 "QSlider::add-page {\n"
-""
-                        "	/* \u672a\u7ecf\u8fc7\u7684\u6ed1\u69fd\u90e8\u5206 */\n"
+"	/* \u672a\u7ecf\u8fc7\u7684"
+                        "\u6ed1\u69fd\u90e8\u5206 */\n"
 "}\n"
 "QSlider::handle:horizontal:hover,QSlider::handle:horizontal:pressed {\n"
 "    background: #66cc66;\n"
@@ -1991,7 +1993,7 @@ class Ui_HNW(object):
         self.retranslateUi(HNW)
         self.alter_jpg_level.valueChanged.connect(self.jpg_level.setNum)
 
-        self.star_trail_option_box.setCurrentIndex(0)
+        self.star_trail_option_box.setCurrentIndex(1)
 
 
         QMetaObject.connectSlotsByName(HNW)
@@ -2002,7 +2004,7 @@ class Ui_HNW(object):
 #if QT_CONFIG(tooltip)
         self.label.setToolTip(QCoreApplication.translate("HNW", u"\u7ec7\u6b64\u661f\u8fb0\uff1a\u4e00\u4e2a\u7b80\u5355\u6613\u7528\u3001\u9ad8\u6548\u5feb\u6377\u7684\u56fe\u50cf\u53e0\u52a0\u8f6f\u4ef6\u3002", None))
 #endif // QT_CONFIG(tooltip)
-        self.label.setText(QCoreApplication.translate("HNW", u"HoshiNoWeaver", None))
+        self.label.setText(QCoreApplication.translate("HNW", u"HoshiNoWeaver|\u7ec7\u6b64\u661f\u8fb0", None))
 #if QT_CONFIG(tooltip)
         self.label_current_mode.setToolTip(QCoreApplication.translate("HNW", u"\u5207\u6362\u5de5\u4f5c\u573a\u666f\u3002", None))
 #endif // QT_CONFIG(tooltip)
@@ -2191,6 +2193,8 @@ class Ui_HNW(object):
         self.label_7.setText("")
         self.star_trial_tips.setText(QCoreApplication.translate("HNW", u"\u6587\u5b57\u663e\u793a", None))
     # retranslateUi
+
+    
 class Ui_guide(object):
     def setupUi(self, guide):
         if not guide.objectName():
