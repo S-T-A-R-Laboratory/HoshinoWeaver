@@ -4,14 +4,16 @@ imgfio contains functions and classes about image file i/o.
 imgfio包含了与图像IO相关的函数和类。
 """
 from __future__ import annotations
+
 import queue
 import threading
-from typing import Optional, Union, Sequence
+from typing import Optional, Sequence, Union
 
 import cv2
 import numpy as np
 import PIL.Image
 import rawpy
+import tifffile
 from easydict import EasyDict
 from loguru import logger
 
@@ -246,27 +248,34 @@ def save_img(filename: str,
             f.write(buf.tobytes())
 
 
-def get_img_attrs_by_pil(fname: str) -> dict:
-    """使用Pillow接口获取图像基本信息。
-
-    Pillow支持的EXIF信息相对有限。
+def get_img_attrs(fname: str) -> dict:
+    """
+    在不加载完整图像的情况下，使用Pillow 与 tifffile 获取图像基本信息。
+    
+    获取的信息包含：
+    * 后缀名
+    * 图像尺寸
+    * 位深度
 
     Args:
         fname (str): 文件名。
 
     Returns:
-        dict: _description_
+        dict: 图像基本信息
     """
     img_obj = PIL.Image.open(fname)
     suffix = fname.split(".")[-1].lower()
     if suffix in SAME_SUFFIX_MAPPING:
         suffix = SAME_SUFFIX_MAPPING[suffix]
     size = (getattr(img_obj, "width", None), getattr(img_obj, "height", None))
+    bits = getattr(img_obj, "bits", None)
+    if suffix in ["tif", "tiff"]:
+        bits = tifffile.TiffFile(fname).pages[0].dtype.itemsize * 8
     return dict(fname=fname,
                 suffix=suffix,
                 size=size,
                 size_str=f"{size[0]}x{size[1]}",
-                bits=getattr(img_obj, "bits", None))
+                bits=bits)
 
 
 def analyze_attr(attr_list: list[dict], attr_name: str) -> dict:
