@@ -1,11 +1,15 @@
 from __future__ import annotations
+
 import argparse
+import datetime
 import os
 import sys
+
 from loguru import logger
 
 from ezlib import launch
-from ezlib.utils import is_support_format
+from ezlib.trailstacker import ON_ERR_CONTINUE, ON_ERR_STOP
+from ezlib.utils import SOFTWARE_NAME, VERSION, is_support_format
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser()
@@ -38,14 +42,15 @@ if __name__ == "__main__":
     arg_parser.add_argument("--debug",
                             action="store_true",
                             help="print logs with debug level.")
+    arg_parser.add_argument("--log-path",
+                            type=str,
+                            help="print logs to the given path.")
+    arg_parser.add_argument("--on-error",
+                            type=str,
+                            choices=[ON_ERR_STOP, ON_ERR_CONTINUE],
+                            default=ON_ERR_STOP,
+                            help="define the action when an error occurs.")
     args = arg_parser.parse_args()
-
-    # TODO: 增加文件中的日志
-    logger.remove()
-    if args.debug:
-        logger.add(sys.stdout, level="DEBUG")
-    else:
-        logger.add(sys.stdout, level="INFO")
 
     dir_name = args.dirname
     fin_ratio, fout_ratio = float(args.fade_in), float(args.fade_out)
@@ -57,6 +62,13 @@ if __name__ == "__main__":
     img_files = [
         os.path.join(dir_name, x) for x in img_files if is_support_format(x)
     ]
+
+    # 命令行模式下，日志文件名称直接通过时间戳生成
+    log_path = None
+    if args.log_path is not None:
+        log_filename = f"{SOFTWARE_NAME}_{VERSION}_LOG_{datetime.datetime.now().strftime('%Y_%M_%d_%H_%M_%S')}.log"
+        log_path = f"{args.log_path}\\{log_filename}"
+
     ret_json = launch(img_files,
                       args.mode,
                       output_file,
@@ -68,10 +80,13 @@ if __name__ == "__main__":
                       ground_mask=args.ground_mask,
                       num_processor=args.num_processor,
                       debug_mode=args.debug,
+                      on_err_action=args.on_error,
                       rej_high=3.0,
                       rej_low=3.0,
                       max_iter=5,
-                      check_exif=True)
+                      check_exif=True,
+                      log_path=log_path)
     if not ret_json["status"]:
         logger.error(ret_json)
-        raise ret_json["exception"]
+        if ret_json["exception"]:
+            raise ret_json["exception"]
