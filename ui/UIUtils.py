@@ -359,10 +359,13 @@ class SlotHandler(QMainWindow):
             self.window.frame_jpg_level.hide()
             self.window.frame_jpg_level.setVisible(False)
             # 启用色深下拉选项
+            # 在选择32bit时，设置色深下拉选项为16bit。此外 禁用32bit选项
+            if self.window.alter_output_bits.currentText() == '32 bit':
+                self.window.alter_output_bits.setCurrentText('16 bit')
             self.window.alter_output_bits.model().item(1).setEnabled(True)
             self.window.alter_output_bits.model().item(1).setForeground(QBrush(QColor(35,35,35,210)))
-            self.window.alter_output_bits.model().item(2).setEnabled(True)
-            self.window.alter_output_bits.model().item(2).setForeground(QBrush(QColor(35,35,35,210)))
+            self.window.alter_output_bits.model().item(2).setEnabled(False)
+            self.window.alter_output_bits.model().item(2).setForeground(QBrush(QColor(35,35,35,140)))
         else:
             pass
         
