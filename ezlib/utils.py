@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import sys
 import time
 from math import floor, log, sqrt
 from typing import Callable, Optional, Union
 
 import numpy as np
 import psutil
+import tifffile
 from easydict import EasyDict
 from loguru import logger
 from PIL.ExifTags import TAGS
@@ -47,6 +49,12 @@ DTYPE_MAX_VALUE = {
     np.dtype('uint64'): 2**64 - 1,
 }
 
+ERROR_NAME_MAPPING = {
+    "MemoryError": "内存不足",
+    "AssertionError": "图像尺寸不统一",
+    "KeyboardInterrupt": "人为终止"
+}
+
 SAME_SUFFIX_MAPPING = {"tiff": "tif", "jpeg": "jpg"}
 
 SUPPORT_COLOR_SPACE = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
@@ -58,7 +66,7 @@ MAGIC_NUM = 3
 
 VERSION = "0.4.0"
 
-SOFTWARE_NAME = f"HoshinoWeaver {VERSION}"
+SOFTWARE_NAME = f"HoshinoWeaver"
 
 
 def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
@@ -89,7 +97,9 @@ def error_raiser(error, result_queue):
     Raises:
         error: the error that accepts.
     """
-    result_queue.put(EasyDict(img=None, err_msg=[error,]))
+    result_queue.put(EasyDict(img=None, err_msg=[
+        error,
+    ]))
 
 
 def is_support_format(fname) -> bool:
@@ -343,26 +353,38 @@ def get_scale_x(time: int, base: int = 256):
     return sum([base**i for i in range(time + 1)])
 
 
-def test_GaussianParam():
-    tot_num = 40
-    series = np.array(np.random.rand(tot_num) * 32767, dtype=np.uint32)
-    print(series)
-    base = FastGaussianParam(series[0])
-    for i in range(1, tot_num):
-        print("n =", i)
-        add = FastGaussianParam(series[i])
-        base = base + add
-        print(base.mu, np.mean(series[:i + 1]))
-        assert np.abs(base.mu -
-                      np.mean(series[:i + 1])) < 1e-8, (base.mu,
-                                                        np.mean(series[:i +
-                                                                       1]))
-        assert np.abs(base.var -
-                      np.var(series[:i + 1], ddof=1)) < 1e-8, (base.var,
-                                                               np.var(
-                                                                   series[:i +
-                                                                          1],
-                                                                   ddof=1),
-                                                               series)
-        assert base.n == i + 1
-        assert base.ddof == 1
+def init_logger(logger, debug_mode: bool, log_path: Optional[str]):
+    """用于初始化Loguru的logger
+
+    Args:
+        logger (Logger): _description_
+        debug_mode (bool): _description_
+        log_path (Optional[str]): _description_
+    """
+    logger.remove()
+    if debug_mode:
+        logger.add(sys.stdout, level="DEBUG")
+    else:
+        logger.add(sys.stdout, level="INFO")
+    # 向文件中写入时，默认级别为DEBUG。
+    if log_path:
+        logger.add(log_path, level="DEBUG")
+
+
+def err_msg_extractor(err_msg: list) -> str:
+    """从多条错误信息中抽取出对错误的简要描述。
+
+    Args:
+        err_msg (list): _description_
+
+    Returns:
+        str: _description_
+    """
+    collected_short_msg = set()
+    for msg in err_msg:
+        for err_name, shorten in ERROR_NAME_MAPPING.items():
+            if err_name in msg:
+                collected_short_msg.add(shorten)
+    if len(collected_short_msg) == 0:
+        return ""
+    return ", ".join(collected_short_msg)
