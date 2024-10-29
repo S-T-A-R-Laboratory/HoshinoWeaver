@@ -507,20 +507,21 @@ class SimpleMasterTemplate(GenericMasterBase):
             # 多线程叠加
             for i in range(self.mp_num):
                 l, r = int(i * self.sub_length), int((i + 1) * self.sub_length)
-                pool.apply_async(
-                    self.subprocessor,
-                    kwds=dict(proc_id=i,
-                              img_loader_type=ImgSeriesLoader,
-                              merger_type=self.sub_merger_type,
-                              fname_list=fname_list[l:r],
-                              progressbar=progressbar.queue,
-                              debug=debug_mode,
-                              dtype=self.dtype_recorder.runtime_dtype,
-                              resize=resize_opt,
-                              weight_list=weight_list[l:r],
-                              **kwargs),
-                    callback=lambda ret: results.put(ret),
-                    error_callback=lambda error: error_raiser(error))
+                pool.apply_async(self.subprocessor,
+                                 kwds=dict(
+                                     proc_id=i,
+                                     img_loader_type=ImgSeriesLoader,
+                                     merger_type=self.sub_merger_type,
+                                     fname_list=fname_list[l:r],
+                                     progressbar=progressbar.queue,
+                                     debug=debug_mode,
+                                     dtype=self.dtype_recorder.runtime_dtype,
+                                     resize=resize_opt,
+                                     weight_list=weight_list[l:r],
+                                     **kwargs),
+                                 callback=lambda ret: results.put(ret),
+                                 error_callback=lambda error: error_raiser(
+                                     error, result_queue=results))
             pool.close()
             # 合并多线程叠加结果
             for i in range(self.mp_num):

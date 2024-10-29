@@ -1,12 +1,13 @@
 from __future__ import annotations
+
 import multiprocessing as mp
 import time
 from math import floor, log, sqrt
 from typing import Callable, Optional, Union
 
-from functools import reduce
 import numpy as np
 import psutil
+from easydict import EasyDict
 from loguru import logger
 from PIL.ExifTags import TAGS
 
@@ -55,7 +56,7 @@ RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
-VERSION = "0.4.0-beta"
+VERSION = "0.4.0"
 
 SOFTWARE_NAME = f"HoshinoWeaver {VERSION}"
 
@@ -79,7 +80,7 @@ def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
                 f"not supported dtype scaling time {times}!")
 
 
-def error_raiser(error):
+def error_raiser(error, result_queue):
     """A simple error raiser. For subprocessor callback function.
 
     Args:
@@ -88,8 +89,7 @@ def error_raiser(error):
     Raises:
         error: the error that accepts.
     """
-    # TODO: not sure. Is this necessary?
-    raise error
+    result_queue.put(EasyDict(img=None, err_msg=[error,]))
 
 
 def is_support_format(fname) -> bool:
