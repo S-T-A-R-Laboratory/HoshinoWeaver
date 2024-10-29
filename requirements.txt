@@ -4,3 +4,5 @@ numpy<2.0
 opencv_python>=4.9.0.80
 pyexiv2==2.12.0
 rawpy>=0.20.0
+qasync>=0.27.0
+pyside6>=6.4.3

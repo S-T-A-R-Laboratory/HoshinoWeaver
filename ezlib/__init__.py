@@ -4,13 +4,13 @@ from typing import Optional
 from easydict import EasyDict
 from loguru import logger
 
-from ezlib.utils import time_cost_warpper
+from ezlib.utils import err_msg_extractor, time_cost_warpper, init_logger
 
-from .imgfio import analyze_attr, get_img_attrs_by_pil, save_img
+from .imgfio import analyze_attr, get_img_attrs, save_img
 from .progressbar import QueueProgressbar
-from .trailstacker import (DataArrayMaster, MeanStackMaster, MinStackMaster,
-                           SigmaClippingMaster, SimpleMixTrailMaster,
-                           StarTrailMaster)
+from .trailstacker import (ON_ERR_CONTINUE, DataArrayMaster, MeanStackMaster,
+                           MinStackMaster, SigmaClippingMaster,
+                           SimpleMixTrailMaster, StarTrailMaster)
 
 modestr2func = {
     "max": StarTrailMaster,
@@ -33,6 +33,7 @@ def launch(img_files: list,
            debug_mode: bool = False,
            progressbar: Optional[QueueProgressbar] = None,
            num_processor: Optional[int] = None,
+           on_err_action: str = ON_ERR_CONTINUE,
            rej_high: float = 3.0,
            rej_low: float = 3.0,
            max_iter: int = 5,
@@ -40,6 +41,7 @@ def launch(img_files: list,
            jpg_quality: int = 90,
            check_exif: bool = False,
            cache: Optional[EasyDict] = None,
+           log_path: Optional[str] = None,
            **kwargs) -> dict:
     """端到端的请求接口。将按照模式和参数设置叠加图像，并输出图像到给定路径下。
     
@@ -62,6 +64,7 @@ def launch(img_files: list,
         debug_mode (bool, optional): 是否在debug级别打印日志. Defaults to False.
         progressbar (QueueProgressbar, Optional): 進度條實例。如果期望使用GUI或者其他形勢進度條，需要傳入實例。否則，使用默認的命令行進度條。Defaults to None.
         num_processor (Optional[int], optional): 期望的并行进程数量. Defaults to None.
+        on_err_action (str, optional): 在遇到错误时如何处理叠加结果。支持终止任务(ON_ERR_STOP)或忽略并继续(ON_ERR_CONTINUE). Defaults to ON_ERR_STOP.
         rej_high (float, optional): Sigma裁剪均值的拒绝上界倍率。仅在使用了Sigma裁剪均值的模式下生效。 Defaults to 3.0.
         rej_low (float, optional): Sigma裁剪均值的拒绝下界倍率。仅在使用了Sigma裁剪均值的模式下生效。 Defaults to 3.0.
         max_iter (int, optional): Sigma裁剪均值的最大迭代轮数。 Defaults to 5.
@@ -72,9 +75,10 @@ def launch(img_files: list,
 
     Returns:
         dict: 该函数返回一个包含"status"与"message"两个字段字典。其中，"status"字段取值为bool，代表是否正常输出了结果；
-            如果失败，"message"中会带有失败原因的字符串。
+            如果失败，"message"中会带有失败原因的字符串。"err_title"对错误原因进行了精简的概括。
     """
     try:
+        init_logger(logger, debug_mode=debug_mode, log_path=log_path)
         assert mode in modestr2func, f" Got unsupport mode `{mode}`. Should be selected from {modestr2func.keys()}"
         # 前置检查：如果--output-bits选择非8位的情况下输出jpg，需要校正并警告。
         if output_fname is not None and (output_fname.lower().split(".")[-1]
@@ -111,12 +115,23 @@ def launch(img_files: list,
                              debug_mode=debug_mode,
                              progressbar=progressbar,
                              num_processor=num_processor,
+                             on_err_action=on_err_action,
                              rej_high=rej_high,
                              rej_low=rej_low,
-                             max_iter=max_iter)
-        print(res.err_msg)
+                             max_iter=max_iter,
+                             log_path=log_path,
+                             **kwargs)
+        if len(res.err_msg) > 0:
+            logger.error(f"Collected error message: {res.err_msg}")
+        # 整合错误为简要描述
+        err_title = err_msg_extractor(res.err_msg)
         if res.img is None:
-            return {"status": False, "message": res.err_msg}
+            return {
+                "status": False,
+                "err_title": err_title,
+                "message": res.err_msg,
+                "exception": None
+            }
         elif output_fname is not None:
             save_img(output_fname,
                      res.img,
@@ -124,11 +139,17 @@ def launch(img_files: list,
                      jpg_quality=jpg_quality,
                      exif=res.exif,
                      colorprofile=res.colorprofile)
-        return {"status": True, "message": res.err_msg}
+        return {
+            "status": True,
+            "message": res.err_msg,
+            "err_title": err_title,
+            "exception": None
+        }
     except (KeyboardInterrupt, Exception) as e:
         return {
             "status": False,
             "message": f"程序因为以下原因终止：{e.__repr__()}",
+            "err_title": err_msg_extractor([e.__repr__()]),
             "exception": e
         }
 
@@ -156,7 +177,7 @@ def scan_all_exif(fname_list: list[str]) -> list:
     Returns:
         list[dict]: 返回风险提示列表。
     """
-    attr_list = list(map(get_img_attrs_by_pil, fname_list))
+    attr_list = list(map(get_img_attrs, fname_list))
     # 后缀名检查
     suffix_dict = analyze_attr(attr_list, "suffix")
     # 尺寸检查
