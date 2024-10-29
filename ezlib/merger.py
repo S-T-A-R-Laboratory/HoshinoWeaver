@@ -35,6 +35,9 @@ class BaseMerger(metaclass=ABCMeta):
                 )
             self.result = self._merge(self.result, new_img)
 
+    def clear(self):
+        self.result = None
+
     @abstractmethod
     def _merge(self, base_img, new_img):
         raise NotImplementedError
