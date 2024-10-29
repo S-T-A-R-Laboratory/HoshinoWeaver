@@ -832,8 +832,9 @@ class HNW_window(QMainWindow, Ui_HNW):
 
 
 if __name__ == '__main__':
-    myappid = 'mycompany.myproduct.subproduct.version'
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    if platform.system() == 'Windows':
+        myappid = 'STARLab.application.HoshiNoWeaver.0_4_1'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
     app = QApplication()
     app.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))
