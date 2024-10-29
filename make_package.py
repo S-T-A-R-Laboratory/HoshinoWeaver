@@ -188,7 +188,7 @@ nuitka_compile(cli_cfg, target=join_path(work_path, f"{CLI_FILENAME}.py"))
 
 # postprocessing
 
-FINAL_DIR_NAME = f"{GUI_FILENAME}_{platform}_{VERSION}-{'debug' if args.debug_gui else ''}"
+FINAL_DIR_NAME = f"{GUI_FILENAME}_{platform}_{VERSION}{'-debug' if args.debug_gui else ''}"
 
 # remove duplicate files of launcher
 if (not platform.startswith("macos")) or args.debug_gui:
@@ -212,7 +212,7 @@ if apply_zip:
     zip_fname = join_path(compile_path, f"{SOFTWARE_NAME}.zip")
     print(f"Zipping files to {zip_fname} ...", end="", flush=True)
     with zipfile.ZipFile(zip_fname, mode='w') as zipfile_op:
-        file_to_zip(join_path(compile_path, f"{GUI_FILENAME}"), zipfile_op)
+        file_to_zip(join_path(compile_path, FINAL_DIR_NAME), zipfile_op)
     print("Done.")
 
 logger.info(f"Package script finished. Total time cost {(time.time()-t0):.2f}s.")
