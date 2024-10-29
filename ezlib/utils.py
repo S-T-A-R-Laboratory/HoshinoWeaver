@@ -64,8 +64,9 @@ RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
+ORG_NAME = f"STARLab"
 SOFTWARE_NAME = f"HoshinoWeaver"
 
 

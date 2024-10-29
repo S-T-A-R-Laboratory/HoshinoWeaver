@@ -17,6 +17,7 @@ from PySide6.QtCore import Qt, QPoint, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QHeaderView,QTreeWidgetItem, QAbstractItemView, QDialog
 from PySide6.QtGui import QFont, QMouseEvent, QCursor, QColor, QIcon
 
+from ezlib.utils import ORG_NAME, SOFTWARE_NAME, VERSION
 from ui.UI import Ui_HNW,ui_choose_mode,Ui_guide
 from ui.UIUtils import SlotHandler
 from ui.UILibs import qtProgressBar,borderFrame
@@ -833,7 +834,7 @@ class HNW_window(QMainWindow, Ui_HNW):
 
 if __name__ == '__main__':
     if platform.system() == 'Windows':
-        myappid = 'STARLab.application.HoshiNoWeaver.0_4_1'
+        myappid = '.'.join(['org', ORG_NAME, SOFTWARE_NAME, VERSION.replace(".","_")])
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
     app = QApplication()
