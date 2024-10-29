@@ -468,8 +468,10 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 初始化软件配置信息
         self._CONFIG = {
             'config_file' : 'config',
-            'config_path_win' : f'{os.path.expanduser("~")}\\AppData\\Roaming\\HoshiNoWeaver', 
-            'config_path_mac' : f'{os.path.expanduser("~")}\\Library\\Application Support\\HoshiNoWeaver', 
+            # 'config_path_win' : f'{os.path.expanduser("~")}\\AppData\\Roaming\\HoshiNoWeaver', 
+            'config_path_win' : os.path.join(os.path.expanduser("~"),"AppData","Roaming","HoshiNoWeaver"),
+            # 'config_path_mac' : f'{os.path.expanduser("~")}\\Library\\Application Support\\HoshiNoWeaver', 
+            'config_path_mac' : os.path.join(os.path.expanduser("~"),"Library","Application Support","HoshiNoWeaver"),
             'guide_always_display' : True
         }
         if platform.system() == 'Windows':

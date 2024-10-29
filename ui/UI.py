@@ -64,6 +64,11 @@ class Ui_HNW(object):
 "    color:rgba(35,35,35,210) !important;  /* \u8bbe\u7f6e\u6587\u5b57\u989c\u8272\u4e3a\u9ed1\u8272 */\n"
 "    border: 1px solid rgba(220, 220, 220, 250) !important;  /* \u53ef\u9009\uff1a\u4e3a\u5de5\u5177\u63d0\u793a\u6dfb\u52a0\u8fb9\u6846 */\n"
 "}\n"
+"\n"
+"#centralwidget QComboBox::item:disabled {\n"
+"        background-color: lightgray;\n"
+"        color: gray;\n"
+"}\n"
 "")
         self.verticalLayout = QVBoxLayout(self.centralwidget)
         self.verticalLayout.setSpacing(0)
@@ -710,7 +715,7 @@ class Ui_HNW(object):
         self.alter_algorithm_startrail.setMinimumSize(QSize(86, 20))
         self.alter_algorithm_startrail.setMaximumSize(QSize(86, 20))
         self.alter_algorithm_startrail.setStyleSheet(u"")
-        self.alter_algorithm_startrail.setIconSize(QSize(40, 40))
+        self.alter_algorithm_startrail.setIconSize(QSize(10, 10))
 
         self.horizontalLayout_18.addWidget(self.alter_algorithm_startrail)
 
@@ -752,7 +757,7 @@ class Ui_HNW(object):
         self.alter_algorithm_mean.setMinimumSize(QSize(86, 20))
         self.alter_algorithm_mean.setMaximumSize(QSize(86, 20))
         self.alter_algorithm_mean.setStyleSheet(u"")
-        self.alter_algorithm_mean.setIconSize(QSize(40, 40))
+        self.alter_algorithm_mean.setIconSize(QSize(10, 10))
 
         self.horizontalLayout_17.addWidget(self.alter_algorithm_mean)
 
@@ -796,7 +801,7 @@ class Ui_HNW(object):
 "	min-width:50px;\n"
 "	max-width:50px\n"
 "}")
-        self.alter_algorithm_min.setIconSize(QSize(40, 40))
+        self.alter_algorithm_min.setIconSize(QSize(10, 10))
 
         self.horizontalLayout_19.addWidget(self.alter_algorithm_min)
 
@@ -1324,7 +1329,7 @@ class Ui_HNW(object):
         self.alter_output_type_2.setMinimumSize(QSize(56, 20))
         self.alter_output_type_2.setMaximumSize(QSize(56, 20))
         self.alter_output_type_2.setStyleSheet(u"")
-        self.alter_output_type_2.setIconSize(QSize(40, 40))
+        self.alter_output_type_2.setIconSize(QSize(10, 10))
 
         self.horizontalLayout_14.addWidget(self.alter_output_type_2)
 
@@ -1540,6 +1545,7 @@ class Ui_HNW(object):
         self.alter_output_bits.setMinimumSize(QSize(56, 20))
         self.alter_output_bits.setMaximumSize(QSize(56, 20))
         self.alter_output_bits.setStyleSheet(u"")
+        self.alter_output_bits.setIconSize(QSize(10, 10))
 
         self.horizontalLayout_16.addWidget(self.alter_output_bits)
 
@@ -1993,7 +1999,7 @@ class Ui_HNW(object):
         self.retranslateUi(HNW)
         self.alter_jpg_level.valueChanged.connect(self.jpg_level.setNum)
 
-        self.star_trail_option_box.setCurrentIndex(1)
+        self.star_trail_option_box.setCurrentIndex(0)
 
 
         QMetaObject.connectSlotsByName(HNW)
@@ -2004,7 +2010,7 @@ class Ui_HNW(object):
 #if QT_CONFIG(tooltip)
         self.label.setToolTip(QCoreApplication.translate("HNW", u"\u7ec7\u6b64\u661f\u8fb0\uff1a\u4e00\u4e2a\u7b80\u5355\u6613\u7528\u3001\u9ad8\u6548\u5feb\u6377\u7684\u56fe\u50cf\u53e0\u52a0\u8f6f\u4ef6\u3002", None))
 #endif // QT_CONFIG(tooltip)
-        self.label.setText(QCoreApplication.translate("HNW", u"HoshiNoWeaver|\u7ec7\u6b64\u661f\u8fb0", None))
+        self.label.setText(QCoreApplication.translate("HNW", u"HoshiNoWeaver | \u7ec7\u6b64\u661f\u8fb0", None))
 #if QT_CONFIG(tooltip)
         self.label_current_mode.setToolTip(QCoreApplication.translate("HNW", u"\u5207\u6362\u5de5\u4f5c\u573a\u666f\u3002", None))
 #endif // QT_CONFIG(tooltip)
