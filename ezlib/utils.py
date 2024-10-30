@@ -8,10 +8,8 @@ from typing import Callable, Optional, Union
 
 import numpy as np
 import psutil
-import tifffile
 from easydict import EasyDict
 from loguru import logger
-from PIL.ExifTags import TAGS
 
 DTYPE_UPSCALE_MAP = {
     np.dtype('uint8'): np.dtype('uint16'),
@@ -64,10 +62,10 @@ RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
+ORG_NAME = "STARLab"
+PROJECT_NAME = "application"
+SOFTWARE_NAME = "HoshinoWeaver"
 VERSION = "0.4.1"
-
-ORG_NAME = f"STARLab"
-SOFTWARE_NAME = f"HoshinoWeaver"
 
 
 def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
