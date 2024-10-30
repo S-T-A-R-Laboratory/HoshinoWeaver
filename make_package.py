@@ -23,6 +23,7 @@ GUI_FILENAME = "HoshinoWeaver desktop"
 logger.remove()
 logger.add(sys.stdout, level="INFO")
 
+
 @time_cost_warpper
 def nuitka_compile(header, options, target):
     """使用nuitka编译打包的API
@@ -145,8 +146,7 @@ if apply_upx:
         nuitka_base["--plugin-enable"] = "upx"
         nuitka_base["--upx-binary"] = upx_cmd.stdout
 
-if not platform.startswith("macos"):
-    nuitka_base["--include-package"] = "pyexiv2"
+nuitka_base["--include-package"] = "pyexiv2"
 nuitka_base["--standalone"] = True
 
 # 编译GUI
@@ -157,23 +157,31 @@ gui_cfg = {
     "--nofollow-import-to": "opencv,matplotlib",
     platform2icon_option[platform]: "./imgs/HNW.jpg"
 }
-if platform.startswith("macos") and (not args.debug_gui):
+
+tgt_ver = "dist"
+if platform == "macos13+" and (not args.debug_gui):
     gui_cfg["--macos-create-app-bundle"] = True
+    tgt_ver = "app_bundle"
 
 gui_cfg.update(nuitka_base)
 nuitka_compile(gui_cfg, target=join_path(work_path, f"{GUI_FILENAME}.py"))
 
 # 但基本还是要把pyexiv2复制到输出目录下
+# 对bundle模式下的macOS，复制到app路径下。
 try:
+    ver2path_pyexiv2 = {
+        "dist":
+        join_path(compile_path, f"{GUI_FILENAME}.dist", "pyexiv2"),
+        "app_bundle":
+        join_path(compile_path, f"{GUI_FILENAME}.app", "Contents", "MacOS",
+                  "pyexiv2")
+    }
     import pyexiv2
     pyexiv_path, init_file = os.path.split(pyexiv2.__file__)
-    shutil.copytree(
-        pyexiv_path,
-        join_path(compile_path, os.path.join(f"{GUI_FILENAME}.dist",
-                                             "pyexiv2")))
+    shutil.copytree(pyexiv_path, ver2path_pyexiv2[tgt_ver])
 except Exception as e:
     logger.warning(
-        "Failed to load pyexiv2. Related function can be unavailable in release verion."
+        f"Failed to load or copy pyexiv2. Exception:{e.__repr__()}. Related function can be unavailable in release verion."
     )
 
 # 编译CLI
@@ -195,7 +203,7 @@ if (not platform.startswith("macos")) or args.debug_gui:
     print("Merging...", end="", flush=True)
     shutil.move(
         join_path(compile_path, f"{CLI_FILENAME}.dist",
-                f"{CLI_FILENAME}{exec_suffix}"),
+                  f"{CLI_FILENAME}{exec_suffix}"),
         join_path(compile_path, f"{GUI_FILENAME}.dist"))
     shutil.rmtree(join_path(compile_path, f"{CLI_FILENAME}.dist"))
     print("Done.")
@@ -215,4 +223,5 @@ if apply_zip:
         file_to_zip(join_path(compile_path, FINAL_DIR_NAME), zipfile_op)
     print("Done.")
 
-logger.info(f"Package script finished. Total time cost {(time.time()-t0):.2f}s.")
+logger.info(
+    f"Package script finished. Total time cost {(time.time()-t0):.2f}s.")
