@@ -60,7 +60,7 @@ SAME_SUFFIX_MAPPING = {"tiff": "tif", "jpeg": "jpg"}
 SUPPORT_COLOR_SPACE = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
 COMMON_SUFFIX = ["tiff", "tif", "jpg", "png", "jpeg"]
 NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
-RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng"]
+RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng", "rw2", "raf"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
@@ -351,7 +351,7 @@ class FastGaussianParam(object):
 
 
 def get_scale_x(time: int, base: int = 256):
-    return sum([base**i for i in range(time + 1)])
+    return base**time + 1
 
 
 def init_logger(logger, debug_mode: bool, log_path: Optional[str]):
