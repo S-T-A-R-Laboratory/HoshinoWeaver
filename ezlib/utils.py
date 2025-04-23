@@ -64,10 +64,29 @@ RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng", "rw2", "raf"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 
 ORG_NAME = f"STARLab"
 SOFTWARE_NAME = f"HoshinoWeaver"
+
+
+def rdtype_detector(data: np.ndarray) -> Union[np.dtype, type]:
+    """For data that real scale does not match dtype, this function returns real scale.
+
+    Args:
+        data (np.ndarray): _description_
+    """
+    if data.dtype == float:
+        return float
+    if np.max(data) <= DTYPE_MAX_VALUE[np.dtype("uint8")]:
+        return np.dtype("uint8")
+    if np.max(data) <= DTYPE_MAX_VALUE[np.dtype("uint16")]:
+        return np.dtype("uint16")
+    if np.max(data) <= DTYPE_MAX_VALUE[np.dtype("uint32")]:
+        return np.dtype("uint16")
+    if np.max(data) <= DTYPE_MAX_VALUE[np.dtype("uint64")]:
+        return np.dtype("uint64")
+    raise NotImplementedError("Unrecognized data type.")
 
 
 def dtype_scaler(raw_type: np.dtype, times: int) -> np.dtype:
