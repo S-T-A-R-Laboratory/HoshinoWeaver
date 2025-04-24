@@ -26,7 +26,16 @@ if __name__ == "__main__":
                             default=None)
     arg_parser.add_argument("--fade-in", type=float, default=0)
     arg_parser.add_argument("--fade-out", type=float, default=0)
-    arg_parser.add_argument("--int-weight", action="store_true")
+    # int weight serve as the default option since v0.5.0.
+    # this argument is now only kept for backward compatibility only.
+    weight_group = arg_parser.add_mutually_exclusive_group()
+    weight_group.add_argument("--int-weight",
+                              action="store_true",
+                              default=True,
+                              help="Use integer weights (default).")
+    weight_group.add_argument("--float-weight",
+                              action="store_true",
+                              help="Use floating-point weights.")
     arg_parser.add_argument("--jpg-quality", type=int, default=90)
     arg_parser.add_argument("--png-compressing", type=int, default=0)
     arg_parser.add_argument("--output", type=str, required=False)
@@ -39,6 +48,10 @@ if __name__ == "__main__":
                             type=int,
                             default=None,
                             help="max available processor num.")
+    arg_parser.add_argument("--filter",
+                            type=str,
+                            nargs="*",
+                            help="filters for every single images.")
     arg_parser.add_argument("--debug",
                             action="store_true",
                             help="print logs with debug level.")
@@ -66,7 +79,7 @@ if __name__ == "__main__":
     # 命令行模式下，日志文件名称直接通过时间戳生成
     log_path = None
     if args.log_path is not None:
-        log_filename = f"{SOFTWARE_NAME}_{VERSION}_LOG_{datetime.datetime.now().strftime('%Y_%M_%d_%H_%M_%S')}.log"
+        log_filename = f"{SOFTWARE_NAME}_{VERSION}_LOG_{datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}.log"
         log_path = f"{args.log_path}\\{log_filename}"
 
     ret_json = launch(img_files,
@@ -74,10 +87,11 @@ if __name__ == "__main__":
                       output_file,
                       fin_ratio=fin_ratio,
                       fout_ratio=fout_ratio,
-                      int_weight=args.int_weight,
+                      int_weight=(not args.float_weight),
                       resize=args.resize,
                       output_bits=args.output_bits,
                       ground_mask=args.ground_mask,
+                      filter_list=args.filter,
                       num_processor=args.num_processor,
                       debug_mode=args.debug,
                       on_err_action=args.on_error,
