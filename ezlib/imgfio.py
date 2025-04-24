@@ -33,7 +33,7 @@ class ImgSeriesLoader(object):
                  fname_list: Sequence,
                  dtype: Optional[np.dtype] = None,
                  resize: Optional[list[int]] = None,
-                 max_poolsize: int = 2,
+                 max_poolsize: int = 1,
                  **kwargs):
         """_summary_
 
@@ -135,6 +135,8 @@ def load_img(fname: str,
                 img = raw.postprocess(
                     output_bps=16,
                     output_color=rawpy.rawpy.ColorSpace(4))  # type: ignore
+            # switch RGB to BGR
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         if dtype:
             # TODO: 目前属于临时解决方案。以后需要更通用的写法。
             # 这部分有一些问题。例如，仅有星轨模式会使用整数权重（并在此处上升dtype范围）
