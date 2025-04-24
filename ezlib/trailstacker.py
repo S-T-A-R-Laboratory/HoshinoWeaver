@@ -1,21 +1,24 @@
 from __future__ import annotations
+
 import copy
+import fractions
 import multiprocessing as mp
 import sys
 import threading
 from typing import Any, Optional, Union
-import fractions
 
 import cv2
 import numpy as np
 from easydict import EasyDict
 from loguru import logger
 
+from starlib.starshrink import star_shrink_by_morphology
+
 from .imgfio import ImgSeriesLoader, get_color_profile, load_img, load_info
 from .merger import (BaseMerger, DataMerger, MaxMerger, MeanMerger, MinMerger,
                      OrderedDataMerger, SigmaClippingMerger)
-from .progressbar import (QueueProgressbar, TqdmProgressbar, SUCC_FLAG,
-                          FAIL_FLAG, END_FLAG)
+from .progressbar import (END_FLAG, FAIL_FLAG, SUCC_FLAG, QueueProgressbar,
+                          TqdmProgressbar)
 from .utils import (BITS2DTYPE, DTYPE_MAX_VALUE, DTYPE_REVERSE_MAP,
                     DTYPE_UPSCALE_MAP, SOFTWARE_NAME, FastGaussianParam,
                     dtype_scaler, error_raiser, get_max_expmean, get_mp_num,
@@ -23,6 +26,7 @@ from .utils import (BITS2DTYPE, DTYPE_MAX_VALUE, DTYPE_REVERSE_MAP,
 
 ON_ERR_CONTINUE = "continue"
 ON_ERR_STOP = "break"
+SUPPORT_FILTER_MAPPING = {"STAR_SHRINK": star_shrink_by_morphology}
 
 
 def generate_weight(
@@ -88,6 +92,7 @@ def load_sample_img(fname_list: list[str]) -> Optional[np.ndarray]:
 def run_merger_subprocess(proc_id: int,
                           img_loader_type: type[ImgSeriesLoader],
                           merger_type: type[BaseMerger],
+                          filter_list: Optional[list[str]] = None,
                           progressbar=None,
                           debug=False,
                           on_error_action: str = ON_ERR_CONTINUE,
@@ -124,21 +129,46 @@ def run_merger_subprocess(proc_id: int,
             if fname_list is not None:
                 cur_filename = fname_list[i]
             raw_img = img_loader.pop()
+            # Empty result handling
             if raw_img is None:
                 # add err msg
                 warning_msg = f"{proc_name} failed to load {cur_filename}."
                 err_msg_collector.append(warning_msg)
                 logger.warning(warning_msg)
-                # When on_error_action = ON_ERR_STOP, stop iteration immediately
-                if on_error_action == ON_ERR_STOP:
-                    logger.warning(f"{proc_name} will stop immediately.")
-                    break
                 # TODO: 添加支持,对于可能预期外的叠加中间（读入失败，尺寸不匹配等）抛出额外错误
                 logger.warning(f"Skip {cur_filename}.")
                 failed_num += 1
                 if progressbar:
                     progressbar.put(FAIL_FLAG)
+                # When on_error_action = ON_ERR_STOP, stop iteration immediately
+                if on_error_action == ON_ERR_STOP:
+                    logger.warning(f"{proc_name} will stop immediately.")
+                    break
                 continue
+            # Filter handling.
+            # TODO: 和Merger合并？
+            # TODO: 需要支持参数列表；需要支持单次初始化的配置方法，避免重复解析
+            if filter_list is not None:
+                for filter_name in filter_list:
+                    if filter_name in SUPPORT_FILTER_MAPPING:
+                        filter_func = SUPPORT_FILTER_MAPPING[filter_name]
+                    else:
+                        raise NotImplementedError(
+                            f"Unsupport filter name {filter_name}.")
+                    raw_img = filter_func(
+                        raw_img,
+                        star_detect_params=dict(
+                            threshold_ratio=3,
+                            enhance_range=True,
+                            med_algo="mean",
+                        ),
+                        ksize=3,
+                        ratio=1,
+                        shape="CIRCLE",
+                        times=1,
+                        deringing=True,
+                        deringing_algo="mean"
+                    )
             cur_img = merger.post_process(raw_img, index=i)
             # TODO: this looks ugly. Optimize this in the future.
             try:
@@ -236,7 +266,8 @@ class GenericMasterBase(object):
     
     MasterBase类包含了大多数叠加必须使用的一些通用方法，如初始化必要参数，通过参考图像获取exif，colorprofile等配置信息，数据放缩等。
     
-    如果期望实现的叠加仅需要遍历一次数据，可基于继承自GenericMasterBase的SimpleMasterTemplate进行开发。反之，如果流程中包含若干个 SimpleMaster 或者 GenericMaster 流程，直接继承该类并在 run 方法中执行必要的初始化，并串行设置自定义的中间流程即可。
+    如果期望实现的叠加仅需要遍历一次数据，可基于继承自 GenericMasterBase 的 SimpleMasterTemplate 进行开发。
+    反之，如果流程中包含若干个 SimpleMaster 或者 GenericMaster 流程，直接继承该类并在 run 方法中执行必要的初始化，并串行设置自定义的中间流程即可。
 
     ## Usage
     该类按照如下方式被调用：
@@ -417,6 +448,7 @@ class SimpleMasterTemplate(GenericMasterBase):
             int_weight: bool = True,
             output_bits: Optional[int] = None,
             ground_mask: Optional[str] = None,
+            filter_list: Optional[list[str]] = None,
             debug_mode: Optional[bool] = None,
             base_info: Optional[EasyDict] = None,
             sample_img: Optional[np.ndarray] = None,
@@ -442,6 +474,7 @@ class SimpleMasterTemplate(GenericMasterBase):
             int_weight (bool, optional): _description_. Defaults to True.
             output_bits (Optional[int], optional): _description_. Defaults to None.
             ground_mask (Optional[str], optional): _description_. Defaults to None.
+            filter_list (Optional[list[str]], optional): _description_. Defaults to None.
             debug_mode (Optional[bool], optional): _description_. Defaults to None.
             base_info (Optional[EasyDict], optional): _description_. Defaults to None.
             sample_img (Optional[np.ndarray], optional): _description_. Defaults to None.
@@ -514,6 +547,7 @@ class SimpleMasterTemplate(GenericMasterBase):
                                      merger_type=self.sub_merger_type,
                                      fname_list=fname_list[l:r],
                                      progressbar=progressbar.queue,
+                                     filter_list=filter_list,
                                      debug=debug_mode,
                                      dtype=self.dtype_recorder.runtime_dtype,
                                      resize=resize_opt,
@@ -734,7 +768,13 @@ class DataArrayMaster(SimpleMasterTemplate):
 
 
 class SigmaClippingMaster(GenericMasterBase):
-    """若干个SimpleMaster或者ComplexMaster进程。因此其主要执行流除了需要处理必要的初始化以外，通常需要包含高度自定义的中间流程。
+    """SigmaClippingMaster 是用于计算Sigma裁剪均值图像的Master进程。
+    
+    Sigma裁剪均值将分布外的像素点直接拒绝，用于创建稳健的均值估计。
+    
+    其包含一下步骤：
+    1. 直接计算均值图像
+    2. 执行至多max_iter次的Sigma裁剪均值计算，并判断是否收敛。如果收敛则提前终止。
 
     Args:
         object (_type_): _description_
