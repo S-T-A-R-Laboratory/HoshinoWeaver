@@ -199,14 +199,16 @@ def save_img(filename: str,
              colorprofile: bytes = b""):
     """保存单个图像到指定路径下，并添加exif信息和色彩配置文件。
     
-    主要工作流程如下：
-    使用openCV，将单个图像转换为字节流，岁后使用不包含exif和icc_profile信息。
+    该函数会将图像转换为字节流，随后使用pyexiv2将exif和icc_profile信息写入文件。
+    如果pyexiv2不可用，则直接将图像写入文件。
 
     Args:
         filename (str): The tgt filename.
         img (np.ndarray): The image to be saved.
         png_compressing (int): PNG compressing arguments, ranges from 0 (no compressing) to 9. Defaults to 0.
         jpg_quality (int): JPG quality parameter, ranges from 0 to 100. Defaults to 90.
+        exif (Union[dict, EasyDict, None]): exif info in dict or EasyDict format.
+        colorprofile (bytes): icc_profile in bytes format. Defaults to b"".
 
     Raises:
         NameError: 要求输出不支持的文件格式时出错。

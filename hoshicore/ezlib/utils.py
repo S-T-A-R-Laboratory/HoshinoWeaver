@@ -43,10 +43,10 @@ DTYPE_NUM2TYPE = [
 ]
 
 DTYPE_MAX_VALUE = {
-    np.dtype('uint8'): 2**8 - 1,
-    np.dtype('uint16'): 2**16 - 1,
-    np.dtype('uint32'): 2**32 - 1,
-    np.dtype('uint64'): 2**64 - 1,
+    np.dtype('uint8'): np.iinfo(np.uint8).max,
+    np.dtype('uint16'): np.iinfo(np.uint16).max,
+    np.dtype('uint32'): np.iinfo(np.uint32).max,
+    np.dtype('uint64'): np.iinfo(np.uint64).max,
 }
 
 ERROR_NAME_MAPPING = {

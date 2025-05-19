@@ -17,10 +17,10 @@ from ui.UILibs import ClickableLabel,exifCheckDialog,CategoryDialog
 from ui import resource
 
 # 导入Core接口
-from launcher import launch
+from hoshicore.ezlib import launch
 
-from ezlib.progressbar import QueueProgressbar
-from ezlib import scan_all_exif
+from hoshicore.ezlib.progressbar import QueueProgressbar
+from hoshicore.ezlib import scan_all_exif
 
 class SlotHandler(QMainWindow):
     # 文件检查约束级别：normal-异常情况仅提示；strong-异常情况不允许叠加
@@ -880,7 +880,8 @@ class SlotHandler(QMainWindow):
                 resize = None,
                 output_bits = self.window._output_bits,
                 ground_mask = self.window._input_files['蒙版'][0] if len(self.window._input_files['蒙版'])>1 and self.window._mask_able else None,
-                debug_mode = False,
+                filter_list=None,
+                debug_mode = True,
                 rej_high = self.window._rej_high,
                 rej_low = self.window._rej_low,
                 max_iter = self.window._max_iter,

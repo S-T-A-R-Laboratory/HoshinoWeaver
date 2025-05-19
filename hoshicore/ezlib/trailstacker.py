@@ -12,8 +12,7 @@ import numpy as np
 from easydict import EasyDict
 from loguru import logger
 
-from starlib.starshrink import star_shrink_by_morphology
-
+from ..starlib.starshrink import star_shrink_by_morphology
 from .imgfio import ImgSeriesLoader, get_color_profile, load_img, load_info
 from .merger import (BaseMerger, DataMerger, MaxMerger, MeanMerger, MinMerger,
                      OrderedDataMerger, SigmaClippingMerger)
@@ -967,7 +966,8 @@ class SimpleMixTrailMaster(GenericMasterBase):
         self.err_msg_collector.extend(mean_result_dict.err_msg)
         self.err_msg_collector.extend(max_result_dict.err_msg)
         ratio = get_max_expmean(self.tot_length)
-        diff_img = ratio * np.sqrt(mean_result_dict.var)
+        diff_img = ratio * mean_result_dict.var
+        np.save("./var_17.npy",mean_result_dict.var)
         # TODO: A temp fix for OutofRange pixels. Should be fixed in the future.
         allow_diff_area = (max_result_dict.img < diff_img)
         diff_img[allow_diff_area] = 0

@@ -197,4 +197,6 @@ TO BE DONE
 
 ### 特别鸣谢
 
+星点对齐功能 基于 LoveDaisy 的[星点对齐]( https://github.com/LoveDaisy/star_alignment) 算法实现。
+
 感谢所有参与 HoshinoWeaver 测试和提出建议的用户（目前还没有就是了🤔️）。

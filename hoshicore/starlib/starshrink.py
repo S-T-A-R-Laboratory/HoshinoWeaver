@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from ezlib.utils import DTYPE_NUM2TYPE, DTYPE_REVERSE_MAP, get_scale_x, rdtype_detector
+from ..ezlib.utils import DTYPE_NUM2TYPE, DTYPE_REVERSE_MAP, get_scale_x, rdtype_detector
 from .stardetect import detect_starmask_by_threshold
 from typing import Union, Optional
 
