@@ -4,7 +4,7 @@ from typing import Optional
 from easydict import EasyDict
 from loguru import logger
 
-from ezlib.utils import err_msg_extractor, time_cost_warpper, init_logger
+from .utils import err_msg_extractor, time_cost_warpper, init_logger
 
 from .imgfio import analyze_attr, get_img_attrs, save_img
 from .progressbar import QueueProgressbar

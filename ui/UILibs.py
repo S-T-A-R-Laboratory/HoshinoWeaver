@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QLabel, QTreeWidget, QAbstractItemView, QMenu, QTr
 from PySide6.QtWidgets import QComboBox, QDialogButtonBox, QVBoxLayout, QPushButton, QFrame
 from PySide6.QtGui import QAction, QPixmap, QWheelEvent, QMouseEvent, QPainter, QImage, QColor, QBrush, QPolygon, QCursor
 
-from ezlib.progressbar import QueueProgressbar
+from hoshicore.ezlib.progressbar import QueueProgressbar
 import rawpy
 
 class imgDisplayQFrame(QFrame):

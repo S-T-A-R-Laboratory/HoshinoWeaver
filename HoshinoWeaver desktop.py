@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, QPoint, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QHeaderView,QTreeWidgetItem, QAbstractItemView, QDialog
 from PySide6.QtGui import QFont, QMouseEvent, QCursor, QColor, QIcon
 
-from ezlib.utils import ORG_NAME, SOFTWARE_NAME, VERSION
+from hoshicore.ezlib.utils import ORG_NAME, SOFTWARE_NAME, VERSION
 from ui.UI import Ui_HNW,ui_choose_mode,Ui_guide
 from ui.UIUtils import SlotHandler
 from ui.UILibs import qtProgressBar,borderFrame
