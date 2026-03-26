@@ -1,12 +1,14 @@
 """ merger管理所有合并器类型。该类型定义不同堆栈模式时的后处理和合并逻辑，并暂存叠加结果。
 """
 from __future__ import annotations
+
 from abc import ABCMeta, abstractmethod
 from typing import Optional, Union
 
 import numpy as np
+from numpy.typing import NDArray
 
-from .utils import FastGaussianParam, DTYPE_MAX_VALUE
+from .utils import DTYPE_MAX_VALUE, FastGaussianParam
 
 
 class BaseMerger(metaclass=ABCMeta):
@@ -15,7 +17,7 @@ class BaseMerger(metaclass=ABCMeta):
         self.result = None
         self.shape_check = True
 
-    def merge(self, new_img):
+    def merge(self, new_img, weight: Union[float, NDArray] = 1.0):
         """ `merge` should be called when combining new image to the stack.
 
         If `shape_check` is true, it will first do shape-checking to make sure that they can be merged.
@@ -23,7 +25,12 @@ class BaseMerger(metaclass=ABCMeta):
 
         Args:
             new_img (Any): the new image.
+            weight (float or np.ndarray): weight to apply to the new image. Default is 1.
         """
+        # Apply weight to the new image
+        if weight != 1:
+            new_img = new_img * weight
+
         if self.result is None:
             self.result = new_img
         else:
@@ -42,7 +49,7 @@ class BaseMerger(metaclass=ABCMeta):
     def _merge(self, base_img, new_img):
         raise NotImplementedError
 
-    def post_process(self, img: np.ndarray, index: Optional[int] = None):
+    def post_process(self, img: np.ndarray):
         # no post-processing by default.
         return img
 
@@ -71,55 +78,44 @@ class BaseMerger(metaclass=ABCMeta):
 
 class MaxMerger(BaseMerger):
 
-    def __init__(self,
-                 weight_list: Union[list, np.ndarray, None] = None,
-                 **kwargs) -> None:
-        self.weight_list = weight_list
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
 
     def _merge(self, base_img, new_img):
         return np.max([base_img, new_img], axis=0)
 
-    def post_process(self,
-                     img: np.ndarray,
-                     index: Optional[int] = None) -> np.ndarray:
-        if index is not None and self.weight_list is not None:
-            assert 0 <= index < len(
-                self.weight_list
-            ), f"Invalid index {index} encountered. Expect 0<=index<={len(self.weight_list)}."
-            return img * self.weight_list[index]
-        else:
-            return img
+    def post_process(self, img: np.ndarray) -> np.ndarray:
+        # No post-processing needed since weight is applied during merge
+        return img
 
-    def merge_array(self, array: np.ndarray, weight_list: np.ndarray,
-                    **kwargs) -> np.ndarray:
-        return np.max(np.einsum("abcd,a->abcd", array, weight_list), axis=0)
+    def merge_array(self, array: np.ndarray, weights: Optional[np.ndarray] = None, **kwargs) -> np.ndarray:
+        if weights is not None:
+            # Apply weights to each image in the array
+            weighted_array = array * weights[:, None, None, None]
+            return np.max(weighted_array, axis=0)
+        else:
+            return np.max(array, axis=0)
 
 
 class MinMerger(BaseMerger):
 
-    def __init__(self,
-                 weight_list: Union[list, np.ndarray, None] = None,
-                 **kwargs) -> None:
-        self.weight_list = weight_list
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
 
     def _merge(self, base_img, new_img):
         return np.min([base_img, new_img], axis=0)
 
-    def post_process(self,
-                     img: np.ndarray,
-                     index: Optional[int] = None) -> np.ndarray:
-        if index is not None and self.weight_list is not None:
-            assert 0 <= index < len(
-                self.weight_list
-            ), f"Invalid index {index} encountered. Expect 0<=index<={len(self.weight_list)}."
-            return img * self.weight_list[index]
-        else:
-            return img
+    def post_process(self, img: np.ndarray) -> np.ndarray:
+        # No post-processing needed since weight is applied during merge
+        return img
 
-    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
-        return np.min(array, axis=0)
+    def merge_array(self, array: np.ndarray, weights: Optional[np.ndarray] = None, **kwargs) -> np.ndarray:
+        if weights is not None:
+            # Apply weights to each image in the array
+            weighted_array = array * weights[:, None, None, None]
+            return np.min(weighted_array, axis=0)
+        else:
+            return np.min(array, axis=0)
 
 
 class MeanMerger(BaseMerger):
@@ -127,7 +123,7 @@ class MeanMerger(BaseMerger):
     def _merge(self, base_img, new_img: FastGaussianParam):
         return base_img + new_img
 
-    def post_process(self, img: np.ndarray, index: Optional[int] = None):
+    def post_process(self, img: np.ndarray):
         return FastGaussianParam(img)
 
     def upscale(self):
@@ -136,8 +132,13 @@ class MeanMerger(BaseMerger):
         else:
             self.result.upscale()
 
-    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
-        return np.mean(array, axis=0)
+    def merge_array(self, array: np.ndarray, weights: Optional[np.ndarray] = None, **kwargs) -> np.ndarray:
+        if weights is not None:
+            # Apply weights to each image in the array
+            weighted_array = array * weights[:, None, None, None]
+            return np.mean(weighted_array, axis=0)
+        else:
+            return np.mean(array, axis=0)
 
 
 class SigmaClippingMerger(MeanMerger):
@@ -166,18 +167,23 @@ class SigmaClippingMerger(MeanMerger):
         super().__init__()
 
     def post_process(self,
-                     img: np.ndarray,
-                     index: Optional[int] = None) -> FastGaussianParam:
+                     img: np.ndarray) -> FastGaussianParam:
         new_img = FastGaussianParam(img)
         new_img.mask((img > self.rej_high_img) | (img < self.rej_low_img))
         return new_img
 
-    def merge_array(self, array: np.ndarray, **kwargs) -> np.ndarray:
+    def merge_array(self, array: np.ndarray, weights: Optional[np.ndarray] = None, **kwargs) -> np.ndarray:
         # not tested.
-        array_mask = (array > self.rej_high_img[None, ...]) | (
-            array < self.rej_low_img[None, ...])
+        if weights is not None:
+            # Apply weights to each image in the array
+            weighted_array = array * weights[:, None, None, None]
+        else:
+            weighted_array = array
+
+        array_mask = (weighted_array > self.rej_high_img[None, ...]) | (
+            weighted_array < self.rej_low_img[None, ...])
         array_num = np.sum(np.array(array_mask, dtype=np.uint16), axis=0)
-        return np.sum(array * array_mask, axis=0) / array_num
+        return np.sum(weighted_array * array_mask, axis=0) / array_num
 
 
 class DataMerger(BaseMerger):
@@ -197,7 +203,7 @@ class DataMerger(BaseMerger):
     def _merge(self, base_img, new_img: np.ndarray):
         return np.concatenate([base_img, new_img], axis=0)
 
-    def post_process(self, img: np.ndarray, index: Optional[int] = None):
+    def post_process(self, img: np.ndarray):
         # convert to [1, h, w, c]
         return img[None, ...]
 
