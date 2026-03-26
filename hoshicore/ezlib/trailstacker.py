@@ -261,9 +261,9 @@ class DtypeRecorder(object):
 
 class GenericMasterBase(object):
     """GenericMaster 的基类。
-    MasterBase类是叠加算法的入口类。继承该方法以实现特定的叠加功能。
+    GenericMasterBase 是叠加算法的入口类。继承该方法以实现特定的叠加功能。
     
-    MasterBase类包含了大多数叠加必须使用的一些通用方法，如初始化必要参数，通过参考图像获取exif，colorprofile等配置信息，数据放缩等。
+    GenericMasterBase 包含了大多数叠加必须使用的一些通用方法，如初始化必要参数，通过参考图像获取exif，colorprofile等配置信息，数据放缩等。
     
     如果期望实现的叠加仅需要遍历一次数据，可基于继承自 GenericMasterBase 的 SimpleMasterTemplate 进行开发。
     反之，如果流程中包含若干个 SimpleMaster 或者 GenericMaster 流程，直接继承该类并在 run 方法中执行必要的初始化，并串行设置自定义的中间流程即可。

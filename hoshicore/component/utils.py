@@ -122,7 +122,7 @@ def error_raiser(error, result_queue):
     ]))
 
 
-def is_support_format(fname) -> bool:
+def is_support_format(fname: str) -> bool:
     # suffix check and warning raising
     suffix = fname.split(".")[-1].lower()
     return ((suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX)

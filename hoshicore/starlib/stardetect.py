@@ -60,4 +60,17 @@ def detect_starmask_by_threshold(img: np.ndarray,
     if remove_large_area:
         raise NotImplementedError("To be done")
     return star_mask
+
+def starmask2star_coords(img: np.ndarray,max_num:Optional[int] = None, order: Optional[str] = None) -> np.ndarray:
+    """从星点图像生成星点位置坐标序列。
+
+    Args:
+        img (np.ndarray): _description_
+        max_num (Optional[int], optional): 最大返回的星点数量. Defaults to None.
+
+    Returns:
+        np.ndarray: _description_
+    """
+    contours1, counter2 = cv2.findContours(img,cv2.RETR_EXTERNAL,
+                                            cv2.CHAIN_APPROX_SIMPLE)
     
