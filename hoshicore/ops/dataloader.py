@@ -3,7 +3,8 @@ from typing import Any
 from loguru import logger
 
 from .base import ParallelBaseOp
-from ..component.dataloader import BaseLoader
+from ..component.dataloader import BaseLoader, ImgFileListLoader, ArrayLoader, VideoFileLoader
+
 
 class DataLoaderOp(ParallelBaseOp):
     """
@@ -31,9 +32,9 @@ class DataLoaderOp(ParallelBaseOp):
             "type": "str",
             "description": "数据加载器类型"
         },
-        "config": {
+        "configs": {
             "type": "dict",
-            "description": "数据加载器配置"
+            "description": "最大缓冲区大小"
         }
     }
     OUTPUTS: dict[str, Any] = {
@@ -47,13 +48,16 @@ class DataLoaderOp(ParallelBaseOp):
 
     def __init__(self, loader: BaseLoader, max_poolsize: int = 1):
         self.loader = loader
-        self.max_poolsize = max_poolsize
+        
         self.data_queue: asyncio.Queue[Any] = asyncio.Queue(
             maxsize=max_poolsize)
         self._length = loader.length
         self._worker_task = None
 
-    async def _worker(self):
+    async def _worker(self, data, configs):
+        self.loader_class = self.build_loader_class(configs['loader_type'])
+        self.max_poolsize = configs['max_poolsize']
+        self.loader = self.loader_class(src=data['src'], config=configs)
         for i in range(self._length):
             try:
                 item = self.loader.__next__()
@@ -65,14 +69,21 @@ class DataLoaderOp(ParallelBaseOp):
             await self.data_queue.put(item)
         await self.data_queue.put(self._SENTINEL)
 
-    async def execute(self):
+    async def _async_execute_single(self, data, configs):
         if self._worker_task is None:
-            self._worker_task = asyncio.create_task(self._worker())
-        for _ in range(self._length):
-            item = await self.data_queue.get()
-            if item is self._SENTINEL:
-                break
-            yield item
+            self._worker_task = asyncio.create_task(self._worker(data, configs))
+        # TODO: 没有实现结束信号的处理（返回上层未捕捉）
+        return await self.data_queue.get()
 
     def __len__(self):
         return self._length
+
+    def build_loader_class(self, loader_type: str):
+        if loader_type == "img_file_list":
+            return ImgFileListLoader
+        elif loader_type == "video_file":
+            return VideoFileLoader
+        elif loader_type == "img_array":
+            return ArrayLoader
+        else:
+            raise ValueError(f"Unsupported loader type: {loader_type}")
