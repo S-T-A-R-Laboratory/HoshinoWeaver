@@ -8,7 +8,7 @@ import json
 import os
 import pickle
 import tempfile
-from asyncio import Queue, Lock, to_thread
+from asyncio import Queue, Lock, to_thread, Event
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -23,7 +23,8 @@ class RichContextQueue(object):
         self.queue = Queue(maxsize=maxsize)
         self.maxsize = maxsize
         self._put_lock = Lock()
-        self.tot_num = 0
+        self.length: Optional[int] = None
+        self._length_event = Event()  # 长度就绪事件
 
     async def put(self, item: Any) -> None:
         """将对象放入队列"""
@@ -33,6 +34,19 @@ class RichContextQueue(object):
     async def get(self) -> Any:
         """从队列获取对象"""
         return await self.queue.get()
+    
+    async def set_length(self, length: int):
+        """由生产者设置序列长度"""
+        async with self._put_lock:
+            if self.length is not None and self.length != length:
+                raise ValueError(f"Length mismatch: {self.length} vs {length}")
+            self.length = length
+            self._length_event.set()
+    
+    async def get_length(self) -> int:
+        """消费者等待并获取序列长度"""
+        await self._length_event.wait()
+        return self.length
 
 
 class FileCacheQueue(RichContextQueue):
