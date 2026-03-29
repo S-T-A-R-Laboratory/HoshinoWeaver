@@ -17,7 +17,20 @@ import numpy as np
 SER_EXT_MAP = {"pickle": ".pkl", "json": ".json", "numpy": ".npy"}
 
 
+class CancellationError(Exception):
+    """上游节点取消异常"""
+    pass
+
+
+class CancellationToken:
+    """取消令牌：携带异常信息"""
+    def __init__(self, error: Exception, source_node: str):
+        self.error = error
+        self.source_node = source_node
+
+
 class RichContextQueue(object):
+    _SENTINEL = object()  # 正常结束信号
 
     def __init__(self, maxsize: int, **kwargs):
         self.queue = Queue(maxsize=maxsize)
@@ -32,8 +45,20 @@ class RichContextQueue(object):
             await self.queue.put(item)
 
     async def get(self) -> Any:
-        """从队列获取对象"""
-        return await self.queue.get()
+        """从队列获取对象，自动处理信号"""
+        item = await self.queue.get()
+
+        # 检查取消令牌
+        if isinstance(item, CancellationToken):
+            raise CancellationError(
+                f"Upstream node '{item.source_node}' failed: {item.error}"
+            ) from item.error
+
+        # 检查结束信号
+        if item is RichContextQueue._SENTINEL:
+            raise StopIteration("Stream ended normally")
+
+        return item
     
     async def set_length(self, length: int):
         """由生产者设置序列长度"""
@@ -46,6 +71,7 @@ class RichContextQueue(object):
     async def get_length(self) -> int:
         """消费者等待并获取序列长度"""
         await self._length_event.wait()
+        assert self.length, "Null length error (usually not expected to happen)"
         return self.length
 
 

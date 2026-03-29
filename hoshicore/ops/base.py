@@ -1,6 +1,7 @@
 from typing import Any, Optional, Sequence, Awaitable, Mapping
 import asyncio
-from ..component.queue import RichContextQueue, FileCacheQueue
+from loguru import logger
+from ..component.queue import RichContextQueue, FileCacheQueue, CancellationError, CancellationToken
 
 
 class BaseOp(object):
@@ -67,8 +68,48 @@ class BaseOp(object):
         raise NotImplementedError("Subclass must implement this method")
 
     async def execute(self) -> None:
-        configs = await self.pre_execute()
-        await self._async_execute(configs)
+        """执行入口：捕获异常并传播"""
+        try:
+            configs = await self.pre_execute()
+            await self._async_execute(configs)
+            # 正常结束：发送结束信号
+            await self._send_sentinel()
+        except CancellationError:
+            # 上游取消：直接传播
+            await self._propagate_cancellation_from_upstream()
+            raise
+        except Exception as e:
+            # 本节点异常：创建取消令牌并传播
+            logger.error(f"{self.name} failed: {e}")
+            await self._propagate_cancellation(e)
+            raise
+
+    async def _send_sentinel(self) -> None:
+        """发送正常结束信号"""
+        for queue_list in self.outputs.values():
+            for queue in queue_list:
+                await queue.put(RichContextQueue._SENTINEL)
+
+    async def _propagate_cancellation(self, error: Exception) -> None:
+        """传播取消令牌（本节点异常）"""
+        token = CancellationToken(error, self.name)
+        for queue_list in self.outputs.values():
+            for queue in queue_list:
+                await queue.put(token)
+
+    async def _propagate_cancellation_from_upstream(self) -> None:
+        """传播取消令牌（上游异常）"""
+        for input_queue in self.inputs.values():
+            try:
+                while not input_queue.queue.empty():
+                    item = input_queue.queue.get_nowait()
+                    if isinstance(item, CancellationToken):
+                        for queue_list in self.outputs.values():
+                            for queue in queue_list:
+                                await queue.put(item)
+                        return
+            except:
+                pass
 
     def __str__(self):
         return self.__class__.__name__
@@ -102,8 +143,12 @@ class ParallelBaseOp(BaseOp):
         """串行执行"""
         if self.length is None:
             raise ValueError("Length is not set")
-        for _i in range(self.length):
-            data = await self._async_convert_inputs()
+        for i in range(self.length):
+            try:
+                data = await self._async_convert_inputs()
+            except StopIteration:
+                logger.warning(f"{self.name}: upstream ended at {i}/{self.length}")
+                break
             result = await self._async_execute_single(data, configs)
             await self._broadcast_result(result)
 
