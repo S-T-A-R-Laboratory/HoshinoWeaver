@@ -86,6 +86,35 @@ async def _feed_config(
         await queue.put(value)
 
 
+async def _bridge_queue(
+    name: str,
+    source: RichContextQueue,
+    targets: list[RichContextQueue],
+) -> None:
+    """将上游 RichContextQueue 的数据流式转发到所有目标队列。
+
+    与 _feed_sequence 不同，数据来源不是内存列表而是另一个队列，
+    这使得父 DAG 可以将自己的输入队列"桥接"到子 DAG 的内部队列，
+    实现跨 DAG 边界的流式传输（无需缓存整个序列）。
+
+    典型用途：SubDagOp 将父图的 inputs 队列转发到子图内部节点。
+
+    流程：
+        1. 等待 source 的 length 元信息就绪
+        2. 向所有 targets 广播 length
+        3. 逐项从 source 读取并推送到所有 targets（backpressure-safe）
+    """
+    length = await source.get_length()
+    logger.info(
+        f"[Bridge] '{name}': {length} items → {len(targets)} queue(s)"
+    )
+    for queue in targets:
+        await queue.set_length(length)
+    for _ in range(length):
+        item = await source.get()
+        await asyncio.gather(*(q.put(item) for q in targets))
+
+
 # ────────────────────────────────────────────────────────────────
 # 实例化 + 布线
 # ────────────────────────────────────────────────────────────────
@@ -104,10 +133,13 @@ def instantiate_and_wire(
         dag:
             validate_and_build_order() 的输出。
         global_inputs:
-            全局输入的实际数据 (name → Sequence)。
+            全局输入的实际数据 (name → Sequence | RichContextQueue)。
+            当值为 RichContextQueue 时使用 _bridge_queue 做流式转发（SubDagOp 场景），
+            否则使用 _feed_sequence 做批量推送。
         global_configs:
-            全局配置的实际值 (name → scalar)。
+            全局配置的实际值 (name → scalar | RichContextQueue)。
             未提供的配置项将自动从 YAML default 补齐。
+            当值为 RichContextQueue 时使用 _bridge_queue 转发。
         op_registry:
             op_name → Op class 的映射。None 时使用 DEFAULT_OP_REGISTRY。
 
@@ -237,9 +269,19 @@ def instantiate_and_wire(
     # ══════ 4) 创建 feeder 协程 ══════
     feeders: list[Awaitable[None]] = []
     for name, targets in seq_targets.items():
-        feeders.append(_feed_sequence(name, global_inputs[name], targets))
+        source = global_inputs[name]
+        if isinstance(source, RichContextQueue):
+            # 流式桥接：来自父 DAG 的队列（SubDagOp 场景）
+            feeders.append(_bridge_queue(name, source, targets))
+        else:
+            # 批量推送：来自内存列表（顶层 DAG 场景）
+            feeders.append(_feed_sequence(name, source, targets))
     for name, targets in cfg_targets.items():
-        feeders.append(_feed_config(name, effective_configs[name], targets))
+        source = global_configs[name]
+        if isinstance(source, RichContextQueue):
+            feeders.append(_bridge_queue(name, source, targets))
+        else:
+            feeders.append(_feed_config(name, source, targets))
     # 未布线 config 的默认值注入
     for label, default_val, queue in unwired_feeders:
         feeders.append(_feed_config(label, default_val, [queue]))
