@@ -75,9 +75,6 @@ class DataLoaderOp(ParallelBaseOp):
         # TODO: 没有实现结束信号的处理（返回上层未捕捉）
         return await self.data_queue.get()
 
-    def __len__(self):
-        return self._length
-
     def build_loader_class(self, loader_type: str):
         if loader_type == "img_file_list":
             return ImgFileListLoader

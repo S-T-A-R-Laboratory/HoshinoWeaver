@@ -152,81 +152,120 @@ class TrailStackerOp(BaseOp):
             await output_queue.put(result)
 ```
 
+## 信号传播机制
+
+### 正常结束信号（SENTINEL）
+当节点完成所有数据处理后，会向所有输出队列发送`_SENTINEL`信号：
+```python
+async def _send_sentinel(self) -> None:
+    """发送正常结束信号"""
+    for queue_list in self.outputs.values():
+        for queue in queue_list:
+            await queue.put(RichContextQueue._SENTINEL)
+```
+
+### 取消令牌（CancellationToken）
+当节点执行失败时，会创建`CancellationToken`并传播到下游：
+```python
+class CancellationToken:
+    def __init__(self, error: Exception, source_node: str):
+        self.error = error
+        self.source_node = source_node
+```
+
+### 队列自动信号处理
+`RichContextQueue.get()`会自动检测并处理信号：
+- 遇到`_SENTINEL`：抛出`StopIteration`
+- 遇到`CancellationToken`：抛出`CancellationError`
+
+### 异常传播流程
+```python
+async def execute(self) -> None:
+    try:
+        configs = await self.pre_execute()
+        await self._async_execute(configs)
+        await self._send_sentinel()  # 正常结束
+    except CancellationError:
+        await self._propagate_cancellation_from_upstream()  # 上游取消
+        raise
+    except Exception as e:
+        await self._propagate_cancellation(e)  # 本节点异常
+        raise
+```
+
+## DAG执行器
+
+`DAGExecutor`负责启动和管理所有节点的执行，提供全局取消机制：
+
+```python
+class DAGExecutor:
+    async def execute(self) -> None:
+        tasks = [self._run_node(node) for node in self.nodes]
+        try:
+            await asyncio.gather(*tasks, return_exceptions=False)
+        except Exception as e:
+            self.cancel_event.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+```
+
 ## 设计问题与改进建议
 
-### 🔴 严重问题
+### ✅ 已解决的问题
 
-#### 1. 结束信号机制缺失
-**问题：** 当前框架缺少明确的流结束信号传递机制。
-- `DataLoaderOp`中有`_SENTINEL`定义但未被正确处理（见L75注释）
-- 下游节点无法判断上游是否已完成数据发送
-- 可能导致下游节点永久阻塞在`queue.get()`
+#### 1. 结束信号机制 ✅
+**解决方案：** 实现了双信号机制（SENTINEL + CancellationToken）
+- `RichContextQueue`在`get()`时自动检测信号
+- `BaseOp.execute()`统一处理异常并传播信号
+- `DAGExecutor`提供全局取消协调
 
-**影响：** 框架无法正确处理流式数据的终止，DAG执行可能挂起。
+#### 2. 序列长度传播机制 ✅
+**解决方案：** 使用`asyncio.Event`实现阻塞式长度协调
+- 生产者通过`queue.set_length()`设置长度并触发事件
+- 消费者通过`queue.get_length()`等待长度就绪
+- `BaseOp.pre_execute()`验证输入等长并向下游广播
 
-**建议：**
+#### 3. ParallelBaseOp并发执行 ✅
+**解决方案：** 实现滑动窗口并发执行
+- `CONCURRENCY=1`：串行执行（简化实现）
+- `CONCURRENCY>1`：滑动窗口并发，保证输出有序
+- `WINDOW_SIZE`可配置，默认为`CONCURRENCY * 2`
+
+#### 4. 输入数据消费顺序 ✅
+**解决方案：** 滑动窗口内顺序消费，窗口间顺序输出
+- 每个窗口内按索引顺序调用`_async_convert_inputs()`
+- 结果存储在预分配的列表中
+- 窗口完成后按顺序广播结果
+
+### 🟡 待优化问题
+
+#### 5. 输出广播可能相互阻塞 ⚠️
+**问题：** `_broadcast_result()`使用嵌套循环顺序`await`，如果某个队列满会阻塞其他队列。
+
+**当前实现：**
 ```python
-# 在BaseOp中统一定义SENTINEL
-class BaseOp:
-    _SENTINEL = object()
-
-    async def _async_execute(self, configs):
-        # 执行完成后发送结束信号
-        for output_name, queue_list in self.outputs.items():
-            for queue in queue_list:
-                await queue.put(self._SENTINEL)
+async def _broadcast_result(self, result: dict[str, Any]) -> None:
+    for key, queue_list in self.outputs.items():
+        for queue in queue_list:
+            await queue.put(result[key])  # 顺序等待
 ```
 
-#### 2. 序列长度传播机制不完善
-**问题：** `length`属性的设置和传播机制不清晰。
-- `ParallelBaseOp._async_execute`依赖`self.length`，但未说明如何设置
-- `DataLoaderOp`中`_length`来自loader，但未调用`set_length()`
-- 下游节点如何获知序列长度？
-
-**影响：** 节点可能因length未设置而抛出异常，或处理错误的数据量。
-
-**建议：** 在DAG构建时通过拓扑分析自动推导和设置length。
-
-#### 3. ParallelBaseOp的并发未实现
-**问题：** `CONCURRENCY=4`但`_async_execute`是串行循环（L72）。
-
-**影响：** 性能未达到设计预期，并行算子实际串行执行。
-
-**建议：**
+**建议：** 使用`asyncio.gather`并发广播
 ```python
-async def _async_execute(self, configs: dict[str, Any]) -> None:
-    semaphore = asyncio.Semaphore(self.CONCURRENCY)
-
-    async def process_item(i):
-        async with semaphore:
-            data = await self._async_convert_inputs()
-            result = await self._async_execute_single(data, configs)
-            for key, queue_list in self.outputs.items():
-                for queue in queue_list:
-                    await queue.put(result[key])
-
-    await asyncio.gather(*[process_item(i) for i in range(self.length)])
+async def _broadcast_result(self, result: dict[str, Any]) -> None:
+    tasks = []
+    for key, queue_list in self.outputs.items():
+        for queue in queue_list:
+            tasks.append(queue.put(result[key]))
+    await asyncio.gather(*tasks)
 ```
 
-### 🟡 设计缺陷
+#### 6. 错误处理机制不统一
+**问题：** 各算子的错误处理策略不一致
+- `DataLoaderOp`中异常被捕获并continue
+- 缺少统一的错误恢复策略
 
-#### 4. 输入数据消费顺序问题
-**问题：** `ParallelBaseOp._async_convert_inputs()`每次调用都从队列get，但并发执行时可能乱序。
-
-**影响：** 如果实现真正的并发，数据处理顺序无法保证。
-
-#### 5. 错误处理机制不统一
-**问题：**
-- `DataLoaderOp`中异常被捕获并continue（L64-68）
-- `TrailStackerOp`中有`err_msg_collector`和`on_error_action`（已注释）
-- `BaseOp`没有统一的错误处理策略
-
-**建议：** 在BaseOp层面定义统一的错误处理接口。
-
-#### 6. 输出广播的顺序性
-**问题：** `ParallelBaseOp`中输出广播是嵌套循环（L76-78），如果某个队列阻塞会影响其他队列。
-
-**建议：** 使用`asyncio.gather`并发广播到所有输出队列。
+**建议：** 在BaseOp层面定义错误处理接口，支持可配置的错误策略（跳过/重试/中止）。
 
 ### 🟢 次要问题
 
