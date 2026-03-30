@@ -1,15 +1,14 @@
 import sys
-from typing import Optional, Any
+from asyncio import Queue, gather
+from typing import Any, Optional
 
 from loguru import logger
 
-from ..component.merger import MaxMerger, BaseMerger
+from ..component.merger import BaseMerger, MaxMerger
 from ..component.progressbar import (END_FLAG, FAIL_FLAG, SUCC_FLAG,
                                      QueueProgressbar, TqdmProgressbar)
-from ..component.imgfio import ImgSeriesLoader
-from ..component.queue import RichContextQueue, FileCacheQueue
+from ..component.queue import RichContextQueue, CancellationError
 from .base import BaseOp
-from asyncio import Queue
 
 ON_ERR_CONTINUE = "continue"
 ON_ERR_STOP = "break"
@@ -49,10 +48,9 @@ class TrailStackerOp(BaseOp):
         int_weight: bool = configs['int_weight']
         img_queue: RichContextQueue = self.inputs['data']
         weight_queue: RichContextQueue = self.inputs['weight']
-        merger = self.MERGER(proc_id=proc_id, weight_list=weight_list)
-        # TODO: 可以await 直到tot_num被改写，一来是获取准确数量，二来是等待img_loader准备好。
-        # 但这会不兼容文件中转。
-        tot_num = img_queue.tot_num
+        merger = self.MERGER()
+        tot_num = self.length
+        assert tot_num is not None, "TrailStackerOp requires sequence length information."
 
         # TODO: 其他暂不支持的特性：
         #proc_id：由多进程调度器单独提供在名称中
@@ -70,28 +68,30 @@ class TrailStackerOp(BaseOp):
         # init img_loader and merger
 
         # weight用法的变更，Merger不再在初始化时接收weight_list，而是在merge时接收当前帧的weight
-
+        
         stacked_num = 0
         failed_num = 0
         err_msg_collector = []
         progressbar = None
 
-        # main progress
         try:
             for i in range(tot_num):
                 # filename 暂时不支持，应该由img_queue传入
                 cur_filename = f"the {i+1}-th frame"
-                #if fname_list is not None:
-                #    cur_filename = fname_list[i]
 
-                raw_img = await img_queue.get()
+                try:
+                    upper_stream_data = self._async_convert_inputs()
+                    cur_img = await upper_stream_data['data']
+                    weight = await upper_stream_data['weight']
+                except StopIteration:
+                    logger.warning(f"{self.name}: upstream ended at {i}/{tot_num}")
+                    break
+
                 # Empty result handling
-                if raw_img is None:
-                    # add err msg
+                if cur_img is None:
                     warning_msg = f"{self.name} failed to load {cur_filename}."
                     err_msg_collector.append(warning_msg)
                     logger.warning(warning_msg)
-                    # TODO: 添加支持,对于可能预期外的叠加中间（读入失败，尺寸不匹配等）抛出额外错误
                     logger.warning(f"Skip {cur_filename}.")
                     failed_num += 1
                     if progressbar:
@@ -101,10 +101,9 @@ class TrailStackerOp(BaseOp):
                     #    logger.warning(f"{self.name} will stop immediately.")
                     #    break
                     continue
-                cur_img = merger.post_process(raw_img, index=i)
-                # TODO: this looks ugly. Optimize this in the future.
+
                 try:
-                    merger.merge(cur_img)
+                    merger.merge(cur_img, weight)
                 except AssertionError as e:
                     err_msg_collector.append(
                         f"Shape of {cur_filename} does not match.")
@@ -112,20 +111,22 @@ class TrailStackerOp(BaseOp):
                 if progressbar:
                     progressbar.put(SUCC_FLAG)
                 stacked_num += 1
-        except (KeyboardInterrupt, Exception) as e:
-            logger.error(
-                f"Fatal error:{e.__repr__()}. {self.name} will be terminated. "
-                + "The final result cam be unexpected.")
+
+            if stacked_num == 0:
+                logger.warning(f"No valid frames are loaded!")
+                return
+
+            logger.info(f"{self.name} successfully stacked {stacked_num} " +
+                        f"images from {tot_num} images. ({failed_num} fail(s)).")
+
+            # 输出结果
+            put_tasks = []
+            for queue in self.outputs['result']:
+                put_tasks.append(queue.put(merger.merged_image))
+            await gather(*put_tasks)
+
+        except Exception as e:
+            logger.error(f"{self.name} failed: {e}")
             if progressbar:
                 progressbar.put(END_FLAG)
-
-        if stacked_num == 0:
-            logger.warning(f"No valid frames are loaded!")
-            return None
-        logger.info(f"{self.name} successfully stacked {stacked_num} " +
-                    f"images from {tot_num} images. ({failed_num} fail(s)).")
-        return dict(result=merger.merged_image, err_msg=err_msg_collector)
-
-
-class MeanStackerOp(GroupedBaseOp):
-    pass
+            raise

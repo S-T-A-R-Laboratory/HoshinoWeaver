@@ -83,7 +83,14 @@ class BaseOp(object):
             logger.error(f"{self.name} failed: {e}")
             await self._propagate_cancellation(e)
             raise
-
+    
+    def _async_convert_inputs(self):
+        # NOTE: queue.get() returns an awaitable; subclasses may `await` each value.
+        converted_inputs: dict[str, Awaitable[Any]] = {}
+        for key, queue in self.inputs.items():
+            converted_inputs[key] = queue.get()
+        return converted_inputs
+    
     async def _send_sentinel(self) -> None:
         """发送正常结束信号"""
         for queue_list in self.outputs.values():
@@ -177,16 +184,11 @@ class ParallelBaseOp(BaseOp):
 
     async def _broadcast_result(self, result: dict[str, Any]) -> None:
         """广播结果到所有输出队列"""
+        tasks = []
         for key, queue_list in self.outputs.items():
             for queue in queue_list:
-                await queue.put(result[key])
-
-    async def _async_convert_inputs(self):
-        # NOTE: queue.get() returns an awaitable; subclasses may `await` each value.
-        converted_inputs: dict[str, Awaitable[Any]] = {}
-        for key, queue in self.inputs.items():
-            converted_inputs[key] = queue.get()
-        return converted_inputs
+                tasks.append(queue.put(result[key]))
+        await asyncio.gather(*tasks)
 
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
                                     configs: dict[str, Any]) -> dict[str, Any]:
