@@ -9,38 +9,44 @@ import asyncio
 from loguru import logger
 
 from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, is_support_format
+from .queue import RichContextQueue
 
 Frame: TypeAlias = Union[NDArray[np.uint8], NDArray[np.uint16], None]
 
 
 class BaseLoader(object):
 
-    def __init__(self, src: Any, config: dict[str, Any]):
-        self.length = len(src)
+    def __init__(self, src: RichContextQueue, length: int, config: dict[str,
+                                                                        Any]):
+        self.src = src
+        self.length = length
+        self.config = config
 
-    def load(self, index: int) -> Any:
+    def load(self, item: Any) -> Any:
         raise NotImplementedError("Subclass must implement this method")
 
-    def __iter__(self):
+    def __aiter__(self):
         self._idx = 0
         return self
 
-    def __next__(self):
+    async def __anext__(self):
         if self._idx >= self.length:
-            raise StopIteration
-        img = self.load(self._idx)
+            raise StopAsyncIteration
+        img = await asyncio.to_thread(self.load, await self.src.get())
         self._idx += 1
         return img
 
 
 class ImgFileListLoader(BaseLoader):
 
-    def __init__(self, src: list[str], config: dict[str, Any]):
-        super().__init__(src, config)
-        self.img_list = src
+    def load(self, item: str):
+        return load_img(item)
 
-    def load(self, index: int):
-        return load_img(self.img_list[index])
+
+class ArrayLoader(BaseLoader):
+
+    def load(self, item: int):
+        return self.config['configs']['data'][item]
 
 
 class VideoFileLoader(BaseLoader):
@@ -120,16 +126,6 @@ class VideoFileLoader(BaseLoader):
         if self.video.time_base is None:
             return -1
         return int(pts * float(self.video.time_base) * self.fps)
-
-
-class ArrayLoader(BaseLoader):
-
-    def __init__(self, src: np.ndarray, config: dict[str, Any]):
-        super().__init__(src, config)
-        self.img_array = src
-
-    def load(self, index: int):
-        return self.img_array[index]
 
 
 def load_img(file_path: str) -> Optional[np.ndarray]:
