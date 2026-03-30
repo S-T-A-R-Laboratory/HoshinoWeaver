@@ -2,11 +2,11 @@ import asyncio
 from typing import Any
 from loguru import logger
 
-from .base import ParallelBaseOp
-from ..component.dataloader import BaseLoader, ImgFileListLoader, ArrayLoader, VideoFileLoader
+from .base import BaseOp
+from ..component.dataloader import BaseLoader, ImgFileListLoader, ArrayLoader
 
 
-class DataLoaderOp(ParallelBaseOp):
+class ImgDataLoaderOp(BaseOp):
     """
     通用异步数据加载器，用于异步预取数据，提高数据加载效率。
     
@@ -34,7 +34,7 @@ class DataLoaderOp(ParallelBaseOp):
         },
         "configs": {
             "type": "dict",
-            "description": "最大缓冲区大小"
+            "description": "加载器配置"
         }
     }
     OUTPUTS: dict[str, Any] = {
@@ -44,43 +44,37 @@ class DataLoaderOp(ParallelBaseOp):
         }
     }
     MAX_SIZE: int = 1
-    _SENTINEL = object()
 
-    def __init__(self, loader: BaseLoader, max_poolsize: int = 1):
-        self.loader = loader
-        
-        self.data_queue: asyncio.Queue[Any] = asyncio.Queue(
-            maxsize=max_poolsize)
-        self._length = loader.length
-        self._worker_task = None
+    def __init__(self, name: str):
+        super().__init__(name)
 
-    async def _worker(self, data, configs):
-        self.loader_class = self.build_loader_class(configs['loader_type'])
-        self.max_poolsize = configs['max_poolsize']
-        self.loader = self.loader_class(src=data['src'], config=configs)
-        for i in range(self._length):
-            try:
-                item = self.loader.__next__()
-            except Exception as e:
-                logger.error(
-                    f"Error loading item {i} in {self.__class__.__name__}: {e.__repr__()}"
-                )
-                continue
-            await self.data_queue.put(item)
-        await self.data_queue.put(self._SENTINEL)
+    async def _async_execute(self, configs):
+        loader_class = self.build_loader_class(configs['loader_type'])
+        loader = loader_class(src=self.inputs['src'],
+                              length=self.length,
+                              config=configs)
+        try:
+            index = 0
+            async for item in loader:
+                await self._broadcast_result(item)
+                index += 1
+        except Exception as e:
+            logger.error(
+                f"Error loading item {index} in {self.__class__.__name__}: {e.__repr__()}"
+            )
+            raise e
 
-    async def _async_execute_single(self, data, configs):
-        if self._worker_task is None:
-            self._worker_task = asyncio.create_task(self._worker(data, configs))
-        # TODO: 没有实现结束信号的处理（返回上层未捕捉）
-        return await self.data_queue.get()
+    async def _broadcast_result(self, result):
+        tasks = []
+        for queue in self.outputs['result']:
+            tasks.append(queue.put(result))
+        await asyncio.gather(*tasks)
 
     def build_loader_class(self, loader_type: str):
-        if loader_type == "img_file_list":
-            return ImgFileListLoader
-        elif loader_type == "video_file":
-            return VideoFileLoader
-        elif loader_type == "img_array":
-            return ArrayLoader
-        else:
+        mapping = {
+            "img_file_list": ImgFileListLoader,
+            "img_array": ArrayLoader
+        }
+        if loader_type not in mapping:
             raise ValueError(f"Unsupported loader type: {loader_type}")
+        return mapping[loader_type]
