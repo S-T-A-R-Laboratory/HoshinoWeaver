@@ -28,47 +28,6 @@ ON_ERR_STOP = "break"
 SUPPORT_FILTER_MAPPING = {"STAR_SHRINK": star_shrink_by_morphology}
 
 
-def generate_weight(
-    length: int,
-    fin: float,
-    fout: float,
-    int_weight=False,
-    input_dtype=np.dtype("uint8")) -> np.ndarray:
-    """为渐入渐出星轨生成每张图像分配的权重。
-
-    Args:
-        length (int): 序列长度。
-        fin (float): 渐入比例(0-1)。
-        fout (float): 渐出比例(0-1)。
-        int_weight (bool, optional): 是否将权重转换为uint8/uint16（范围将从0-1映射到0-256/0-65536）以加速运算。Defaults to False.
-
-    Returns:
-        list[float,int]: 权重序列
-    """
-    assert fin + fout <= 1
-    in_len = int(length * fin)
-    out_len = int(length * fout)
-    ret_weight = np.ones((length, ), dtype=np.float16)
-    multi_base = get_scale_x({
-        np.dtype("uint8"): 1,
-        np.dtype("uint16"): 2
-    }[input_dtype])
-    dtype = DTYPE_UPSCALE_MAP[input_dtype]
-    if in_len > 0:
-        l = np.arange(1, 100, 99 / in_len) / 100
-        ret_weight[:in_len] = l
-    if out_len > 0:
-        r = np.arange(1, 100, 99 / out_len)[::-1] / 100
-        ret_weight[-out_len:] = r
-    if int_weight:
-        # 启用uint8/16权重时，权重转换为uint8/16；
-        # 非渐入渐出模式时，不乘以multi_base（以进一步减少格式转换，加速计算）
-        if in_len + out_len > 0:
-            return np.array(ret_weight * multi_base, dtype=dtype)
-        return np.array(ret_weight, dtype=dtype)
-    return ret_weight
-
-
 def load_sample_img(fname_list: list[str]) -> Optional[np.ndarray]:
     """load sample image from the given filename list if possible.
 

@@ -42,7 +42,6 @@ class TrailStackerOp(BaseOp):
     }
     MERGER = MaxMerger
     MAX_SIZE: int = 1
-    _SENTINEL = object()
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         int_weight: bool = configs['int_weight']

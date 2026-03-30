@@ -132,7 +132,7 @@ class ValidatedDag:
     nodes: dict[str, dict[str, Any]]
     global_inputs: dict[str, dict[str, Any]]
     global_configs: dict[str, dict[str, Any]]
-    output_links: list[str]
+    output_links: dict[str, str]
     node_deps: dict[str, Set[str]]  # provider nodes -> dependent node
     exec_order: list[str]
 
