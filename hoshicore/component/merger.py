@@ -66,7 +66,7 @@ class BaseMerger(metaclass=ABCMeta):
 class MaxMerger(BaseMerger):
 
     def _merge(self, base_img, new_img):
-        return np.max([base_img, new_img], axis=0)
+        return np.maximum(base_img, new_img, axis=0)
 
 
 class MinMerger(BaseMerger):
