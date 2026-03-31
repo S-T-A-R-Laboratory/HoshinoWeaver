@@ -71,7 +71,7 @@ class RichContextQueue(object):
     async def get_length(self) -> int:
         """消费者等待并获取序列长度"""
         await self._length_event.wait()
-        assert self.length, "Null length error (usually not expected to happen)"
+        assert self.length is not None, "Null length error (usually not expected to happen)"
         return self.length
 
 
