@@ -277,7 +277,7 @@ def instantiate_and_wire(
             # 批量推送：来自内存列表（顶层 DAG 场景）
             feeders.append(_feed_sequence(name, source, targets))
     for name, targets in cfg_targets.items():
-        source = global_configs[name]
+        source = effective_configs[name]
         if isinstance(source, RichContextQueue):
             feeders.append(_bridge_queue(name, source, targets))
         else:
