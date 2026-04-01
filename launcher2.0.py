@@ -8,7 +8,6 @@ global_configs = {
     "fin": 0.2,
     "fout": 0.2,
     "int_weight": True,
-    "input_dtype": "uint8",
 }
 
 asyncio.run(

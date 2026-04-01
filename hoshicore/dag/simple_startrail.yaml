@@ -10,7 +10,6 @@ configs:
   fin:              { type: float, default: 0 }
   fout:             { type: float, default: 0 }
   int_weight:       { type: bool,  default: true }
-  input_dtype:      { type: str,   default: "uint8" }
   output_filename:  { type: str,   default: "result.tif" }
   loader_type:      { type: str,   default: "img_file_list" }
   loader_configs:   { type: dict,  default: {} }
@@ -37,10 +36,8 @@ nodes:
     inputs:
       sequence: inputs.fnames
     configs:
-      fin:         configs.fin
-      fout:        configs.fout
-      int_weight:  configs.int_weight
-      input_dtype: configs.input_dtype
+      fin:  configs.fin
+      fout: configs.fout
     outputs:
       result: { type: sequence }
 

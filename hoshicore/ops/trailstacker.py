@@ -47,7 +47,7 @@ class TrailStackerOp(BaseOp):
         int_weight: bool = configs['int_weight']
         img_queue: RichContextQueue = self.inputs['data']
         weight_queue: RichContextQueue = self.inputs['weight']
-        merger = self.MERGER()
+        merger = self.MERGER(int_weight=int_weight)
         tot_num = self.length
         assert tot_num is not None, "TrailStackerOp requires sequence length information."
 
