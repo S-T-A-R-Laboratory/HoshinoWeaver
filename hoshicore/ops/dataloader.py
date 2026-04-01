@@ -2,8 +2,11 @@ import asyncio
 from typing import Any
 from loguru import logger
 
+import numpy as np
+
 from .base import BaseOp
 from ..component.dataloader import BaseLoader, ImgFileListLoader, ArrayLoader
+from ..component.tagged_image import TaggedImage
 
 
 class ImgDataLoaderOp(BaseOp):
@@ -56,6 +59,9 @@ class ImgDataLoaderOp(BaseOp):
         try:
             index = 0
             async for item in loader:
+                # 包装为 TaggedImage：记录原始 dtype，后续自动推算 scale
+                if isinstance(item, np.ndarray):
+                    item = TaggedImage(data=item, source_dtype=item.dtype)
                 await self._broadcast_result(item)
                 index += 1
         except Exception as e:

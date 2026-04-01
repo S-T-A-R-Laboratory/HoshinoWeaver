@@ -12,6 +12,7 @@ import numpy as np
 from loguru import logger
 
 from .base import BaseOp
+from ..component.tagged_image import TaggedImage
 
 # ---------------------------------------------------------------------------
 # 图像保存函数（从 component/imgfio.py 迁移）
@@ -88,6 +89,12 @@ class ImageSaveOp(BaseOp):
             "type": "str",
             "description": "输出文件路径",
         },
+        "output_dtype": {
+            "type": "str",
+            "description": "输出图像的目标 dtype（如 'uint8', 'uint16'）。"
+                           "None 时自动还原到 TaggedImage 的 source_dtype。",
+            "default": None,
+        },
         "exif": {
             "type": "object",
             "description": "EXIF 及色彩配置信息",
@@ -106,6 +113,21 @@ class ImageSaveOp(BaseOp):
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         image = configs['image']
+        output_dtype_str = configs.get('output_dtype')
+
+        # TaggedImage 自动 rescale
+        if isinstance(image, TaggedImage):
+            target_dtype = (
+                np.dtype(output_dtype_str) if output_dtype_str
+                else None  # None → 还原到 source_dtype
+            )
+            logger.debug(
+                f"TaggedImage rescale: source={image.source_dtype}, "
+                f"current={image.dtype}, scale={image.scale_factor}, "
+                f"target={target_dtype or image.source_dtype}"
+            )
+            image = image.rescale_to(target_dtype)
+
         output_filename = configs['output_filename']
         info = configs.get('exif')
 

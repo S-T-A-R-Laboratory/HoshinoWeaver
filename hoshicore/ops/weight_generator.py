@@ -3,6 +3,9 @@ WeightGeneratorOp：根据序列长度和渐入渐出参数，生成逐帧权重
 
 权重生成逻辑复制自 ezlib/trailstacker.py::generate_weight，
 适配为异步 DAG Op。
+
+注意：本 Op 只负责生成 [0, 1] 范围的浮点权重。
+int_weight 的整型放缩由下游 Merger 根据 TaggedImage 的 dtype 信息自主完成。
 """
 import asyncio
 from typing import Any
@@ -12,63 +15,37 @@ from loguru import logger
 
 from .base import BaseOp
 
+
 # ---------------------------------------------------------------------------
-# 权重生成函数（从 ezlib/trailstacker.py 迁移，内联必要的工具依赖）
+# 权重生成函数
 # ---------------------------------------------------------------------------
-
-DTYPE_UPSCALE_MAP = {
-    np.dtype('uint8'): np.dtype('uint16'),
-    np.dtype('uint16'): np.dtype('uint32'),
-    np.dtype('uint32'): np.dtype('uint64'),
-    np.dtype('uint64'): float,
-}
-
-
-def _get_scale_x(time: int, base: int = 256) -> int:
-    return base ** time + 1
 
 
 def generate_weight(
     length: int,
     fin: float,
     fout: float,
-    int_weight: bool = False,
-    input_dtype=np.dtype("uint8"),
 ) -> np.ndarray:
-    """为渐入渐出星轨生成每张图像分配的权重。
+    """为渐入渐出星轨生成每张图像的浮点权重 [0, 1]。
 
     Args:
         length: 序列长度。
         fin: 渐入比例 (0-1)。
         fout: 渐出比例 (0-1)。
-        int_weight: 是否将权重映射到 uint8/uint16 整型范围以加速运算。
-        input_dtype: 输入图像的 dtype，用于决定整型权重的放缩倍数。
 
     Returns:
-        np.ndarray: 权重数组，shape = (length,)。
+        np.ndarray: 权重数组，shape = (length,)，值域 [0, 1]，dtype=float32。
     """
     assert fin + fout <= 1, f"fin({fin}) + fout({fout}) > 1"
     in_len = int(length * fin)
     out_len = int(length * fout)
-    ret_weight = np.ones((length,), dtype=np.float16)
-
-    multi_base = _get_scale_x({
-        np.dtype("uint8"): 1,
-        np.dtype("uint16"): 2,
-    }[input_dtype])
-    dtype = DTYPE_UPSCALE_MAP[input_dtype]
+    ret_weight = np.ones((length,), dtype=np.float32)
 
     if in_len > 0:
-        l = np.arange(1, 100, 99 / in_len) / 100
-        ret_weight[:in_len] = l
+        ret_weight[:in_len] = np.arange(1, 100, 99 / in_len) / 100
     if out_len > 0:
-        r = np.arange(1, 100, 99 / out_len)[::-1] / 100
-        ret_weight[-out_len:] = r
+        ret_weight[-out_len:] = np.arange(1, 100, 99 / out_len)[::-1] / 100
 
-    if int_weight:
-        if in_len + out_len > 0:
-            return np.array(ret_weight * multi_base, dtype=dtype)
-        return np.array(ret_weight, dtype=dtype)
     return ret_weight
 
 class WeightGeneratorOp(BaseOp):
@@ -95,16 +72,6 @@ class WeightGeneratorOp(BaseOp):
             "description": "渐出比例",
             "default": 0,
         },
-        "int_weight": {
-            "type": "bool",
-            "description": "是否使用整型权重加速",
-            "default": False,
-        },
-        "input_dtype": {
-            "type": "str",
-            "description": "输入图像的 dtype 名称",
-            "default": "uint8",
-        },
     }
     OUTPUTS: dict[str, Any] = {
         "result": {
@@ -126,8 +93,6 @@ class WeightGeneratorOp(BaseOp):
             length=length,
             fin=configs['fin'],
             fout=configs['fout'],
-            int_weight=configs['int_weight'],
-            input_dtype=np.dtype(configs.get('input_dtype', 'uint8')),
         )
 
         input_queue = self.inputs['sequence']
