@@ -50,8 +50,6 @@ DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
 # ────────────────────────────────────────────────────────────────
 # Feeder 协程
 # ────────────────────────────────────────────────────────────────
-
-
 async def _feed_sequence(
     name: str,
     data: Sequence[Any],
@@ -63,10 +61,8 @@ async def _feed_sequence(
     2. 逐项并发推送到所有目标队列 (backpressure-safe)
     """
     length = len(data)
-    logger.info(
-        f"[Feeder] Global input '{name}': "
-        f"{length} items → {len(targets)} queue(s)"
-    )
+    logger.info(f"[Feeder] Global input '{name}': "
+                f"{length} items → {len(targets)} queue(s)")
     for queue in targets:
         await queue.set_length(length)
     for item in data:
@@ -79,9 +75,7 @@ async def _feed_config(
     targets: list[RichContextQueue],
 ) -> None:
     """将全局标量配置推送到所有目标队列（每队列推送一次）。"""
-    logger.debug(
-        f"[Feeder] Global config '{name}' → {len(targets)} queue(s)"
-    )
+    logger.debug(f"[Feeder] Global config '{name}' → {len(targets)} queue(s)")
     for queue in targets:
         await queue.put(value)
 
@@ -105,9 +99,7 @@ async def _bridge_queue(
         3. 逐项从 source 读取并推送到所有 targets（backpressure-safe）
     """
     length = await source.get_length()
-    logger.info(
-        f"[Bridge] '{name}': {length} items → {len(targets)} queue(s)"
-    )
+    logger.info(f"[Bridge] '{name}': {length} items → {len(targets)} queue(s)")
     for queue in targets:
         await queue.set_length(length)
     for _ in range(length):
@@ -164,15 +156,17 @@ def instantiate_and_wire(
         if op_name not in registry:
             raise ValueError(
                 f"Op '{op_name}' (node '{node_name}') not found in registry. "
-                f"Available: {sorted(registry.keys())}"
-            )
+                f"Available: {sorted(registry.keys())}")
         instances[node_name] = registry[op_name](name=node_name)
-        logger.debug(f"Instantiated '{node_name}' → {registry[op_name].__name__}")
+        logger.debug(
+            f"Instantiated '{node_name}' → {registry[op_name].__name__}")
 
     # ══════ 2) 布线：解析每个节点的 inputs/configs link ══════
     # 按 link 来源分类收集目标队列
-    seq_targets: dict[str, list[RichContextQueue]] = {}  # global input  → queues
-    cfg_targets: dict[str, list[RichContextQueue]] = {}  # global config → queues
+    seq_targets: dict[str,
+                      list[RichContextQueue]] = {}  # global input  → queues
+    cfg_targets: dict[str,
+                      list[RichContextQueue]] = {}  # global config → queues
 
     for node_name in dag.exec_order:
         node_spec = nodes_spec[node_name]
@@ -197,12 +191,9 @@ def instantiate_and_wire(
                 # 节点输出 → 目标队列
                 provider_node, output_name = parsed[1], parsed[2]
                 instances[provider_node].outputs[output_name].append(
-                    target_queue
-                )
-                logger.debug(
-                    f"Wired {provider_node}.{output_name} → "
-                    f"{node_name}.{section}.{arg_name}"
-                )
+                    target_queue)
+                logger.debug(f"Wired {provider_node}.{output_name} → "
+                             f"{node_name}.{section}.{arg_name}")
 
     # ══════ 2b) 自动注入：YAML 未布线但 Op 声明了 default 的 config ══════
     # pre_execute() 会 await 所有 CONFIGS 键的队列。
@@ -231,12 +222,9 @@ def instantiate_and_wire(
                 if "default" in spec:
                     unwired_feeders.append(
                         (f"{node_name}.{key}", spec["default"],
-                         op_inst.config[key])
-                    )
-                    logger.debug(
-                        f"Auto-inject default for unwired config "
-                        f"'{node_name}.{key}': {spec['default']}"
-                    )
+                         op_inst.config[key]))
+                    logger.debug(f"Auto-inject default for unwired config "
+                                 f"'{node_name}.{key}': {spec['default']}")
                 else:
                     logger.warning(
                         f"Config '{key}' of node '{node_name}' "
@@ -245,26 +233,33 @@ def instantiate_and_wire(
                     )
 
         # 检查 Op INPUTS
-        for key in op_inst.INPUTS:
+        for key, spec in op_inst.INPUTS.items():
             if key not in yaml_inp_keys:
-                logger.warning(
-                    f"Input '{key}' of node '{node_name}' "
-                    f"({op_inst.__class__.__name__}) is not wired in YAML "
-                    f"— node may hang in pre_execute()."
-                )
+                required = spec.get("required", True)
+                if not required:
+                    # 可选输入未布线 → 标记队列为非活跃，pre_execute 会跳过
+                    op_inst.inputs[key].active = False
+                    logger.debug(
+                        f"Optional input '{key}' of node '{node_name}' "
+                        f"({op_inst.__class__.__name__}) is not wired — marked inactive."
+                    )
+                else:
+                    err_msg = (
+                        f"Input '{key}' of node '{node_name}' "
+                        f"({op_inst.__class__.__name__}) is not wired in YAML "
+                        f"— node may hang in pre_execute().")
+                    logger.error(err_msg)
+                    raise err_msg
 
     # ══════ 3) 校验全局数据齐备 ══════
     missing_inputs = [n for n in seq_targets if n not in global_inputs]
     if missing_inputs:
         raise ValueError(
-            f"Global input(s) required but not provided: {missing_inputs}"
-        )
+            f"Global input(s) required but not provided: {missing_inputs}")
     missing_configs = [n for n in cfg_targets if n not in effective_configs]
     if missing_configs:
-        raise ValueError(
-            f"Global config(s) required but not provided "
-            f"(and no default): {missing_configs}"
-        )
+        raise ValueError(f"Global config(s) required but not provided "
+                         f"(and no default): {missing_configs}")
 
     # ══════ 4) 创建 feeder 协程 ══════
     feeders: list[Awaitable[None]] = []
@@ -297,19 +292,15 @@ def instantiate_and_wire(
             if provider_node not in instances:
                 raise ValueError(
                     f"Output '{out_name}' references node '{provider_node}' "
-                    f"which is not in exec_order."
-                )
+                    f"which is not in exec_order.")
             collector = RichContextQueue(maxsize=1)
             instances[provider_node].outputs[output_name].append(collector)
             output_queues[out_name] = collector
             logger.debug(
-                f"Output '{out_name}' ← {provider_node}.{output_name}"
-            )
+                f"Output '{out_name}' ← {provider_node}.{output_name}")
 
-    logger.info(
-        f"DAG wired: {len(instances)} node(s), "
-        f"{len(feeders)} feeder(s), {len(output_queues)} output(s)"
-    )
+    logger.info(f"DAG wired: {len(instances)} node(s), "
+                f"{len(feeders)} feeder(s), {len(output_queues)} output(s)")
     return list(instances.values()), feeders, output_queues
 
 
@@ -336,9 +327,9 @@ async def run_dag(
     Returns:
         dict: 全局输出 name → value 的映射。
     """
-    ops, feeders, output_queues = instantiate_and_wire(
-        dag, global_inputs, global_configs, op_registry
-    )
+    ops, feeders, output_queues = instantiate_and_wire(dag, global_inputs,
+                                                       global_configs,
+                                                       op_registry)
     executor = DAGExecutor(ops)
 
     logger.info(f"DAG execution starting ({len(ops)} nodes)...")
@@ -406,10 +397,8 @@ def _resolve_configs(
             resolved[name] = user_configs[name]
         elif "default" in spec:
             resolved[name] = spec["default"]
-            logger.debug(
-                f"Config '{name}' not provided, "
-                f"using default: {spec['default']}"
-            )
+            logger.debug(f"Config '{name}' not provided, "
+                         f"using default: {spec['default']}")
     # 保留用户传入的额外配置（YAML 未声明但代码中可能需要）
     for name, value in user_configs.items():
         if name not in resolved:
