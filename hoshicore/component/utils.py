@@ -399,16 +399,25 @@ class FastGaussianParam(object):
                                  ddof=g1.ddof)
 
     def __mul__(self, weight: Union[float, int, np.ndarray]):
-        """支持加权"""
-        # TODO: 未验证weight为float的情况。整形时效果等同于mask?
+        """重要性加权：每帧以权重 w 贡献到流式统计中。
+
+        语义：该帧的"重要性"为 w，等价于该帧被计入 w 次。
+            sum_mu   *= w   (加权求和)
+            square_sum *= w  (加权平方和，非 w²)
+            n        *= w   (等效帧数)
+
+        由此可得：
+            μ_w = Σ(w·x) / Σw
+            var_w = (Σ(w·x²) - (Σ(w·x))²/Σw) / (Σw - ddof)
+        """
         if isinstance(weight, (int, float, np.ndarray)):
             return FastGaussianParam(
                 sum_mu=self.sum_mu * weight,
-                square_num=self.square_sum * (weight**2),
+                square_num=self.square_sum * weight,
                 n=self.n * weight,
                 ddof=self.ddof,
                 source_dtype=self.source_dtype)
-        return NotImplementedError(
+        raise NotImplementedError(
             f"Unsupported weight type {type(weight)} for "
             f"multiplication with {self.__class__.__name__}.")
 
