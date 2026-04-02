@@ -38,6 +38,7 @@ class RichContextQueue(object):
         self._put_lock = Lock()
         self.length: Optional[int] = None
         self._length_event = Event()  # 长度就绪事件
+        self.active: bool = True  # 是否有生产者连接（由 wiring 层管理）
 
     async def put(self, item: Any) -> None:
         """将对象放入队列"""

@@ -26,7 +26,7 @@ class TrailStackerOp(BaseOp):
         },
         "weight": {
             "type": "sequence",
-            "required": True
+            "required": False
         },
     }
     CONFIGS: dict[str, dict[str, Any]] = {
@@ -45,8 +45,6 @@ class TrailStackerOp(BaseOp):
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         int_weight: bool = configs['int_weight']
-        img_queue: RichContextQueue = self.inputs['data']
-        weight_queue: RichContextQueue = self.inputs['weight']
         merger = self.MERGER(int_weight=int_weight)
         tot_num = self.length
         assert tot_num is not None, "TrailStackerOp requires sequence length information."
@@ -56,18 +54,9 @@ class TrailStackerOp(BaseOp):
         #debug模式：作为固定参数
         #progressbar： 还没想好
         #on_error_action ： 固定配置，可能和debug一起由全局同一指向
-        # reset logger level
-        #logger.remove()
-        #if debug:
-        #    logger.add(sys.stdout, level="DEBUG")
-        #    logger.info(f"Debug mode activated.")
-        #else:
-        #    logger.add(sys.stdout, level="INFO")
 
-        # init img_loader and merger
+        has_weight = self.inputs['weight'].active
 
-        # weight用法的变更，Merger不再在初始化时接收weight_list，而是在merge时接收当前帧的weight
-        
         stacked_num = 0
         failed_num = 0
         err_msg_collector = []
@@ -81,7 +70,7 @@ class TrailStackerOp(BaseOp):
                 try:
                     upper_stream_data = self._async_convert_inputs()
                     cur_img = await upper_stream_data['data']
-                    weight = await upper_stream_data['weight']
+                    weight = (await upper_stream_data['weight']) if has_weight else None
                 except StopIteration:
                     logger.warning(f"{self.name}: upstream ended at {i}/{tot_num}")
                     break

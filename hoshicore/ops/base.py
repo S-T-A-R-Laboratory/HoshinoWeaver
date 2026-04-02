@@ -34,9 +34,11 @@ class BaseOp(object):
         通常而言，执行器会等待所有配置数据都准备好，并且确认长度信息已经就绪。
         """
 
-        # 验证所有序列输入等长
+        # 验证所有序列输入等长（跳过未布线的可选输入）
         input_lengths = {}
         for name, queue in self.inputs.items():
+            if not queue.active:
+                continue
             input_lengths[name] = await queue.get_length()
         seq_lengths = [
             length for name, length in input_lengths.items()
@@ -86,8 +88,11 @@ class BaseOp(object):
     
     def _async_convert_inputs(self):
         # NOTE: queue.get() returns an awaitable; subclasses may `await` each value.
+        # 跳过非活跃队列（未布线的可选输入），避免产生永远不会被 await 的 coroutine。
         converted_inputs: dict[str, Awaitable[Any]] = {}
         for key, queue in self.inputs.items():
+            if not queue.active:
+                continue
             converted_inputs[key] = queue.get()
         return converted_inputs
     
