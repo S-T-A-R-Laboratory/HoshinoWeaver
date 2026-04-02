@@ -1,15 +1,15 @@
-import os
-from typing import Any, Optional, Union, TypeAlias, Sequence
-from numpy.typing import NDArray
-import av
-import cv2
-import numpy as np
-import rawpy
 import asyncio
-from loguru import logger
+import os
+from typing import Any, TypeAlias, Union
 
-from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, is_support_format
+import av
+import numpy as np
+from loguru import logger
+from numpy.typing import NDArray
+
+from .imgfio import load_img
 from .queue import RichContextQueue
+from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, is_support_format
 
 Frame: TypeAlias = Union[NDArray[np.uint8], NDArray[np.uint16], None]
 
@@ -66,9 +66,9 @@ class VideoFileLoader(BaseLoader):
         self.set_to(self.start_frame)
         self.length = self.end_frame - self.start_frame
 
-    def load(self, index: int):
+    def load(self, item: int):
         # 跳转访问至指定帧
-        self.set_to(self.start_frame + index)
+        self.set_to(self.start_frame + item)
         return self.load_frame()
 
     def load_frame(self):
@@ -126,49 +126,3 @@ class VideoFileLoader(BaseLoader):
         if self.video.time_base is None:
             return -1
         return int(pts * float(self.video.time_base) * self.fps)
-
-
-def load_img(file_path: str) -> Optional[np.ndarray]:
-    """ Using OpenCV API to load a single image from the given path.
-    
-    If necessary, the image will be converted to the given dtype.
-
-    Args:
-        file_path (str): /path/to/the/image.suffix
-
-    Returns:
-        np.ndarray: normally a `numpy.ndarray` object will be returned. 
-        But the image fails to be loaded, an error will be logged, and `None` will be returned under such condition.
-    """
-    try:
-        # suffix check and warning raising
-        suffix = file_path.split(".")[-1].lower()
-        assert is_support_format(
-            file_path), f"Unsupported img suffix:{suffix}."
-        if suffix in NOT_RECOM_SUFFIX:
-            logger.warning("Got an Image with not recommended suffix. \
-                We do not guarantee the stability of EXIF extraction and the output image quality."
-                           )
-        if (suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX):
-            # TODO: not sure if uint32/float is available.
-            img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint16),
-                               cv2.IMREAD_UNCHANGED)
-            if img is None:
-                # some images can not be decoded using option dtype=np.uint16.
-                # this is a temp fix.
-                logger.info(
-                    "Uint16 decoding failed. Fallback to uint8 loading...")
-                img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
-                                   cv2.IMREAD_UNCHANGED)
-        else:
-            # load images with rawpy
-            with rawpy.imread(file_path) as raw:
-                img = raw.postprocess(
-                    output_bps=16,
-                    output_color=rawpy.rawpy.ColorSpace(4))  # type: ignore
-            # switch RGB to BGR
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        return img
-    except Exception as e:
-        logger.error(f"Failed to read {file_path} Because {e}!")
-        return None

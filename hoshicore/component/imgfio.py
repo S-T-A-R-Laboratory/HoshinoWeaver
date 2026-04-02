@@ -5,9 +5,7 @@ imgfio包含了与图像IO相关的函数和类。
 """
 from __future__ import annotations
 
-import queue
-import threading
-from typing import Optional, Sequence, Union
+from typing import Optional, Union
 
 import cv2
 import numpy as np
@@ -20,6 +18,52 @@ from loguru import logger
 from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SAME_SUFFIX_MAPPING,
                     SUPPORT_COLOR_SPACE, get_scale_x, is_support_format,
                     time_cost_warpper)
+
+def load_img(file_path: str) -> Optional[np.ndarray]:
+    """ Using OpenCV API to load a single image from the given path.
+    
+    If necessary, the image will be converted to the given dtype.
+
+    Args:
+        file_path (str): /path/to/the/image.suffix
+
+    Returns:
+        np.ndarray: normally a `numpy.ndarray` object will be returned. 
+        But the image fails to be loaded, an error will be logged, and `None` will be returned under such condition.
+    """
+    try:
+        # suffix check and warning raising
+        suffix = file_path.split(".")[-1].lower()
+        assert is_support_format(
+            file_path), f"Unsupported img suffix:{suffix}."
+        if suffix in NOT_RECOM_SUFFIX:
+            logger.warning("Got an Image with not recommended suffix. \
+                We do not guarantee the stability of EXIF extraction and the output image quality."
+                           )
+        if (suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX):
+            # TODO: not sure if uint32/float is available.
+            img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint16),
+                               cv2.IMREAD_UNCHANGED)
+            if img is None:
+                # some images can not be decoded using option dtype=np.uint16.
+                # this is a temp fix.
+                #logger.info(
+                #    "Uint16 decoding failed. Fallback to uint8 loading...")
+                img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
+                                   cv2.IMREAD_UNCHANGED)
+        else:
+            # load images with rawpy
+            with rawpy.imread(file_path) as raw:
+                img = raw.postprocess(
+                    output_bps=16,
+                    output_color=rawpy.rawpy.ColorSpace(4))  # type: ignore
+            # switch RGB to BGR
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        return img
+    except Exception as e:
+        logger.error(f"Failed to read {file_path} Because {e}!")
+        return None
+
 
 def get_color_profile(color_bstring):
     color_profile = color_bstring.decode("latin-1", errors="ignore")
@@ -105,23 +149,8 @@ def save_img(filename: str,
         raise NameError(f"Unsupported suffix \"{suffix}\".")
     status, buf = cv2.imencode(ext, img, params)
     assert status, "imencode failed."
-    try:
-        import pyexiv2
-        with pyexiv2.ImageData(buf.tobytes()) as image_data:
-            if colorprofile is not None and colorprofile != b"":
-                image_data.modify_icc(colorprofile)
-            if exif is not None and len(exif) > 0:
-                image_data.modify_exif(exif)
-            # 写入文件
-            with open(filename, mode='wb') as f:
-                f.write(image_data.get_bytes())
-    except (ImportError, OSError) as e:
-        logger.warning(
-            "Failed to load pyexiv2. EXIF data and colorprofile can not be written to files."
-        )
-        # 降级写入文件
-        with open(filename, mode='wb') as f:
-            f.write(buf.tobytes())
+    with open(filename, mode='wb') as f:
+        f.write(buf.tobytes())
 
 
 def get_img_attrs(fname: str) -> dict:

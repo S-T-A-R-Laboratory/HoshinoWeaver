@@ -1,4 +1,4 @@
-description: "简化星轨叠加（无 EXIF 处理），用于验证核心管线"
+description: "简化星轨叠加（无 EXIF 处理）"
 version: "1"
 
 # ── 全局输入 ──

@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-from ..component.merger import BaseMerger, MaxMerger
+from ..component.merger import BaseMerger, MaxMerger, MinMerger, MeanMerger, SigmaClippingMerger
 from ..component.progressbar import (END_FLAG, FAIL_FLAG, SUCC_FLAG,
                                      QueueProgressbar, TqdmProgressbar)
 from ..component.queue import RichContextQueue, CancellationError
@@ -129,3 +129,9 @@ class TrailStackerOp(BaseOp):
             if progressbar:
                 progressbar.put(END_FLAG)
             raise
+
+class MinStackerOp(TrailStackerOp):
+    MERGER = MinMerger
+    
+class MeanStackerOp(TrailStackerOp):
+    MERGER = MeanMerger
