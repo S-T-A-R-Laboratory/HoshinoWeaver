@@ -33,7 +33,7 @@ from ..component.queue import RichContextQueue
 
 from ..ops.dataloader import ImgDataLoaderOp
 from ..ops.weight_generator import WeightGeneratorOp
-from ..ops.trailstacker import TrailStackerOp
+from ..ops.trailstacker import TrailStackerOp, SigmaClippingStackerOp
 from ..ops.image_saver import ImageSaveOp
 
 DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
@@ -43,6 +43,7 @@ DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
     "generate_weight": WeightGeneratorOp,
     "WeightGeneratorOp": WeightGeneratorOp,
     "TrailStackerOp": TrailStackerOp,
+    "SigmaClippingStackerOp": SigmaClippingStackerOp,
     "ImageSaveOp": ImageSaveOp,
 }
 

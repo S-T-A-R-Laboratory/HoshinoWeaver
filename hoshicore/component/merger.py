@@ -180,13 +180,3 @@ class SigmaClippingMerger(MeanMerger):
         if weight is not None:
             new_img = new_img * weight
         return new_img
-    
-    @property
-    def merged_image(self) -> Union[TaggedImage, None]:
-        if self.result is None:
-            return None
-        res = self.ref_img - self.result  # result 存储被拒绝的叠加结果。取反得到被接受的均值。
-        mu = res.mu
-        if self._source_dtype is not None:
-            return TaggedImage(data=mu, source_dtype=self._source_dtype)
-        return mu

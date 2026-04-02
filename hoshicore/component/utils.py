@@ -396,7 +396,8 @@ class FastGaussianParam(object):
         return FastGaussianParam(sum_mu=g1.sum_mu - g2.sum_mu,
                                  square_num=g1.square_sum - g2.square_sum,
                                  n=g1.n - g2.n,
-                                 ddof=g1.ddof)
+                                 ddof=g1.ddof,
+                                 source_dtype=g1.source_dtype)
 
     def __mul__(self, weight: Union[float, int, np.ndarray]):
         """重要性加权：每帧以权重 w 贡献到流式统计中。
