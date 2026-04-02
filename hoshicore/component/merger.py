@@ -50,12 +50,8 @@ class BaseMerger(metaclass=ABCMeta):
         if self.int_weight and weight is not None and self._source_dtype is not None:
             raw, weight = self._apply_int_weight(raw, weight)
 
-        # 预处理（如 MeanMerger 转换为 FastGaussianParam）
-        processed = self._pre_process(raw)
-
-        # 加权
-        if weight is not None:
-            processed = processed * weight
+        # 预处理 + 加权（子类各自决定如何施加权重）
+        processed = self._pre_process(raw, weight)
 
         if self.result is None:
             self.result = processed
@@ -100,8 +96,13 @@ class BaseMerger(metaclass=ABCMeta):
     def _merge(self, base_img, new_img):
         raise NotImplementedError
 
-    def _pre_process(self, img: NDArray) -> Any:
-        # no post-processing by default.
+    def _pre_process(self, img: NDArray, weight=None) -> Any:
+        """预处理 + 加权。子类可覆写以实现特定加权逻辑。
+
+        默认实现：直接对 ndarray 乘以权重（适用于 Max/Min）。
+        """
+        if weight is not None:
+            return img * weight
         return img
 
     @property
@@ -131,8 +132,11 @@ class MeanMerger(BaseMerger):
     def _merge(self, base_img, new_img: FastGaussianParam):
         return base_img + new_img
 
-    def _pre_process(self, img: NDArray):
-        return FastGaussianParam(img, source_dtype=img.dtype)
+    def _pre_process(self, img: NDArray, weight=None):
+        fgp = FastGaussianParam(img, source_dtype=img.dtype)
+        if weight is not None:
+            fgp = fgp * weight
+        return fgp
 
     @property
     def merged_image(self) -> Union[TaggedImage, None]:
@@ -170,9 +174,11 @@ class SigmaClippingMerger(MeanMerger):
                                     dtype=rej_dtype)
         super().__init__()
 
-    def _pre_process(self, img: np.ndarray) -> FastGaussianParam:
+    def _pre_process(self, img: np.ndarray, weight=None) -> FastGaussianParam:
         new_img = FastGaussianParam(img, source_dtype=img.dtype)
         new_img.mask((img > self.rej_high_img) | (img < self.rej_low_img))
+        if weight is not None:
+            new_img = new_img * weight
         return new_img
     
     @property
