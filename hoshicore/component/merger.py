@@ -104,10 +104,6 @@ class BaseMerger(metaclass=ABCMeta):
         # no post-processing by default.
         return img
 
-    def upscale(self):
-        raise NotImplementedError(
-            "this merger does not support `upscale` method.")
-
     @property
     def merged_image(self) -> Union[TaggedImage, Any, None]:
         """返回合并结果。如果有 source_dtype 信息则包装为 TaggedImage。"""
@@ -136,14 +132,17 @@ class MeanMerger(BaseMerger):
         return base_img + new_img
 
     def _pre_process(self, img: NDArray):
-        return FastGaussianParam(img)
+        return FastGaussianParam(img, source_dtype=img.dtype)
 
-    def upscale(self):
+    @property
+    def merged_image(self) -> Union[TaggedImage, None]:
         if self.result is None:
-            super().upscale()
-        else:
-            self.result = cast(FastGaussianParam, self.result)
-            self.result.upscale()
+            return None
+        # 从 FastGaussianParam 提取均值。返回值是一个浮点均值数组。
+        mu = self.result.mu
+        if self._source_dtype is not None:
+            return TaggedImage(data=mu, source_dtype=self._source_dtype)
+        return mu
 
 
 class SigmaClippingMerger(MeanMerger):
@@ -158,9 +157,10 @@ class SigmaClippingMerger(MeanMerger):
     def __init__(self, ref_img: FastGaussianParam, rej_high: float,
                  rej_low: float, **kwargs) -> None:
         # TODO: 迭代加速（对已收敛的区域取mask）？
+        self.ref_img = ref_img
         ref_mu = ref_img.mu
         ref_std = np.sqrt(ref_img.var)
-        rej_dtype = ref_img.sum_mu.dtype
+        rej_dtype = ref_img.source_dtype
         self.rej_high_img = np.array(
             np.floor(ref_mu + ref_std * rej_high).clip(
                 min=0, max=DTYPE_MAX_VALUE[rej_dtype]),
@@ -171,6 +171,16 @@ class SigmaClippingMerger(MeanMerger):
         super().__init__()
 
     def _pre_process(self, img: np.ndarray) -> FastGaussianParam:
-        new_img = FastGaussianParam(img)
+        new_img = FastGaussianParam(img, source_dtype=img.dtype)
         new_img.mask((img > self.rej_high_img) | (img < self.rej_low_img))
         return new_img
+    
+    @property
+    def merged_image(self) -> Union[TaggedImage, None]:
+        if self.result is None:
+            return None
+        res = self.ref_img - self.result  # result 存储被拒绝的叠加结果。取反得到被接受的均值。
+        mu = res.mu
+        if self._source_dtype is not None:
+            return TaggedImage(data=mu, source_dtype=self._source_dtype)
+        return mu

@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import sys
 import time
+from functools import wraps
 from math import floor, log, sqrt
 from typing import Callable, Optional, Union
 
@@ -171,6 +172,7 @@ def time_cost_warpper(func: Callable) -> Callable:
         Callable: _description_
     """
 
+    @wraps(func)
     def do_func(*args, **kwargs):
         t0 = time.time()
         res = func(*args, **kwargs)
@@ -290,8 +292,10 @@ class FastGaussianParam(object):
                  square_num: Optional[np.ndarray] = None,
                  n: Optional[np.ndarray] = None,
                  ddof: int = 1,
-                 dtype_n: np.dtype = np.dtype("int16")):
+                 dtype_n: np.dtype = np.dtype("uint32"),
+                 source_dtype: Optional[np.dtype] = None):
         self.sum_mu = sum_mu
+        self.source_dtype = source_dtype if source_dtype is not None else sum_mu.dtype
         if square_num is not None:
             self.square_sum = square_num
         else:
@@ -300,6 +304,9 @@ class FastGaussianParam(object):
             self.square_sum = np.square(sum_mu, dtype=sq_dtype)
         self.n = n if n is not None else np.ones_like(self.sum_mu,
                                                       dtype=dtype_n)
+        # 单张图像初始化时（source_dtype = sum_mu.dtype），默认提升一次范围
+        if self.sum_mu.dtype == self.source_dtype:
+            self.upscale()
         self.ddof = ddof
 
     @property
@@ -328,6 +335,21 @@ class FastGaussianParam(object):
         return DTYPE_UPSCALE_MAP[
             ref_array.dtype] if ref_array.dtype in DTYPE_UPSCALE_MAP else float
 
+    def _safe_add_count(self) -> Union[int, float]:
+        """计算当前 dtype 下可安全叠加的最大图像数量。
+        
+        实践上几乎仅受 sum_mu 限制。
+        """
+        if self.source_dtype not in DTYPE_MAX_VALUE:
+            return float('inf')
+        # sum_mu 的限制
+        source_max = DTYPE_MAX_VALUE[self.source_dtype]
+        sum_limit = DTYPE_MAX_VALUE.get(self.sum_mu.dtype,
+                                        float('inf')) // source_max
+        # n 的限制
+        n_limit = DTYPE_MAX_VALUE.get(self.n.dtype, float('inf'))
+        return min(sum_limit, n_limit)
+
     def apply_zero_var(self, full_img):
         """修复n为0的情况。应用修复。
         
@@ -343,10 +365,28 @@ class FastGaussianParam(object):
         g1 = self
         assert isinstance(g2, FastGaussianParam), "unacceptable object"
         assert g1.ddof == g2.ddof, "unmatched var calculation!"
+
+        # 计算累加后的 n
+        new_n = g1.n + g2.n
+        max_n = new_n.max()
+
+        # 检查是否超过安全叠加数量
+        if max_n > g1._safe_add_count():
+            g1.upscale()
+
+        # 检查 n 是否溢出（极少发生）
+        if g1.n.dtype in DTYPE_MAX_VALUE and max_n > DTYPE_MAX_VALUE[
+                g1.n.dtype]:
+            if g1.n.dtype in DTYPE_UPSCALE_MAP:
+                new_n_dtype = DTYPE_UPSCALE_MAP[g1.n.dtype]
+                g1.n = g1.n.astype(new_n_dtype)
+                new_n = new_n.astype(new_n_dtype)
+
         return FastGaussianParam(sum_mu=g1.sum_mu + g2.sum_mu,
                                  square_num=g1.square_sum + g2.square_sum,
-                                 n=g1.n + g2.n,
-                                 ddof=g1.ddof)
+                                 n=new_n,
+                                 ddof=g1.ddof,
+                                 source_dtype=g1.source_dtype)
 
     def __sub__(self, g2):
         g1 = self
@@ -358,11 +398,28 @@ class FastGaussianParam(object):
                                  n=g1.n - g2.n,
                                  ddof=g1.ddof)
 
+    def __mul__(self, weight: Union[float, int, np.ndarray]):
+        """支持加权"""
+        # TODO: 未验证weight为float的情况。整形时效果等同于mask?
+        if isinstance(weight, (int, float, np.ndarray)):
+            return FastGaussianParam(
+                sum_mu=self.sum_mu * weight,
+                square_num=self.square_sum * (weight**2),
+                n=self.n * weight,
+                ddof=self.ddof,
+                source_dtype=self.source_dtype)
+        return NotImplementedError(
+            f"Unsupported weight type {type(weight)} for "
+            f"multiplication with {self.__class__.__name__}.")
+
+    def __rmul__(self, weight: Union[float, int, np.ndarray]):
+        return self.__mul__(weight)
+
     def mask(self, mask_pos: np.ndarray):
         assert mask_pos.dtype == np.dtype("bool"), "Invalid mask!"
         self.sum_mu *= mask_pos
         self.square_sum *= mask_pos
-        self.n = np.array(mask_pos, dtype=np.uint16)
+        self.n = self.n * mask_pos.astype(self.n.dtype)
 
     @property
     def shape(self):
