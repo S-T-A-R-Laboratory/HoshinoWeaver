@@ -22,7 +22,7 @@ configs:
 #
 nodes:
   data_loader:
-    op: DataLoaderOp
+    op: ImgDataLoaderOp
     inputs:
       src: inputs.fnames
     configs:
