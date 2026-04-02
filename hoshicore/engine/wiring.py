@@ -33,16 +33,18 @@ from ..component.queue import RichContextQueue
 
 from ..ops.dataloader import ImgDataLoaderOp
 from ..ops.weight_generator import WeightGeneratorOp
-from ..ops.trailstacker import TrailStackerOp, SigmaClippingStackerOp
+from ..ops.trailstacker import (TrailStackerOp, MinStackerOp, MeanStackerOp,
+                                SigmaClippingStackerOp)
 from ..ops.image_saver import ImageSaveOp
 
 DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
     # YAML 中使用的 op 名称 → 实际类
-    "DataLoaderOp": ImgDataLoaderOp,
     "ImgDataLoaderOp": ImgDataLoaderOp,
     "generate_weight": WeightGeneratorOp,
     "WeightGeneratorOp": WeightGeneratorOp,
     "TrailStackerOp": TrailStackerOp,
+    "MinStackerOp": MinStackerOp,
+    "MeanStackerOp": MeanStackerOp,
     "SigmaClippingStackerOp": SigmaClippingStackerOp,
     "ImageSaveOp": ImageSaveOp,
 }
