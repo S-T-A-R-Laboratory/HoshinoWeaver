@@ -5,15 +5,14 @@
 """
 import numpy as np
 from numpy.typing import NDArray
+from loguru import logger
 
 
-def equalize_noise(
-    max_img: NDArray,
-    mean_img: NDArray,
-    std_img: NDArray,
-    n_img: NDArray,
-    min_frames: int = 10
-) -> NDArray:
+def equalize_noise(max_img: NDArray,
+                   mean_img: NDArray,
+                   std_img: NDArray,
+                   n_img: NDArray,
+                   min_frames: int = 10) -> NDArray:
     """对最大值叠加图像应用噪声均匀化校正。
 
     核心公式: M_corrected = M - (σ̂ - σ_ref) · ĉ_n^eff
@@ -30,14 +29,24 @@ def equalize_noise(
     """
     # 背景掩码：有足够稳定帧的像素
     bg_mask = n_img >= min_frames
+    # log背景估算数量
+    logger.info(
+        f"NoiseEqualization: {np.sum(bg_mask) / np.sum(np.ones_like(n_img))} "
+        f"background pixels with >= {min_frames} frames")
 
     if not np.any(bg_mask):
-        raise ValueError(f"No background pixels found with >= {min_frames} frames")
+        raise ValueError(
+            f"No background pixels found with >= {min_frames} frames")
 
     # Step 3: 估计经验偏移系数 ĉ_n^eff
     residual = (max_img - mean_img)[bg_mask]
     sigma_bg = std_img[bg_mask]
     valid = sigma_bg > 0
+
+    logger.info(
+        f"NoiseEqualization residual: {np.median(residual):.4f}, sigma_bg: "
+        f"{np.median(sigma_bg):.4f}, valid pixels: {np.sum(valid)}/{len(residual)}"
+    )
 
     if not np.any(valid):
         raise ValueError("No valid background pixels with σ > 0")

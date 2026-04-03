@@ -304,23 +304,18 @@ class MaxNoiseEqualizationOp(BaseOp):
     输出校正后的最大值图像。
     """
     EXECUTOR = "cpu"
-    INPUTS: dict[str, dict[str, Any]] = {
+    CONFIGS: dict[str, dict[str, Any]] = {
         "max_img": {"type": "image", "required": True},
         "statistics": {"type": "image", "required": True},
-    }
-    CONFIGS: dict[str, dict[str, Any]] = {
-        "min_frames_ratio": {"type": "float", "default": 0.3},
+        "min_frames_ratio": {"type": "float", "default": 0.7},
     }
     OUTPUTS = {"result": {"type": "image"}}
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         min_frames_ratio: float = configs['min_frames_ratio']
-
         try:
-            upper_stream_data = self._async_convert_inputs()
-            max_tagged = await upper_stream_data['max_img']
-            accepted: FastGaussianParam = await upper_stream_data['statistics']
-
+            max_tagged = configs['max_img']
+            accepted: FastGaussianParam = configs['statistics']
             if isinstance(max_tagged, TaggedImage):
                 max_img = max_tagged.data.astype(np.float64)
                 source_dtype = max_tagged.source_dtype
@@ -335,11 +330,11 @@ class MaxNoiseEqualizationOp(BaseOp):
             # 计算最小帧数阈值
             max_n = int(np.max(n_img))
             min_frames = int(max_n * min_frames_ratio)
-
+            print(f"{max_img=}\n{mean_img=}\n{std_img=}\n{n_img=}")
             corrected = equalize_noise(max_img, mean_img, std_img, n_img, min_frames)
 
             result = TaggedImage(
-                data=np.round(corrected).astype(accepted.sum_mu.dtype),
+                data=np.round(corrected).astype(max_tagged.source_dtype),
                 source_dtype=source_dtype,
             )
 
