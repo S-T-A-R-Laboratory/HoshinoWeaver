@@ -1,6 +1,7 @@
 from typing import Any, Optional, Sequence, Awaitable, Mapping
 import asyncio
 from loguru import logger
+from ..component.progress import DummyTracker
 from ..component.queue import RichContextQueue, FileCacheQueue, CancellationError, CancellationToken
 
 
@@ -10,6 +11,7 @@ class BaseOp(object):
     CONFIGS: dict[str, Any] = {}
     OUTPUTS: dict[str, Any] = {}
     MAX_SIZE: int = 1
+    PROGRESS_DESC: Optional[str] = None  # 非 None 时 execute() 自动创建进度条
     _SENTINEL = object()
 
     def __init__(self, name: str):
@@ -27,6 +29,7 @@ class BaseOp(object):
         }
         self.length: Optional[int] = None
         self.name = name
+        self.tracker = DummyTracker()
 
     async def pre_execute(self) -> dict[str, Any]:
         """

@@ -25,6 +25,7 @@ from loguru import logger
 from .build import ValidatedDag, _parse_link, _iter_node_src_links
 from .executor import DAGExecutor
 from ..ops.base import BaseOp
+from ..component.progress import ProgressTracker
 from ..component.queue import RichContextQueue
 
 # ────────────────────────────────────────────────────────────────
@@ -318,6 +319,7 @@ async def run_dag(
     global_inputs: dict[str, Any],
     global_configs: dict[str, Any],
     op_registry: Optional[dict[str, type[BaseOp]]] = None,
+    progress: bool = True,
 ) -> dict[str, Any]:
     """
     端到端执行 DAG：实例化 → 布线 → 并发执行 → 收集结果。
@@ -327,6 +329,7 @@ async def run_dag(
         global_inputs:  全局输入数据 (name → Sequence)。
         global_configs: 全局配置数据 (name → value)。
         op_registry:    Op 注册表，None 使用默认注册表。
+        progress:       是否显示 tqdm 进度条。
 
     Returns:
         dict: 全局输出 name → value 的映射。
@@ -334,6 +337,14 @@ async def run_dag(
     ops, feeders, output_queues = instantiate_and_wire(dag, global_inputs,
                                                        global_configs,
                                                        op_registry)
+
+    # 注入进度追踪器（progress=False 时保持 DummyTracker 缺省值）
+    tracker: Optional[ProgressTracker] = None
+    if progress:
+        tracker = ProgressTracker()
+        for op in ops:
+            op.tracker = tracker
+
     executor = DAGExecutor(ops)
 
     logger.info(f"DAG execution starting ({len(ops)} nodes)...")
@@ -353,6 +364,9 @@ async def run_dag(
     # Feeders、Executor、结果收集 三者并发运行
     await asyncio.gather(*feeders, executor.execute(), _collect_outputs())
 
+    if tracker is not None:
+        tracker.close_all()
+
     logger.info("DAG execution completed. Results collected.")
     return results
 
@@ -362,6 +376,7 @@ async def run_from_yaml(
     global_inputs: dict[str, Any],
     global_configs: dict[str, Any],
     op_registry: Optional[dict[str, type[BaseOp]]] = None,
+    progress: bool = True,
 ) -> dict[str, Any]:
     """
     便捷入口：从 YAML 文件加载、校验、并端到端执行 DAG。
@@ -378,7 +393,8 @@ async def run_from_yaml(
 
     spec = _load_yaml(yaml_path)
     dag = validate_and_build_order(spec)
-    return await run_dag(dag, global_inputs, global_configs, op_registry)
+    return await run_dag(dag, global_inputs, global_configs, op_registry,
+                         progress=progress)
 
 
 # ────────────────────────────────────────────────────────────────

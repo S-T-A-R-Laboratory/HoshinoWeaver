@@ -55,16 +55,21 @@ class ImgDataLoaderOp(BaseOp):
         loader = loader_class(src=self.inputs['src'],
                               length=self.length,
                               config=configs)
+        self.tracker.create_bar(self.name, self.length or 0,
+                                desc=f"{self.name} [Load]")
         try:
             index = 0
             async for item in loader:
                 await self._broadcast_result(item)
+                self.tracker.update(self.name)
                 index += 1
         except Exception as e:
             logger.error(
                 f"Error loading item {index} in {self.__class__.__name__}: {e.__repr__()}"
             )
             raise e
+        finally:
+            self.tracker.close_bar(self.name)
 
     async def _broadcast_result(self, result):
         tasks = []

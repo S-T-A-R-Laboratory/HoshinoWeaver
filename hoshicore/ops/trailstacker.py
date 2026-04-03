@@ -1,22 +1,15 @@
-import sys
-from asyncio import Queue, gather
+from asyncio import gather
 from typing import Any, Optional
 
 import numpy as np
 from loguru import logger
 
 from ..component.frame_buffer import DiskFrameBuffer
-from ..component.merger import BaseMerger, MaxMerger, MinMerger, MeanMerger, SigmaClippingMerger
+from ..component.merger import MaxMerger, MinMerger, MeanMerger, SigmaClippingMerger
 from ..component.noise_equalization import equalize_noise
-from ..component.progressbar import (END_FLAG, FAIL_FLAG, SUCC_FLAG,
-                                     QueueProgressbar, TqdmProgressbar)
-from ..component.queue import RichContextQueue, CancellationError
 from ..component.tagged_image import align_dtype_pair
 from ..component.utils import FastGaussianParam
 from .base import BaseOp
-
-ON_ERR_CONTINUE = "continue"
-ON_ERR_STOP = "break"
 
 
 class TrailStackerOp(BaseOp):
@@ -54,22 +47,16 @@ class TrailStackerOp(BaseOp):
         tot_num = self.length
         assert tot_num is not None, "TrailStackerOp requires sequence length information."
 
-        # TODO: 其他暂不支持的特性：
-        #proc_id：由多进程调度器单独提供在名称中
-        #debug模式：作为固定参数
-        #progressbar： 还没想好
-        #on_error_action ： 固定配置，可能和debug一起由全局同一指向
-
         has_weight = self.inputs['weight'].active
 
         stacked_num = 0
         failed_num = 0
         err_msg_collector = []
-        progressbar = None
+
+        self.tracker.create_bar(self.name, tot_num)
 
         try:
             for i in range(tot_num):
-                # filename 暂时不支持，应该由img_queue传入
                 cur_filename = f"the {i+1}-th frame"
 
                 try:
@@ -87,12 +74,7 @@ class TrailStackerOp(BaseOp):
                     logger.warning(warning_msg)
                     logger.warning(f"Skip {cur_filename}.")
                     failed_num += 1
-                    if progressbar:
-                        progressbar.put(FAIL_FLAG)
-                    # When on_error_action = ON_ERR_STOP, stop iteration immediately
-                    #if on_error_action == ON_ERR_STOP:
-                    #    logger.warning(f"{self.name} will stop immediately.")
-                    #    break
+                    self.tracker.update(self.name)
                     continue
 
                 try:
@@ -101,9 +83,8 @@ class TrailStackerOp(BaseOp):
                     err_msg_collector.append(
                         f"Shape of {cur_filename} does not match.")
                     raise e
-                if progressbar:
-                    progressbar.put(SUCC_FLAG)
                 stacked_num += 1
+                self.tracker.update(self.name)
 
             if stacked_num == 0:
                 logger.warning(f"No valid frames are loaded!")
@@ -120,9 +101,9 @@ class TrailStackerOp(BaseOp):
 
         except Exception as e:
             logger.error(f"{self.name} failed: {e}")
-            if progressbar:
-                progressbar.put(END_FLAG)
             raise
+        finally:
+            self.tracker.close_bar(self.name)
 
 class MinStackerOp(TrailStackerOp):
     MERGER = MinMerger
@@ -200,6 +181,9 @@ class SigmaClippingStackerOp(BaseOp):
         stacked_num = 0
         failed_num = 0
 
+        self.tracker.create_bar(self.name, tot_num,
+                                desc=f"{self.name} [Mean]")
+
         try:
             for i in range(tot_num):
                 cur_filename = f"the {i + 1}-th frame"
@@ -217,11 +201,13 @@ class SigmaClippingStackerOp(BaseOp):
                     logger.warning(
                         f"{self.name} failed to load {cur_filename}, skip.")
                     failed_num += 1
+                    self.tracker.update(self.name)
                     continue
 
                 frame_buffer.append(cur_img, weight)
                 mean_merger.merge(cur_img, weight)
                 stacked_num += 1
+                self.tracker.update(self.name)
 
             if stacked_num == 0:
                 logger.warning(f"{self.name}: No valid frames are loaded!")
@@ -244,9 +230,14 @@ class SigmaClippingStackerOp(BaseOp):
                 clip_merger = SigmaClippingMerger(ref_img=ref_fgp,
                                                   rej_high=rej_high,
                                                   rej_low=rej_low)
+                self.tracker.reset_bar(
+                    self.name, len(frame_buffer),
+                    desc=f"{self.name} [Clip {iteration + 1}]")
+
                 for idx in range(len(frame_buffer)):
                     raw, weight = frame_buffer[idx]
                     clip_merger.merge(raw, weight)
+                    self.tracker.update(self.name)
 
                 # 构造 accepted FGP: fgp_total - rejected
                 # 注意：必须从 fgp_total 减去 rejected，而非从 ref_fgp 减。
@@ -287,6 +278,8 @@ class SigmaClippingStackerOp(BaseOp):
             logger.error(f"{self.name} failed: {e}")
             frame_buffer.cleanup()
             raise
+        finally:
+            self.tracker.close_bar(self.name)
 
 
 class MaxNoiseEqualizationOp(BaseOp):
