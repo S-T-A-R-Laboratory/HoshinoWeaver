@@ -7,10 +7,12 @@ from loguru import logger
 
 from ..component.frame_buffer import DiskFrameBuffer
 from ..component.merger import BaseMerger, MaxMerger, MinMerger, MeanMerger, SigmaClippingMerger
+from ..component.noise_equalization import equalize_noise
 from ..component.progressbar import (END_FLAG, FAIL_FLAG, SUCC_FLAG,
                                      QueueProgressbar, TqdmProgressbar)
 from ..component.queue import RichContextQueue, CancellationError
 from ..component.tagged_image import TaggedImage
+from ..component.utils import FastGaussianParam
 from .base import BaseOp
 
 ON_ERR_CONTINUE = "continue"
@@ -176,6 +178,9 @@ class SigmaClippingStackerOp(BaseOp):
         "result": {
             "type": "image"
         },
+        "statistics": {
+            "type": "image"  # FastGaussianParam，不连接时静默忽略
+        },
     }
     MAX_SIZE: int = 1
 
@@ -277,6 +282,8 @@ class SigmaClippingStackerOp(BaseOp):
             put_tasks = []
             for queue in self.outputs['result']:
                 put_tasks.append(queue.put(result))
+            for queue in self.outputs['statistics']:
+                put_tasks.append(queue.put(accepted))
             await gather(*put_tasks)
 
             logger.info(f"{self.name} sigma clipping complete.")
@@ -284,4 +291,63 @@ class SigmaClippingStackerOp(BaseOp):
         except Exception as e:
             logger.error(f"{self.name} failed: {e}")
             frame_buffer.cleanup()
+            raise
+
+
+class MaxNoiseEqualizationOp(BaseOp):
+    """最大值叠加噪声均匀化算子。
+
+    接收：
+        - max_img: 最大值叠加结果（来自 TrailStackerOp）
+        - statistics: FastGaussianParam（来自 SigmaClippingStackerOp）
+
+    输出校正后的最大值图像。
+    """
+    EXECUTOR = "cpu"
+    INPUTS: dict[str, dict[str, Any]] = {
+        "max_img": {"type": "image", "required": True},
+        "statistics": {"type": "image", "required": True},
+    }
+    CONFIGS: dict[str, dict[str, Any]] = {
+        "min_frames_ratio": {"type": "float", "default": 0.3},
+    }
+    OUTPUTS = {"result": {"type": "image"}}
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        min_frames_ratio: float = configs['min_frames_ratio']
+
+        try:
+            upper_stream_data = self._async_convert_inputs()
+            max_tagged = await upper_stream_data['max_img']
+            accepted: FastGaussianParam = await upper_stream_data['statistics']
+
+            if isinstance(max_tagged, TaggedImage):
+                max_img = max_tagged.data.astype(np.float64)
+                source_dtype = max_tagged.source_dtype
+            else:
+                max_img = max_tagged.astype(np.float64)
+                source_dtype = max_tagged.dtype
+
+            mean_img = accepted.mu.astype(np.float64)
+            std_img = np.sqrt(np.maximum(accepted.var, 0).astype(np.float64))
+            n_img = accepted.n
+
+            # 计算最小帧数阈值
+            max_n = int(np.max(n_img))
+            min_frames = int(max_n * min_frames_ratio)
+
+            corrected = equalize_noise(max_img, mean_img, std_img, n_img, min_frames)
+
+            result = TaggedImage(
+                data=np.round(corrected).astype(accepted.sum_mu.dtype),
+                source_dtype=source_dtype,
+            )
+
+            put_tasks = [q.put(result) for q in self.outputs['result']]
+            await gather(*put_tasks)
+
+            logger.info(f"{self.name} complete.")
+
+        except Exception as e:
+            logger.error(f"{self.name} failed: {e}")
             raise

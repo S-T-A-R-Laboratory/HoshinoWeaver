@@ -34,7 +34,7 @@ from ..component.queue import RichContextQueue
 from ..ops.dataloader import ImgDataLoaderOp
 from ..ops.weight_generator import WeightGeneratorOp
 from ..ops.trailstacker import (TrailStackerOp, MinStackerOp, MeanStackerOp,
-                                SigmaClippingStackerOp)
+                                SigmaClippingStackerOp, MaxNoiseEqualizationOp)
 from ..ops.image_saver import ImageSaveOp
 
 DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
@@ -46,6 +46,7 @@ DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
     "MinStackerOp": MinStackerOp,
     "MeanStackerOp": MeanStackerOp,
     "SigmaClippingStackerOp": SigmaClippingStackerOp,
+    "MaxNoiseEqualizationOp": MaxNoiseEqualizationOp,
     "ImageSaveOp": ImageSaveOp,
 }
 
