@@ -11,7 +11,7 @@ from ..component.noise_equalization import equalize_noise
 from ..component.progressbar import (END_FLAG, FAIL_FLAG, SUCC_FLAG,
                                      QueueProgressbar, TqdmProgressbar)
 from ..component.queue import RichContextQueue, CancellationError
-from ..component.tagged_image import TaggedImage
+from ..component.tagged_image import align_dtype_pair
 from ..component.utils import FastGaussianParam
 from .base import BaseOp
 
@@ -219,10 +219,7 @@ class SigmaClippingStackerOp(BaseOp):
                     failed_num += 1
                     continue
 
-                # 解包 TaggedImage 用于缓冲原始数据
-                raw = cur_img.data if isinstance(cur_img,
-                                                 TaggedImage) else cur_img
-                frame_buffer.append(raw, weight)
+                frame_buffer.append(cur_img, weight)
                 mean_merger.merge(cur_img, weight)
                 stacked_num += 1
 
@@ -237,7 +234,6 @@ class SigmaClippingStackerOp(BaseOp):
 
             # Pass 0 结果
             fgp_total = mean_merger.result  # FastGaussianParam
-            source_dtype = mean_merger._source_dtype
 
             # ── Phase 2: 迭代 Sigma Clipping ──
             ref_fgp = fgp_total
@@ -277,8 +273,7 @@ class SigmaClippingStackerOp(BaseOp):
             # ── Phase 3: 清理 + 输出 ──
             frame_buffer.cleanup()
 
-            mu = accepted.mu
-            result = TaggedImage(data=mu, source_dtype=source_dtype)
+            result = accepted.mu
             put_tasks = []
             for queue in self.outputs['result']:
                 put_tasks.append(queue.put(result))
@@ -314,29 +309,33 @@ class MaxNoiseEqualizationOp(BaseOp):
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         min_frames_ratio: float = configs['min_frames_ratio']
         try:
-            max_tagged = configs['max_img']
+            max_raw = configs['max_img']
             accepted: FastGaussianParam = configs['statistics']
-            if isinstance(max_tagged, TaggedImage):
-                max_img = max_tagged.data.astype(np.float64)
-                source_dtype = max_tagged.source_dtype
-            else:
-                max_img = max_tagged.astype(np.float64)
-                source_dtype = max_tagged.dtype
 
-            mean_img = accepted.mu.astype(np.float64)
+            # ── dtype 对齐 ──
+            # max_raw 来自 TrailStackerOp，其 dtype 即语义级别（可能被 int_weight 放缩）
+            # accepted.source_dtype 来自 SigmaClippingStackerOp 的 FGP 内部记录
+            # 若两者级别不同（如一侧 int_weight=True 另一侧 False），需要放缩到同一范围
+            max_aligned, mean_aligned, output_dtype = align_dtype_pair(
+                max_raw, max_raw.dtype,
+                accepted.mu, accepted.source_dtype,
+            )
+            if output_dtype != max_raw.dtype or output_dtype != accepted.source_dtype:
+                logger.info(
+                    f"{self.name} dtype alignment: max_img {max_raw.dtype} + "
+                    f"statistics {accepted.source_dtype} → {output_dtype}")
+
+            max_img = max_aligned.astype(np.float64)
+            mean_img = mean_aligned.astype(np.float64)
             std_img = np.sqrt(np.maximum(accepted.var, 0).astype(np.float64))
             n_img = accepted.n
 
             # 计算最小帧数阈值
             max_n = int(np.max(n_img))
             min_frames = int(max_n * min_frames_ratio)
-            print(f"{max_img=}\n{mean_img=}\n{std_img=}\n{n_img=}")
             corrected = equalize_noise(max_img, mean_img, std_img, n_img, min_frames)
 
-            result = TaggedImage(
-                data=np.round(corrected).astype(max_tagged.source_dtype),
-                source_dtype=source_dtype,
-            )
+            result = np.round(corrected).astype(output_dtype)
 
             put_tasks = [q.put(result) for q in self.outputs['result']]
             await gather(*put_tasks)
