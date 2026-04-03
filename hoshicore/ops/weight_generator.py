@@ -5,7 +5,7 @@ WeightGeneratorOp：根据序列长度和渐入渐出参数，生成逐帧权重
 适配为异步 DAG Op。
 
 注意：本 Op 只负责生成 [0, 1] 范围的浮点权重。
-int_weight 的整型放缩由下游 Merger 根据 TaggedImage 的 dtype 信息自主完成。
+int_weight 的整型放缩由下游 Merger 根据图像的 dtype 信息自主完成。
 """
 import asyncio
 from typing import Any

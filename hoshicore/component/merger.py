@@ -8,7 +8,7 @@ from typing import Optional, Union, Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from .tagged_image import TaggedImage, DTYPE_LEVEL, _SCALE_BASE
+from .tagged_image import DTYPE_LEVEL, _SCALE_BASE
 from .utils import DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP, FastGaussianParam
 
 
@@ -18,7 +18,7 @@ class BaseMerger(metaclass=ABCMeta):
     Args:
         int_weight: 是否启用整型权重放缩。
             当 True 时，merge() 将自动：
-            1) 把 TaggedImage.data upscale 到更高 dtype（如 uint8→uint16）
+            1) 把图像 upscale 到更高 dtype（如 uint8→uint16）
             2) 把 float 权重映射到对应整型范围（如 [0,1]→[0,257]）
             3) 在整型域完成加权乘法，避免 float64 中间数组
     """
@@ -27,24 +27,20 @@ class BaseMerger(metaclass=ABCMeta):
         self.result = None
         self.shape_check = True
         self.int_weight = int_weight
-        # 由第一帧的 TaggedImage 自动设置
+        # 由第一帧自动设置（记录原始 dtype 用于 int_weight 放缩）
         self._source_dtype: Optional[np.dtype] = None
 
-    def merge(self, new_img, weight: Optional[Union[float, NDArray]] = None):
+    def merge(self, new_img: np.ndarray, weight: Optional[Union[float, NDArray]] = None):
         """合并新图像到堆叠结果。
 
         Args:
-            new_img: TaggedImage 或裸 np.ndarray。
+            new_img: np.ndarray 图像。
             weight:  浮点权重 (0-1 范围)。Merger 根据 int_weight 开关
                      自动决定是否转为整型放缩权重。
         """
-        # ── 解包 TaggedImage ──
-        if isinstance(new_img, TaggedImage):
-            if self._source_dtype is None:
-                self._source_dtype = new_img.source_dtype
-            raw = new_img.data
-        else:
-            raw = new_img
+        raw = new_img
+        if self._source_dtype is None:
+            self._source_dtype = raw.dtype
 
         # ── int_weight 放缩：提升 dtype + 转换权重 ──
         if self.int_weight and weight is not None and self._source_dtype is not None:
@@ -106,12 +102,8 @@ class BaseMerger(metaclass=ABCMeta):
         return img
 
     @property
-    def merged_image(self) -> Union[TaggedImage, Any, None]:
-        """返回合并结果。如果有 source_dtype 信息则包装为 TaggedImage。"""
-        if self.result is None:
-            return None
-        if self._source_dtype is not None and isinstance(self.result, np.ndarray):
-            return TaggedImage(data=self.result, source_dtype=self._source_dtype)
+    def merged_image(self) -> Union[np.ndarray, Any, None]:
+        """返回合并结果（裸 ndarray）。"""
         return self.result
 
 
@@ -139,14 +131,11 @@ class MeanMerger(BaseMerger):
         return fgp
 
     @property
-    def merged_image(self) -> Union[TaggedImage, None]:
+    def merged_image(self) -> Union[np.ndarray, None]:
+        """从 FastGaussianParam 提取均值数组。"""
         if self.result is None:
             return None
-        # 从 FastGaussianParam 提取均值。返回值是一个浮点均值数组。
-        mu = self.result.mu
-        if self._source_dtype is not None:
-            return TaggedImage(data=mu, source_dtype=self._source_dtype)
-        return mu
+        return self.result.mu
 
 
 class SigmaClippingMerger(MeanMerger):

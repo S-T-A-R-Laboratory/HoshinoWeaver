@@ -1,20 +1,14 @@
 """
-TaggedImage：图像 + dtype 元信息的复合结构体。
+dtype 级差与 rescale 工具函数。
 
-在 DAG 节点间流转，使每个节点能自包含地理解数据的真实标尺，
-解决多节点图中 "谁负责 rescale" 的职责归属问题。
+节点间传递裸 np.ndarray，约定"值域填满容器 dtype 的范围"。
+当需要在保存或跨 dtype 对齐时做 rescale，使用本模块的纯函数。
 
 设计原则：
-    - 只承载元信息，不重载 numpy 运算符
-    - Merger / Op 内部解包 .data 做运算，完成后重新打包
-    - 与 FastGaussianParam 平行共存，不嵌套
-    - scale_factor 由 source_dtype 与 data.dtype 的级差自动推算，
-      Op 只需在 DataLoader 时设一次 source_dtype，后续全自动
+    - 不引入包装类型，节点间直接传递 ndarray
+    - Merger / Op 内部做运算，保存时按需调用 rescale_array
 """
 from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -32,79 +26,96 @@ DTYPE_LEVEL: dict[np.dtype, int] = {
 _SCALE_BASE = 256
 
 
-def _compute_scale(source_dtype: np.dtype, current_dtype: np.dtype) -> int:
-    """根据 source 和 current 的 dtype 级差计算 scale_factor。
+def _compute_scale(low_dtype: np.dtype, high_dtype: np.dtype) -> int:
+    """根据两个 dtype 的级差计算 scale_factor。
 
     仅在两端都是整型 (在 DTYPE_LEVEL 中) 时计算。
-    如果 source == current，scale = 1（未放缩）。
-    如果 current 级别更高，scale = 256^级差 + 1。
-    如果 current 级别更低或为 float，scale = 1（不做自动推算）。
+    如果 high 级别 > low 级别，scale = 256^级差 + 1。
+    否则返回 1（同级或反向不做自动推算）。
     """
-    src_level = DTYPE_LEVEL.get(source_dtype)
-    cur_level = DTYPE_LEVEL.get(current_dtype)
-    if src_level is None or cur_level is None:
+    low_level = DTYPE_LEVEL.get(low_dtype)
+    high_level = DTYPE_LEVEL.get(high_dtype)
+    if low_level is None or high_level is None:
         return 1
-    diff = cur_level - src_level
+    diff = high_level - low_level
     if diff <= 0:
         return 1
     return _SCALE_BASE ** diff + 1
 
 
-@dataclass(slots=True)
-class TaggedImage:
-    """图像数据 + dtype 放缩元信息。
+def rescale_array(
+    data: np.ndarray,
+    from_dtype: np.dtype,
+    to_dtype: np.dtype,
+) -> np.ndarray:
+    """在两个 dtype 级别之间双向放缩数据。
 
-    Attributes:
-        data:         实际像素数组（可能处于 upscaled dtype）。
-        source_dtype: 原始输入图像的 dtype（如 uint8）。
+    根据 from_dtype 与 to_dtype 的级差自动选择方向：
+        - to 级别更高：向上放缩（× scale），如 uint8 [0,255] → uint16 [0,65535]
+        - to 级别更低：向下缩放（÷ scale），如 uint16 [0,65535] → uint8 [0,255]
+        - 同级或无法判定：仅做 dtype cast
 
-    scale_factor 自动从 source_dtype 与 data.dtype 的级差推算：
-        - uint8 data + uint8 source  → scale = 1
-        - uint16 data + uint8 source → scale = 257  (int_weight 放缩)
-        - uint16 data + uint16 source → scale = 1   (原生 16bit 输入)
+    Args:
+        data: 像素数组，值域填满 from_dtype 的范围。
+        from_dtype: data 当前的语义 dtype 级别。
+        to_dtype: 目标 dtype 级别。
+
+    Returns:
+        放缩后的 np.ndarray（dtype 为 to_dtype）。
     """
-    data: np.ndarray
-    source_dtype: np.dtype
+    from_level = DTYPE_LEVEL.get(np.dtype(from_dtype))
+    to_level = DTYPE_LEVEL.get(np.dtype(to_dtype))
 
-    # ── 自动推算的 scale_factor ──
+    if from_level is None or to_level is None:
+        return data.astype(to_dtype)
 
-    @property
-    def scale_factor(self) -> int:
-        """根据 source_dtype 与当前 data.dtype 的级差自动计算。"""
-        return _compute_scale(self.source_dtype, self.data.dtype)
+    diff = to_level - from_level
+    if diff == 0:
+        return data.astype(to_dtype)
+    elif diff > 0:
+        # 向上放缩
+        sf = _SCALE_BASE ** diff + 1
+        return data.astype(to_dtype) * sf
+    else:
+        # 向下缩放
+        sf = _SCALE_BASE ** (-diff) + 1
+        return (data // sf).astype(to_dtype)
 
-    # ── numpy 友好属性 ──
 
-    @property
-    def shape(self):
-        return self.data.shape
+def align_dtype_pair(
+    arr_a: np.ndarray,
+    dtype_a: np.dtype,
+    arr_b: np.ndarray,
+    dtype_b: np.dtype,
+) -> tuple[np.ndarray, np.ndarray, np.dtype]:
+    """对齐两个数组的 dtype 级别，将较低级别的数组放缩到较高级别。
 
-    @property
-    def dtype(self):
-        return self.data.dtype
+    用于多来源数据的 Op（如 MaxNoiseEqualizationOp），确保两个
+    来自不同上游 stacker 的数据在同一数值范围内进行运算。
 
-    # ── rescale 工具方法 ──
+    Args:
+        arr_a: 第一个数组。
+        dtype_a: arr_a 的语义 dtype（即它"填满"哪个 dtype 的范围）。
+        arr_b: 第二个数组。
+        dtype_b: arr_b 的语义 dtype。
 
-    def rescale_to(self, target_dtype: Optional[np.dtype] = None) -> np.ndarray:
-        """将数据还原到目标 dtype。
+    Returns:
+        (aligned_a, aligned_b, common_dtype) 元组。
+        common_dtype 为对齐后的公共 dtype（取较高级别者）。
+    """
+    level_a = DTYPE_LEVEL.get(np.dtype(dtype_a))
+    level_b = DTYPE_LEVEL.get(np.dtype(dtype_b))
 
-        Args:
-            target_dtype: 目标 dtype。None 时还原到 source_dtype。
+    # 无法判定级别时（float 或未知 dtype），不做放缩
+    if level_a is None or level_b is None:
+        return arr_a, arr_b, dtype_a
 
-        Returns:
-            rescale 后的 np.ndarray（不修改自身）。
-        """
-        target = target_dtype if target_dtype is not None else self.source_dtype
-        sf = self.scale_factor
-        if sf <= 1:
-            return self.data.astype(target)
-        return (self.data // sf).astype(target)
+    if level_a == level_b:
+        return arr_a, arr_b, dtype_a
 
-    def rescale_to_source(self) -> np.ndarray:
-        """还原到原始 dtype 的便捷方法。"""
-        return self.rescale_to(self.source_dtype)
-
-    @property
-    def is_scaled(self) -> bool:
-        """数据当前是否处于放缩状态。"""
-        return self.scale_factor > 1
+    if level_a < level_b:
+        # a 级别低，放缩 a 到 b 的级别
+        return rescale_array(arr_a, dtype_a, dtype_b), arr_b, dtype_b
+    else:
+        # b 级别低，放缩 b 到 a 的级别
+        return arr_a, rescale_array(arr_b, dtype_b, dtype_a), dtype_a
