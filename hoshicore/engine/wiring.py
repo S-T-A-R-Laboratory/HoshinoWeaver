@@ -22,21 +22,23 @@ from typing import Any, Awaitable, Optional, Sequence
 
 from loguru import logger
 
-from .build import ValidatedDag, _parse_link, _iter_node_src_links
-from .executor import DAGExecutor
-from ..ops.base import BaseOp
 from ..component.progress import ProgressTracker
 from ..component.queue import RichContextQueue
+from ..component.utils import time_cost_warpper
+from ..ops.base import BaseOp
+from ..ops.dataloader import ImgDataLoaderOp
+from ..ops.image_saver import ImageSaveOp
+from ..ops.trailstacker import (MaxNoiseEqualizationOp, MeanStackerOp,
+                                MinStackerOp, SigmaClippingStackerOp,
+                                TrailStackerOp)
+from ..ops.weight_generator import WeightGeneratorOp
+from .build import ValidatedDag, _iter_node_src_links, _parse_link
+from .executor import DAGExecutor
 
 # ────────────────────────────────────────────────────────────────
 # 默认 Op 注册表
 # ────────────────────────────────────────────────────────────────
 
-from ..ops.dataloader import ImgDataLoaderOp
-from ..ops.weight_generator import WeightGeneratorOp
-from ..ops.trailstacker import (TrailStackerOp, MinStackerOp, MeanStackerOp,
-                                SigmaClippingStackerOp, MaxNoiseEqualizationOp)
-from ..ops.image_saver import ImageSaveOp
 
 DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
     # YAML 中使用的 op 名称 → 实际类
@@ -370,7 +372,7 @@ async def run_dag(
     logger.info("DAG execution completed. Results collected.")
     return results
 
-
+@time_cost_warpper
 async def run_from_yaml(
     yaml_path: str,
     global_inputs: dict[str, Any],

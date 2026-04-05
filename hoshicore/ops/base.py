@@ -160,7 +160,7 @@ class ParallelBaseOp(BaseOp):
             raise ValueError("Length is not set")
         for i in range(self.length):
             try:
-                data = await self._async_convert_inputs()
+                data = self._async_convert_inputs()
             except StopIteration:
                 logger.warning(f"{self.name}: upstream ended at {i}/{self.length}")
                 break
@@ -181,7 +181,7 @@ class ParallelBaseOp(BaseOp):
 
             async def process_item(local_idx: int):
                 async with semaphore:
-                    data = await self._async_convert_inputs()
+                    data = self._async_convert_inputs()
                     result = await self._async_execute_single(data, configs)
                     results[local_idx] = result
 

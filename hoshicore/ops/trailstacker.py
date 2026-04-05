@@ -7,7 +7,7 @@ from loguru import logger
 from ..component.frame_buffer import DiskFrameBuffer
 from ..component.merger import MaxMerger, MinMerger, MeanMerger, SigmaClippingMerger
 from ..component.noise_equalization import equalize_noise
-from ..component.tagged_image import align_dtype_pair
+from ..component.tagged_image import FloatImage, align_dtype_pair
 from ..component.utils import FastGaussianParam
 from .base import BaseOp
 
@@ -62,9 +62,11 @@ class TrailStackerOp(BaseOp):
                 try:
                     upper_stream_data = self._async_convert_inputs()
                     cur_img = await upper_stream_data['data']
-                    weight = (await upper_stream_data['weight']) if has_weight else None
+                    weight = (await upper_stream_data['weight']
+                              ) if has_weight else None
                 except StopIteration:
-                    logger.warning(f"{self.name}: upstream ended at {i}/{tot_num}")
+                    logger.warning(
+                        f"{self.name}: upstream ended at {i}/{tot_num}")
                     break
 
                 # Empty result handling
@@ -90,8 +92,9 @@ class TrailStackerOp(BaseOp):
                 logger.warning(f"No valid frames are loaded!")
                 return
 
-            logger.info(f"{self.name} successfully stacked {stacked_num} " +
-                        f"images from {tot_num} images. ({failed_num} fail(s)).")
+            logger.info(
+                f"{self.name} successfully stacked {stacked_num} " +
+                f"images from {tot_num} images. ({failed_num} fail(s)).")
 
             # 输出结果
             put_tasks = []
@@ -105,9 +108,11 @@ class TrailStackerOp(BaseOp):
         finally:
             self.tracker.close_bar(self.name)
 
+
 class MinStackerOp(TrailStackerOp):
     MERGER = MinMerger
-    
+
+
 class MeanStackerOp(TrailStackerOp):
     MERGER = MeanMerger
 
@@ -154,6 +159,10 @@ class SigmaClippingStackerOp(BaseOp):
             "type": "int",
             "default": 5
         },
+        "early_converge_ratio": {
+            "type": "float",
+            "default": 0.99
+        },
     }
     OUTPUTS = {
         "result": {
@@ -170,6 +179,7 @@ class SigmaClippingStackerOp(BaseOp):
         rej_high: float = configs['rej_high']
         rej_low: float = configs['rej_low']
         max_iter: int = configs['max_iter']
+        early_converge_ratio: float = configs['early_converge_ratio']
         has_weight = self.inputs['weight'].active
         tot_num = self.length
         assert tot_num is not None, \
@@ -181,8 +191,7 @@ class SigmaClippingStackerOp(BaseOp):
         stacked_num = 0
         failed_num = 0
 
-        self.tracker.create_bar(self.name, tot_num,
-                                desc=f"{self.name} [Mean]")
+        self.tracker.create_bar(self.name, tot_num, desc=f"{self.name} [Mean]")
 
         try:
             for i in range(tot_num):
@@ -231,7 +240,8 @@ class SigmaClippingStackerOp(BaseOp):
                                                   rej_high=rej_high,
                                                   rej_low=rej_low)
                 self.tracker.reset_bar(
-                    self.name, len(frame_buffer),
+                    self.name,
+                    len(frame_buffer),
                     desc=f"{self.name} [Clip {iteration + 1}]")
 
                 for idx in range(len(frame_buffer)):
@@ -248,11 +258,15 @@ class SigmaClippingStackerOp(BaseOp):
 
                 # 收敛检查
                 cur_n = accepted.n
-                if last_n is not None and np.array_equal(cur_n, last_n):
+                converge_ratio = np.sum(cur_n == last_n) / np.prod(cur_n.shape)
+                if last_n is not None and converge_ratio >= early_converge_ratio:
                     logger.info(
-                        f"{self.name} converged at iteration {iteration + 1}."
-                    )
+                        f"{self.name} converged at iteration {iteration + 1}.")
                     break
+                else:
+                    logger.info(
+                        f"{self.name} converge ratio: {converge_ratio * 100:.2f}%"
+                    )
                 last_n = cur_n.copy()
                 ref_fgp = accepted
                 logger.info(
@@ -264,7 +278,7 @@ class SigmaClippingStackerOp(BaseOp):
             # ── Phase 3: 清理 + 输出 ──
             frame_buffer.cleanup()
 
-            result = accepted.mu
+            result = FloatImage(accepted.mu, dtype=accepted.source_dtype)
             put_tasks = []
             for queue in self.outputs['result']:
                 put_tasks.append(queue.put(result))
@@ -293,14 +307,23 @@ class MaxNoiseEqualizationOp(BaseOp):
     """
     EXECUTOR = "cpu"
     CONFIGS: dict[str, dict[str, Any]] = {
-        "max_img": {"type": "image", "required": True},
-        "statistics": {"type": "image", "required": True},
-        "min_frames_ratio": {"type": "float", "default": 0.7},
+        "max_img": {
+            "type": "image",
+            "required": True
+        },
+        "statistics": {
+            "type": "image",
+            "required": True
+        },
+        "top_fraction": {
+            "type": "float",
+            "default": 0.02
+        },
     }
     OUTPUTS = {"result": {"type": "image"}}
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
-        min_frames_ratio: float = configs['min_frames_ratio']
+        top_fraction: float = configs['top_fraction']
         try:
             max_raw = configs['max_img']
             accepted: FastGaussianParam = configs['statistics']
@@ -310,8 +333,10 @@ class MaxNoiseEqualizationOp(BaseOp):
             # accepted.source_dtype 来自 SigmaClippingStackerOp 的 FGP 内部记录
             # 若两者级别不同（如一侧 int_weight=True 另一侧 False），需要放缩到同一范围
             max_aligned, mean_aligned, output_dtype = align_dtype_pair(
-                max_raw, max_raw.dtype,
-                accepted.mu, accepted.source_dtype,
+                max_raw,
+                max_raw.dtype,
+                accepted.mu,
+                accepted.source_dtype,
             )
             if output_dtype != max_raw.dtype or output_dtype != accepted.source_dtype:
                 logger.info(
@@ -322,11 +347,11 @@ class MaxNoiseEqualizationOp(BaseOp):
             mean_img = mean_aligned.astype(np.float64)
             std_img = np.sqrt(np.maximum(accepted.var, 0).astype(np.float64))
             n_img = accepted.n
-
-            # 计算最小帧数阈值
-            max_n = int(np.max(n_img))
-            min_frames = int(max_n * min_frames_ratio)
-            corrected = equalize_noise(max_img, mean_img, std_img, n_img, min_frames)
+            corrected = equalize_noise(max_img,
+                                       mean_img,
+                                       std_img,
+                                       n_img,
+                                       top_fraction=top_fraction)
 
             result = np.round(corrected).astype(output_dtype)
 

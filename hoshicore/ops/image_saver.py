@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 from loguru import logger
 
+from hoshicore.component.tagged_image import rescale_array, FloatImage
+
 from .base import BaseOp
 from ..component.imgfio import save_img
 
@@ -62,12 +64,17 @@ class ImageSaveOp(BaseOp):
         image = configs['image']
         output_dtype_str = configs.get('output_dtype')
 
+        target_dtype = None
         # 按需 dtype 转换
         if output_dtype_str:
             target_dtype = np.dtype(output_dtype_str)
-            if target_dtype != image.dtype:
-                logger.debug(f"Image dtype cast: {image.dtype} → {target_dtype}")
-                image = image.astype(target_dtype)
+            logger.debug(f"Image dtype cast: {image.dtype} → {target_dtype}")
+
+        if isinstance(image, FloatImage):
+            image = image.int_transform(target_dtype)
+        elif isinstance(image, np.ndarray):
+            if target_dtype is not None and image.dtype != target_dtype:
+                image = rescale_array(image, image.dtype, target_dtype)
 
         output_filename = configs['output_filename']
         info = configs.get('exif')
