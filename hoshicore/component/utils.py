@@ -208,24 +208,6 @@ def get_mp_num(tot_num: int,
     return mp_num, sub_length
 
 
-def get_max_expmean(x: int) -> float:
-    """用于获取从标准正态分布中采样给定次数时的最大值的均值。
-    标准正态分布的最大值分布理论上应服从Gumbel分布，即均值为sqrt(2*log(n))。
-    但在实际拟合中注意到其性质与实验存在偏差。因此此处提供通过瞪眼法拟合的经验曲线。
-
-    Args:
-        x (int): 采样次数n
-
-    Returns:
-        float: 
-    """
-    if x <= 0:
-        raise ValueError(f"Invalid x. Expect int x>0, got {x}.")
-    if 0 < x < 80:
-        return 1 / 2 * log(x)**(0.91) + 0.52
-    return 1 / 2 * log(x + 1)**(0.84) + 0.71
-
-
 class GaussianParam(object):
     """
     维护np.ndarray的流方差与流均值的原始实现。
@@ -456,22 +438,3 @@ def init_logger(logger, debug_mode: bool, log_path: Optional[str]):
     # 向文件中写入时，默认级别为DEBUG。
     if log_path:
         logger.add(log_path, level="DEBUG")
-
-
-def err_msg_extractor(err_msg: list) -> str:
-    """从多条错误信息中抽取出对错误的简要描述。
-
-    Args:
-        err_msg (list): _description_
-
-    Returns:
-        str: _description_
-    """
-    collected_short_msg = set()
-    for msg in err_msg:
-        for err_name, shorten in ERROR_NAME_MAPPING.items():
-            if err_name in msg:
-                collected_short_msg.add(shorten)
-    if len(collected_short_msg) == 0:
-        return ""
-    return ", ".join(collected_short_msg)

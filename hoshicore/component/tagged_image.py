@@ -10,6 +10,9 @@ dtype 级差与 rescale 工具函数。
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Optional
+
 import numpy as np
 
 # ── dtype 级差表 ──
@@ -119,3 +122,23 @@ def align_dtype_pair(
     else:
         # b 级别低，放缩 b 到 a 的级别
         return arr_a, rescale_array(arr_b, dtype_b, dtype_a), dtype_a
+
+@dataclass(slots=True)
+class FloatImage(object):
+    """轻量级的Float矩阵包装器，包含原始数据范围dtype。
+
+    Args:
+        data (np.ndarray): _description_
+        dtype (np.dtype): _description_
+    """
+    data: np.ndarray
+    dtype: np.dtype
+
+    def int_transform(self,
+                      target_dtype: Optional[np.dtype] = None) -> np.ndarray:
+        if target_dtype is None:
+            target_dtype = self.dtype
+
+        return rescale_array(self.data, self.dtype, target_dtype)
+    
+    

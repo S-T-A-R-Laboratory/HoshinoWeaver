@@ -8,7 +8,7 @@ from typing import Optional, Union, Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from .tagged_image import DTYPE_LEVEL, _SCALE_BASE
+from .tagged_image import DTYPE_LEVEL, _SCALE_BASE, FloatImage
 from .utils import DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP, FastGaussianParam
 
 
@@ -30,7 +30,9 @@ class BaseMerger(metaclass=ABCMeta):
         # 由第一帧自动设置（记录原始 dtype 用于 int_weight 放缩）
         self._source_dtype: Optional[np.dtype] = None
 
-    def merge(self, new_img: np.ndarray, weight: Optional[Union[float, NDArray]] = None):
+    def merge(self,
+              new_img: np.ndarray,
+              weight: Optional[Union[float, NDArray]] = None):
         """合并新图像到堆叠结果。
 
         Args:
@@ -56,13 +58,13 @@ class BaseMerger(metaclass=ABCMeta):
                 assert self.result.shape == processed.shape, (
                     f"{self.__class__.__name__} failed to merge new image. "
                     f"It should have the same shape as merged image "
-                    f"{self.result.shape}, but {processed.shape} got."
-                )
+                    f"{self.result.shape}, but {processed.shape} got.")
             self.result = self._merge(self.result, processed)
 
     def _apply_int_weight(
-        self, raw: np.ndarray, weight: Union[float, NDArray]
-    ) -> tuple[np.ndarray, Union[int, NDArray]]:
+        self, raw: np.ndarray,
+        weight: Union[float,
+                      NDArray]) -> tuple[np.ndarray, Union[int, NDArray]]:
         """将 float 权重映射到整型域，同时 upscale 图像 dtype。
 
         规则：
@@ -77,7 +79,7 @@ class BaseMerger(metaclass=ABCMeta):
             up_level = DTYPE_LEVEL.get(upscaled_dtype, src_level)
             diff = up_level - src_level
             if diff > 0:
-                scale = _SCALE_BASE ** diff + 1
+                scale = _SCALE_BASE**diff + 1
                 raw = raw.astype(upscaled_dtype)
                 if isinstance(weight, np.ndarray):
                     weight = np.array(weight * scale, dtype=upscaled_dtype)
@@ -116,7 +118,7 @@ class MaxMerger(BaseMerger):
 class MinMerger(BaseMerger):
 
     def _merge(self, base_img, new_img):
-        return np.min([base_img, new_img], axis=0)
+        return np.minimum(base_img, new_img)
 
 
 class MeanMerger(BaseMerger):
@@ -124,18 +126,18 @@ class MeanMerger(BaseMerger):
     def _merge(self, base_img, new_img: FastGaussianParam):
         return base_img + new_img
 
-    def _pre_process(self, img: NDArray, weight=None):
+    def _pre_process(self, img: NDArray, weight=None) -> FastGaussianParam:
         fgp = FastGaussianParam(img, source_dtype=img.dtype)
         if weight is not None:
             fgp = fgp * weight
         return fgp
 
     @property
-    def merged_image(self) -> Union[np.ndarray, None]:
+    def merged_image(self) -> Union[FloatImage, None]:
         """从 FastGaussianParam 提取均值数组。"""
         if self.result is None:
             return None
-        return self.result.mu
+        return FloatImage(self.result.mu, dtype=self._source_dtype)
 
 
 class SigmaClippingMerger(MeanMerger):

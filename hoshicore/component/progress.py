@@ -17,7 +17,7 @@ from tqdm import tqdm
 class DummyTracker:
     """空操作追踪器，作为 BaseOp.tracker 的缺省值。
 
-    所有方法均为 no-op，Op 内部可以无条件调用而无需 if 守卫。
+    所有方法均为 no-op。
     """
 
     def create_bar(
