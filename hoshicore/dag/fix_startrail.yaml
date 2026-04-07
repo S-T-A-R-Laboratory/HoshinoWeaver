@@ -17,7 +17,7 @@ configs:
 # ── 节点 ──
 #
 #  inputs.fnames ──┬──► data_loader ──────────┐
-#                  │                           ├──► trailstacker ──► image_saver
+#                  │                          ├──► trailstacker ──► image_saver
 #                  └──► weight_generator ─────┘
 #
 nodes:

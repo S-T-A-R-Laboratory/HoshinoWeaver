@@ -1,6 +1,17 @@
 description: "带有渐入渐出的最大值叠加，适用于直接生成渐入渐出星轨"
 version: "1"
 
+# ── 节点 ──
+#
+#  inputs.fnames ──┬──► data_loader ──────────┐
+#                  │                          ├──► trailstacker ───┐
+#                  │                          │                    │
+#                  │                          │                    ├─► image_saver
+#                  ├──► weight_generator ─────┘                    │
+#                  │                                               │
+#                  └──► exif_loader ─────────────► ─exif_reducer ──┘
+
+
 inputs:
   fnames: { type: sequence, required: true }
 configs:
