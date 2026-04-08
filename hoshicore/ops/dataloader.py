@@ -5,8 +5,9 @@ import numpy as np
 
 from .base import BaseOp
 from ..component.dataloader import BaseLoader, ImgFileListLoader, ArrayLoader
+from ..engine.registry import register_op
 
-
+@register_op()
 class ImgDataLoaderOp(BaseOp):
     """
     通用异步数据加载器，用于异步预取数据，提高数据加载效率。

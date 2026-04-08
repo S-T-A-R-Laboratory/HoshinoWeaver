@@ -31,9 +31,11 @@ from ..component.frame_buffer import DiskFrameBuffer
 from ..component.merger import MeanMerger, SigmaClippingMerger
 from ..component.tagged_image import FloatImage
 from ..component.utils import FastGaussianParam
+from ..engine.registry import register_op
 from .base import BaseOp
 
 
+@register_op()
 class DiskBufferWriterOp(BaseOp):
     """将序列帧写入磁盘缓冲区，供下游多 pass 算法重放。
 
@@ -68,7 +70,8 @@ class DiskBufferWriterOp(BaseOp):
         stacked_num = 0
         failed_num = 0
 
-        self.tracker.create_bar(self.name, tot_num,
+        self.tracker.create_bar(self.name,
+                                tot_num,
                                 desc=f"{self.name} [Buffer]")
         try:
             for i in range(tot_num):
@@ -114,6 +117,7 @@ class DiskBufferWriterOp(BaseOp):
             self.tracker.close_bar(self.name)
 
 
+@register_op()
 class SigmaClipIteratorOp(BaseOp):
     """迭代式 Sigma Clipping：基于 mean FGP 和磁盘缓冲帧进行多 pass 迭代。
 
@@ -200,17 +204,15 @@ class SigmaClipIteratorOp(BaseOp):
 
                 # 收敛检查
                 cur_n = accepted.n
-                converge_ratio = (
-                    np.sum(cur_n == last_n) / np.prod(cur_n.shape))
+                converge_ratio = (np.sum(cur_n == last_n) /
+                                  np.prod(cur_n.shape))
                 if converge_ratio >= early_converge_ratio:
-                    logger.info(
-                        f"{self.name} converged at iteration "
-                        f"{iteration + 1}.")
+                    logger.info(f"{self.name} converged at iteration "
+                                f"{iteration + 1}.")
                     break
                 else:
-                    logger.info(
-                        f"{self.name} converge ratio: "
-                        f"{converge_ratio * 100:.2f}%")
+                    logger.info(f"{self.name} converge ratio: "
+                                f"{converge_ratio * 100:.2f}%")
                 last_n = cur_n.copy()
                 ref_fgp = accepted
                 logger.info(

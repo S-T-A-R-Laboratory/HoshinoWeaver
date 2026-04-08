@@ -27,36 +27,9 @@ from ..component.progress import ProgressTracker
 from ..component.queue import RichContextQueue
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
-from ..ops.dataloader import ImgDataLoaderOp
-from ..ops.exif_op import ExifReduceOp, ExifReadOp
-from ..ops.image_saver import ImageSaveOp
-from ..ops.trailstacker import (MaxNoiseEqualizationOp, MeanStackerOp,
-                                MinStackerOp,
-                                TrailStackerOp)
-from ..ops.sigma_clip_ops import DiskBufferWriterOp, SigmaClipIteratorOp
-from ..ops.weight_generator import WeightGeneratorOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
 from .executor import DAGExecutor
-
-# ────────────────────────────────────────────────────────────────
-# 默认 Op 注册表
-# ────────────────────────────────────────────────────────────────
-
-DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
-    # YAML 中使用的 op 名称 → 实际类
-    "ImgDataLoaderOp": ImgDataLoaderOp,
-    "generate_weight": WeightGeneratorOp,
-    "WeightGeneratorOp": WeightGeneratorOp,
-    "TrailStackerOp": TrailStackerOp,
-    "MinStackerOp": MinStackerOp,
-    "MeanStackerOp": MeanStackerOp,
-    "MaxNoiseEqualizationOp": MaxNoiseEqualizationOp,
-    "ImageSaveOp": ImageSaveOp,
-    "ExifReduceOp": ExifReduceOp,
-    "ExifReadOp": ExifReadOp,
-    "DiskBufferWriterOp": DiskBufferWriterOp,
-    "SigmaClipIteratorOp": SigmaClipIteratorOp,
-}
+from .registry import REGISTERED_OP
 
 # ────────────────────────────────────────────────────────────────
 # 子图 YAML 搜索路径
@@ -186,7 +159,7 @@ def instantiate_and_wire(
             未提供的配置项将自动从 YAML default 补齐。
             当值为 RichContextQueue 时使用 _bridge_queue 转发。
         op_registry:
-            op_name → Op class 的映射。None 时使用 DEFAULT_OP_REGISTRY。
+            op_name → Op class 的映射。None 时使用 REGISTERED_OP。
 
     Returns:
         ops:
@@ -196,7 +169,7 @@ def instantiate_and_wire(
         output_queues:
             DAG 全局输出名 → 用于收集结果的 RichContextQueue。
     """
-    registry = op_registry or DEFAULT_OP_REGISTRY
+    registry = op_registry or REGISTERED_OP
     nodes_spec = dag.nodes
 
     # ── 补齐 global_configs 默认值 ──

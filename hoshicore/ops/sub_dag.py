@@ -33,9 +33,11 @@ from typing import Any, Optional, Union
 from loguru import logger
 
 from ..component.queue import RichContextQueue
+from ..engine.registry import register_op
 from .base import BaseOp
 
 
+@register_op()
 class SubDagOp(BaseOp):
     """将子 DAG 作为单个节点嵌入父图。
 
@@ -51,8 +53,8 @@ class SubDagOp(BaseOp):
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         # 延迟导入，避免循环引用（wiring → ops → sub_dag → wiring）
         from ..engine.build import validate_and_build_order
-        from ..engine.wiring import instantiate_and_wire, _feed_config
         from ..engine.executor import DAGExecutor
+        from ..engine.wiring import _feed_config, instantiate_and_wire
 
         # ── 1) 构建子 DAG ──
         sub_dag = validate_and_build_order(self.SUB_DAG_SPEC)
@@ -72,13 +74,14 @@ class SubDagOp(BaseOp):
         # ── 3) 实例化 + 布线子图 ──
         # dag_search_paths 使用模块级默认值，无需显式传递
         sub_ops, sub_feeders, sub_output_queues = instantiate_and_wire(
-            sub_dag, sub_global_inputs, sub_global_configs,
+            sub_dag,
+            sub_global_inputs,
+            sub_global_configs,
         )
 
         logger.info(
             f"[SubDag] '{self.name}': {len(sub_ops)} nodes, "
-            f"{len(sub_feeders)} feeders, {len(sub_output_queues)} outputs"
-        )
+            f"{len(sub_feeders)} feeders, {len(sub_output_queues)} outputs")
 
         # ── 4) 执行子图 + 收集结果 ──
         sub_executor = DAGExecutor(sub_ops)
@@ -150,11 +153,12 @@ def create_sub_dag_op(
         outputs_spec[name] = {"type": "image"}
 
     # 动态创建子类
-    cls = type(op_name, (SubDagOp,), {
-        "SUB_DAG_SPEC": spec,
-        "INPUTS": inputs_spec,
-        "CONFIGS": configs_spec,
-        "OUTPUTS": outputs_spec,
-    })
+    cls = type(
+        op_name, (SubDagOp, ), {
+            "SUB_DAG_SPEC": spec,
+            "INPUTS": inputs_spec,
+            "CONFIGS": configs_spec,
+            "OUTPUTS": outputs_spec,
+        })
 
     return cls
