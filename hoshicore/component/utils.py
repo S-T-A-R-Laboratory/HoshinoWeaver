@@ -274,8 +274,9 @@ class FastGaussianParam(object):
                  square_num: Optional[np.ndarray] = None,
                  n: Optional[np.ndarray] = None,
                  ddof: int = 1,
-                 dtype_n: np.dtype = np.dtype("uint32"),
-                 source_dtype: Optional[np.dtype] = None):
+                 dtype_n: np.dtype = np.dtype("uint16"),
+                 source_dtype: Optional[np.dtype] = None,
+                 inplace_calc: bool = True):
         self.sum_mu = sum_mu
         self.source_dtype = source_dtype if source_dtype is not None else sum_mu.dtype
         if square_num is not None:
@@ -286,10 +287,12 @@ class FastGaussianParam(object):
             self.square_sum = np.square(sum_mu, dtype=sq_dtype)
         self.n = n if n is not None else np.ones_like(self.sum_mu,
                                                       dtype=dtype_n)
+        self.max_n = int(np.max(self.n))
         # 单张图像初始化时（source_dtype = sum_mu.dtype），默认提升一次范围
         if self.sum_mu.dtype == self.source_dtype:
             self.upscale()
         self.ddof = ddof
+        self.inplace_calc = inplace_calc
 
     @property
     def mu(self) -> np.ndarray:
@@ -338,7 +341,7 @@ class FastGaussianParam(object):
         TODO: 需要长期观测该逻辑。
         """
         zero_pos = (self.n == 0)
-        logger.info(f"Zero-mask {np.where(zero_pos)[0].size} pixels.")
+        logger.debug(f"Zero-mask {np.where(zero_pos)[0].size} pixels.")
         self.n[zero_pos] = full_img.n[zero_pos]
         self.sum_mu[zero_pos] = full_img.sum_mu[zero_pos]
         self.square_sum[zero_pos] = full_img.square_sum[zero_pos]
@@ -349,24 +352,28 @@ class FastGaussianParam(object):
         assert g1.ddof == g2.ddof, "unmatched var calculation!"
 
         # 计算累加后的 n
-        new_n = g1.n + g2.n
-        max_n = new_n.max()
+        self.max_n = self.max_n + g2.max_n
 
         # 检查是否超过安全叠加数量
-        if max_n > g1._safe_add_count():
+        if self.max_n > g1._safe_add_count():
             g1.upscale()
 
         # 检查 n 是否溢出（极少发生）
-        if g1.n.dtype in DTYPE_MAX_VALUE and max_n > DTYPE_MAX_VALUE[
+        if g1.n.dtype in DTYPE_MAX_VALUE and self.max_n > DTYPE_MAX_VALUE[
                 g1.n.dtype]:
             if g1.n.dtype in DTYPE_UPSCALE_MAP:
                 new_n_dtype = DTYPE_UPSCALE_MAP[g1.n.dtype]
                 g1.n = g1.n.astype(new_n_dtype)
-                new_n = new_n.astype(new_n_dtype)
-
+        
+        if self.inplace_calc:
+            self.sum_mu += g2.sum_mu
+            self.square_sum += g2.square_sum
+            self.n += g2.n
+            return self
+        
         return FastGaussianParam(sum_mu=g1.sum_mu + g2.sum_mu,
                                  square_num=g1.square_sum + g2.square_sum,
-                                 n=new_n,
+                                 n= g1.n + g2.n,
                                  ddof=g1.ddof,
                                  source_dtype=g1.source_dtype)
 
@@ -375,6 +382,14 @@ class FastGaussianParam(object):
         assert isinstance(g2, FastGaussianParam), "unacceptable object"
         assert g1.ddof == g2.ddof, "unmatched var calculation!"
         assert (g1.n - g2.n).any() >= 0, "generate n<0 fistribution!"
+        
+        if self.inplace_calc:
+            self.sum_mu -= g2.sum_mu
+            self.square_sum -= g2.square_sum
+            self.n -= g2.n
+            self.max_n = int(self.n.max())
+            return self
+        
         return FastGaussianParam(sum_mu=g1.sum_mu - g2.sum_mu,
                                  square_num=g1.square_sum - g2.square_sum,
                                  n=g1.n - g2.n,
@@ -394,6 +409,13 @@ class FastGaussianParam(object):
             var_w = (Σ(w·x²) - (Σ(w·x))²/Σw) / (Σw - ddof)
         """
         if isinstance(weight, (int, float, np.ndarray)):
+            if self.inplace_calc:
+                # TODO: 未校验浮点权重下的逻辑
+                self.sum_mu *= weight
+                self.square_sum *= weight
+                self.n = self.n * weight
+                self.max_n = int(self.max_n * weight)
+                return self
             return FastGaussianParam(
                 sum_mu=self.sum_mu * weight,
                 square_num=self.square_sum * weight,
