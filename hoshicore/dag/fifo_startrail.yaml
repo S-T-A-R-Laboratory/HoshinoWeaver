@@ -9,8 +9,7 @@ version: "1"
 #                  │                          │                    ├─► image_saver
 #                  ├──► weight_generator ─────┘                    │
 #                  │                                               │
-#                  └──► exif_loader ─────────────► ─exif_reducer ──┘
-
+#                  └──► exif_loader ─────────────►  exif_reducer ──┘
 
 inputs:
   fnames: { type: sequence, required: true }
@@ -18,17 +17,12 @@ configs:
   fin: { type: float, default: 0 }
   fout: { type: float, default: 0 }
   int_weight: { type: bool, default: true }
-  input_dtype: { type: dtype, default: uint8 }
-  output_filename: { type: str, default: "result.jpg" }
+  output_filename: { type: str, default: "result.tif" }
   loader_type: { type: str, default: "img_file_list" }
   exif_reduce_type: { type: str, default: "sum" }
+  output_dtype: { type: str, default: "uint8" }
+  loader_configs: { type: dict, default: {} }
 nodes:
-  exif_loader:
-    op: ExifReadOp
-    inputs:
-      fnames: inputs.fnames
-    outputs:
-      result: { type: sequence }
   weight_generator:
     op: generate_weight
     inputs:
@@ -36,18 +30,19 @@ nodes:
     configs:
       fin: configs.fin
       fout: configs.fout
-      int_weight: configs.int_weight
-      input_dtype: configs.input_dtype
     outputs:
       result: { type: sequence }
+
   data_loader:
-    op: DataLoaderOp
+    op: ImgDataLoaderOp
     inputs:
       src: inputs.fnames
     configs:
       loader_type: configs.loader_type
+      configs: configs.loader_configs
     outputs:
       result: { type: sequence }
+
   trailstacker:
     op: TrailStackerOp
     inputs:
@@ -57,6 +52,14 @@ nodes:
       int_weight: configs.int_weight
     outputs:
       result: { type: image }
+
+  exif_loader:
+    op: ExifReadOp
+    inputs:
+      fnames: inputs.fnames
+    outputs:
+      result: { type: sequence }
+
   exif_reducer:
     op: ExifReduceOp
     inputs:
@@ -65,11 +68,13 @@ nodes:
       merge_method: configs.exif_reduce_type
     outputs:
       result: { type: object }
+
   image_saver:
     op: ImageSaveOp
     configs:
       image: trailstacker.result
       exif: exif_reducer.result
+      output_dtype: configs.output_dtype
       output_filename: configs.output_filename
     outputs:
       return_code: { type: int }

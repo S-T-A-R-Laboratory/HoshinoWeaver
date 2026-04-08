@@ -63,11 +63,17 @@ class ImageSaveOp(BaseOp):
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         image = configs['image']
         output_dtype_str = configs.get('output_dtype')
+        output_filename = configs['output_filename']
+        exif = configs.get('exif')
 
         target_dtype = None
-        # 按需 dtype 转换
-        if output_dtype_str:
+        # JPEG 强制要求 uint8
+        if output_filename.lower().endswith(".jpg"):
+            target_dtype = np.dtype('uint8')
+        elif output_dtype_str:
+            # 按需 dtype 转换
             target_dtype = np.dtype(output_dtype_str)
+        if target_dtype is not None:
             logger.debug(f"Image dtype cast: {image.dtype} → {target_dtype}")
 
         if isinstance(image, FloatImage):
@@ -76,26 +82,11 @@ class ImageSaveOp(BaseOp):
             if target_dtype is not None and image.dtype != target_dtype:
                 image = rescale_array(image, image.dtype, target_dtype)
 
-        output_filename = configs['output_filename']
-        info = configs.get('exif')
-
-        # 从 info 中提取 exif / colorprofile（兼容 EasyDict 和普通 dict）
-        if info is not None:
-            exif_data = info.get('exif') if hasattr(info, 'get') else None
-            colorprofile = (info.get('colorprofile', b"") if hasattr(
-                info, 'get') else b"")
-        else:
-            exif_data = None
-            colorprofile = b""
-
         try:
-            await asyncio.to_thread(
-                save_img,
-                output_filename,
-                image,
-                exif=exif_data,
-                colorprofile=colorprofile,
-            )
+            await asyncio.to_thread(save_img,
+                                    output_filename,
+                                    image,
+                                    exif=exif)
             return_code = 0
             logger.info(f"Image saved successfully to {output_filename}")
         except Exception as e:

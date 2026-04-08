@@ -12,12 +12,13 @@ import numpy as np
 import PIL.Image
 import rawpy
 import tifffile
-from easydict import EasyDict
 from loguru import logger
 
+from .exifdata import ExifData, encode_exif_data
 from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SAME_SUFFIX_MAPPING,
-                    SUPPORT_COLOR_SPACE, get_scale_x, is_support_format,
+                    get_scale_x, is_support_format,
                     time_cost_warpper)
+
 
 def load_img(file_path: str) -> Optional[np.ndarray]:
     """ Using OpenCV API to load a single image from the given path.
@@ -65,54 +66,12 @@ def load_img(file_path: str) -> Optional[np.ndarray]:
         return None
 
 
-def get_color_profile(color_bstring):
-    color_profile = color_bstring.decode("latin-1", errors="ignore")
-    if not color_profile: return None
-    for color_space in SUPPORT_COLOR_SPACE:
-        if color_space in color_profile:
-            return color_space
-    return NotImplementedError(
-        "Unsupported color space. For now only these color spaces are supported: %s"
-        % SUPPORT_COLOR_SPACE)
-
-
-
-def load_info(fname: str) -> EasyDict:
-    """Load EXIF and icc_profile information of the given image file.
-
-    Args:
-        fname (str): /path/to/the/image.file
-
-    Returns:
-        Optional[EasyDict]: a Easydict that stores EXIF information.
-        When exception occurs, an easyDict with no EXIF data and empty colorprofile will be returned instead.
-    """
-    info = EasyDict(exif=EasyDict(), colorprofile=b"")
-    with open(fname, mode='rb') as f:
-        try:
-            import pyexiv2
-            with pyexiv2.ImageData(f.read()) as image_data:
-                # 基础信息
-                exifdata = image_data.read_exif()
-                colorprofile = image_data.read_icc()
-                info = EasyDict(
-                    exif=EasyDict(exifdata),
-                    colorprofile=colorprofile,
-                )
-        except (ImportError, OSError) as e:
-            logger.warning(
-                "Failed to load pyexiv2. EXIF data and colorprofile can not be loaded from files."
-            )
-    return info
-
-
 @time_cost_warpper
 def save_img(filename: str,
              img: np.ndarray,
              png_compressing: int = 0,
              jpg_quality: int = 90,
-             exif: Union[dict, EasyDict, None] = None,
-             colorprofile: bytes = b""):
+             exif: Optional[ExifData] = None):
     """保存单个图像到指定路径下，并添加exif信息和色彩配置文件。
     
     该函数会将图像转换为字节流，随后使用pyexiv2将exif和icc_profile信息写入文件。
@@ -149,8 +108,13 @@ def save_img(filename: str,
         raise NameError(f"Unsupported suffix \"{suffix}\".")
     status, buf = cv2.imencode(ext, img, params)
     assert status, "imencode failed."
+    if exif is not None:
+        image_bytes = encode_exif_data(buf, exif)
+    else:
+        image_bytes = buf.tobytes()
+
     with open(filename, mode='wb') as f:
-        f.write(buf.tobytes())
+        f.write(image_bytes)
 
 
 def get_img_attrs(fname: str) -> dict:
