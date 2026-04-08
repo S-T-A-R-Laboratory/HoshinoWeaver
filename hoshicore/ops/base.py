@@ -158,6 +158,7 @@ class ParallelBaseOp(BaseOp):
         """串行执行"""
         if self.length is None:
             raise ValueError("Length is not set")
+        self.tracker.create_bar(self.name, self.length)
         for i in range(self.length):
             try:
                 data = self._async_convert_inputs()
@@ -165,12 +166,15 @@ class ParallelBaseOp(BaseOp):
                 logger.warning(f"{self.name}: upstream ended at {i}/{self.length}")
                 break
             result = await self._async_execute_single(data, configs)
+            self.tracker.update(self.name)
             await self._broadcast_result(result)
+        self.tracker.close_bar(self.name)
 
     async def _execute_concurrent(self, configs: dict[str, Any]) -> None:
         """并发执行：滑动窗口保证输出有序"""
         if self.length is None:
             raise ValueError("Length is not set")
+        self.tracker.create_bar(self.name, self.length)
         window_size = self.WINDOW_SIZE or (self.CONCURRENCY * 2)
         semaphore = asyncio.Semaphore(self.CONCURRENCY)
 
@@ -184,11 +188,13 @@ class ParallelBaseOp(BaseOp):
                     data = self._async_convert_inputs()
                     result = await self._async_execute_single(data, configs)
                     results[local_idx] = result
+                    self.tracker.update(self.name)
 
             await asyncio.gather(*[process_item(i) for i in range(window_len)])
 
             for result in results:
                 await self._broadcast_result(result)
+        self.tracker.close_bar(self.name)
 
     async def _broadcast_result(self, result: dict[str, Any]) -> None:
         """广播结果到所有输出队列"""

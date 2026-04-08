@@ -16,11 +16,11 @@ from typing import Optional
 import numpy as np
 
 # ── dtype 级差表 ──
-# 级差 = DTYPE_LEVEL[dtype]，两个 dtype 之间每差一级对应 256^1 的放缩
+# 级差 = DTYPE_LEVEL[dtype]，两个 dtype 之间每差一级对应 256^(n+1) 的放缩
 # 例如 uint8(level=0) → uint16(level=1) 的 scale = 256^1 + 1 = 257
 
 DTYPE_LEVEL: dict[np.dtype, int] = {
-    np.dtype("uint8"):  0,
+    np.dtype("uint8"): 0,
     np.dtype("uint16"): 1,
     np.dtype("uint32"): 2,
     np.dtype("uint64"): 3,
@@ -29,22 +29,15 @@ DTYPE_LEVEL: dict[np.dtype, int] = {
 _SCALE_BASE = 256
 
 
-def _compute_scale(low_dtype: np.dtype, high_dtype: np.dtype) -> int:
-    """根据两个 dtype 的级差计算 scale_factor。
+def _cumscale_factor(level: int) -> int:
+    """级差 level 对应的累积放缩 factor。
 
-    仅在两端都是整型 (在 DTYPE_LEVEL 中) 时计算。
-    如果 high 级别 > low 级别，scale = 256^级差 + 1。
-    否则返回 1（同级或反向不做自动推算）。
+    例如 level=2（uint8 → uint32）时，factor = 256^1 + 1 (uint8→uint16) × 256^1 + 1 (uint16→uint32) = 66049
     """
-    low_level = DTYPE_LEVEL.get(low_dtype)
-    high_level = DTYPE_LEVEL.get(high_dtype)
-    if low_level is None or high_level is None:
-        return 1
-    diff = high_level - low_level
-    if diff <= 0:
-        return 1
-    return _SCALE_BASE ** diff + 1
-
+    factor = 1
+    for i in range(abs(level)):
+        factor *= _SCALE_BASE + 1
+    return factor
 
 def rescale_array(
     data: np.ndarray,
@@ -75,13 +68,12 @@ def rescale_array(
     diff = to_level - from_level
     if diff == 0:
         return data.astype(to_dtype)
-    elif diff > 0:
+    sf = _cumscale_factor(diff)
+    if diff > 0:
         # 向上放缩
-        sf = _SCALE_BASE ** diff + 1
         return data.astype(to_dtype) * sf
     else:
         # 向下缩放
-        sf = _SCALE_BASE ** (-diff) + 1
         return (data // sf).astype(to_dtype)
 
 
@@ -123,6 +115,7 @@ def align_dtype_pair(
         # b 级别低，放缩 b 到 a 的级别
         return arr_a, rescale_array(arr_b, dtype_b, dtype_a), dtype_a
 
+
 @dataclass(slots=True)
 class FloatImage(object):
     """轻量级的Float矩阵包装器，包含原始数据范围dtype。
@@ -140,5 +133,3 @@ class FloatImage(object):
             target_dtype = self.dtype
 
         return rescale_array(self.data, self.dtype, target_dtype)
-    
-    

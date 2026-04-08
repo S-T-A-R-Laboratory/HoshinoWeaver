@@ -232,7 +232,7 @@ class SigmaClippingStackerOp(BaseOp):
 
             # ── Phase 2: 迭代 Sigma Clipping ──
             ref_fgp = fgp_total
-            last_n = None
+            last_n = ref_fgp.n.copy()  # 收敛检查
             accepted = None
 
             for iteration in range(max_iter):

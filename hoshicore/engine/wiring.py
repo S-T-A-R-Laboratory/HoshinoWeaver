@@ -27,6 +27,7 @@ from ..component.queue import RichContextQueue
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
 from ..ops.dataloader import ImgDataLoaderOp
+from ..ops.exif_op import ExifReduceOp, ExifReadOp
 from ..ops.image_saver import ImageSaveOp
 from ..ops.trailstacker import (MaxNoiseEqualizationOp, MeanStackerOp,
                                 MinStackerOp, SigmaClippingStackerOp,
@@ -39,7 +40,6 @@ from .executor import DAGExecutor
 # 默认 Op 注册表
 # ────────────────────────────────────────────────────────────────
 
-
 DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
     # YAML 中使用的 op 名称 → 实际类
     "ImgDataLoaderOp": ImgDataLoaderOp,
@@ -51,6 +51,8 @@ DEFAULT_OP_REGISTRY: dict[str, type[BaseOp]] = {
     "SigmaClippingStackerOp": SigmaClippingStackerOp,
     "MaxNoiseEqualizationOp": MaxNoiseEqualizationOp,
     "ImageSaveOp": ImageSaveOp,
+    "ExifReduceOp": ExifReduceOp,
+    "ExifReadOp": ExifReadOp
 }
 
 
@@ -372,6 +374,7 @@ async def run_dag(
     logger.info("DAG execution completed. Results collected.")
     return results
 
+
 @time_cost_warpper
 async def run_from_yaml(
     yaml_path: str,
@@ -395,7 +398,10 @@ async def run_from_yaml(
 
     spec = _load_yaml(yaml_path)
     dag = validate_and_build_order(spec)
-    return await run_dag(dag, global_inputs, global_configs, op_registry,
+    return await run_dag(dag,
+                         global_inputs,
+                         global_configs,
+                         op_registry,
                          progress=progress)
 
 
