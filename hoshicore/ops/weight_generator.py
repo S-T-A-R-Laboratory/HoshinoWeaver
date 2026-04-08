@@ -13,8 +13,8 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
+from ..engine.registry import register_op
 from .base import BaseOp
-
 
 # ---------------------------------------------------------------------------
 # 权重生成函数
@@ -39,7 +39,7 @@ def generate_weight(
     assert fin + fout <= 1, f"fin({fin}) + fout({fout}) > 1"
     in_len = int(length * fin)
     out_len = int(length * fout)
-    ret_weight = np.ones((length,), dtype=np.float32)
+    ret_weight = np.ones((length, ), dtype=np.float32)
 
     if in_len > 0:
         ret_weight[:in_len] = np.arange(1, 100, 99 / in_len) / 100
@@ -48,6 +48,8 @@ def generate_weight(
 
     return ret_weight
 
+
+@register_op()
 class WeightGeneratorOp(BaseOp):
     """权重生成器：根据序列长度和渐入渐出参数生成逐帧权重序列。
 
@@ -86,8 +88,7 @@ class WeightGeneratorOp(BaseOp):
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         length = self.length
         assert length is not None, (
-            "WeightGeneratorOp requires sequence length information."
-        )
+            "WeightGeneratorOp requires sequence length information.")
 
         weights = generate_weight(
             length=length,

@@ -1,12 +1,15 @@
 import fractions
+from asyncio import gather
 from typing import Any, Awaitable, Mapping, Optional
 
 from loguru import logger
 
 from ..component.exifdata import CommonExifTags, ExifData, read_exif_data
+from ..engine.registry import register_op
 from .base import BaseOp, ParallelBaseOp
 
 
+@register_op()
 class ExifReadOp(ParallelBaseOp):
     INPUTS = {"fnames": {"type": "sequence", "description": "File names"}}
     OUTPUTS = {"result": {"type": "sequence", "description": "Exif sequence"}}
@@ -20,6 +23,7 @@ class ExifReadOp(ParallelBaseOp):
         return {"result": exif}
 
 
+@register_op()
 class ExifReduceOp(BaseOp):
     INPUTS = {"exifs": {"type": "sequence", "description": "Exif sequence"}}
     CONFIGS: dict[str, Any] = {

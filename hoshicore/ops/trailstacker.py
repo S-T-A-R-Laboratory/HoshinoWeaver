@@ -4,13 +4,16 @@ import numpy as np
 from loguru import logger
 
 from ..component.frame_buffer import DiskFrameBuffer
-from ..component.merger import MaxMerger, MinMerger, MeanMerger, SigmaClippingMerger
+from ..component.merger import (MaxMerger, MeanMerger, MinMerger,
+                                SigmaClippingMerger)
 from ..component.noise_equalization import equalize_noise
 from ..component.tagged_image import FloatImage, align_dtype_pair
 from ..component.utils import FastGaussianParam
+from ..engine.registry import register_op
 from .base import BaseOp
 
 
+@register_op()
 class TrailStackerOp(BaseOp):
     """
     叠加星轨
@@ -108,10 +111,12 @@ class TrailStackerOp(BaseOp):
             self.tracker.close_bar(self.name)
 
 
+@register_op()
 class MinStackerOp(TrailStackerOp):
     MERGER = MinMerger
 
 
+@register_op()
 class MeanStackerOp(TrailStackerOp):
     MERGER = MeanMerger
     OUTPUTS = {
@@ -123,6 +128,7 @@ class MeanStackerOp(TrailStackerOp):
         },
     }
 
+@register_op()
 class MaxNoiseEqualizationOp(BaseOp):
     """最大值叠加噪声均匀化算子。
 

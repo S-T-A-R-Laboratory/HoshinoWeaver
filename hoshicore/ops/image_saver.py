@@ -11,12 +11,14 @@ import cv2
 import numpy as np
 from loguru import logger
 
-from hoshicore.component.tagged_image import rescale_array, FloatImage
+from hoshicore.component.tagged_image import FloatImage, rescale_array
 
-from .base import BaseOp
 from ..component.imgfio import save_img
+from ..engine.registry import register_op
+from .base import BaseOp
 
 
+@register_op()
 class ImageSaveOp(BaseOp):
     """图像保存算子：将图像写入磁盘，可选写入 EXIF 和色彩配置。
 
