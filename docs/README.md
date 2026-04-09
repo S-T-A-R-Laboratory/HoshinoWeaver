@@ -1,219 +1,422 @@
-# HNWv2 设计框架
+# hoshicore 技术文档
 
-HNW被设计为作为星空序列图像的通用预处理框架。该框架预期支持序列图像作为输入（也可以是视频，被考虑为一系列序列图像帧），生成单张图像、序列图像（或视频）、对齐工程等文件，用于支持用户以简易而可配置的方式生产叠加图像，延时视频等来源于序列图像的复合预处理产物。
+hoshicore 是 HoshinoWeaver (HNW) 的核心计算库，提供星空序列图像的通用预处理框架。用户通过 **YAML 声明式 DAG** 定义处理流程，框架自动完成依赖解析、异步调度和流式执行。
 
-## 使用方式
+**核心能力**：
 
-用户以序列图像作为输入，随后定义序列图像应该被如何处理。处理过程被描述为一个有向无环图（DAG）：
-每一个节点代表一个处理操作，接受的数据来自用户输入（起点）或其他节点结果；处理操作得到一个或者多个返回值（名称根据方法而确定），这些值可以被不同的后续节点所选择性的使用。
-
-例如，一个常见的需求是星空图像的叠加：天空和地面需要被分开叠加，天空部分按照某一张图像的星点进行对齐然后叠加，地面部分则通常可以直接叠加，则计算图可以被描述为：
-
-输入：
-图像序列（I1）
-天地分离蒙版（I2）
-节点A：将蒙版应用到图像： A(I1,I2)->{"sky": 天空only序列,"ground":地面only序列}
-节点B：对齐序列图像：B(A.sky, A.sky[0])(对齐到第一张图像)->{"result": 天空对齐序列}
-节点C：平均值叠加给定序列：C(B.result, **cfg1)->{"result": 天空叠加后图像}
-节点D：平均值叠加给定序列：C(A.ground, **cfg2)->{"result": 地面叠加后图像}
-节点E：加和两张图像：E(C.result, D.result)->{"result": 最终结果}
-
-图：
-A->B; B->C; A->D; C->E; D->E;
-
-## operators
-
-HNW中的所有操作都可以被抽象为单个或者多个算子，因此算子可以借鉴常见的函数式以及流式控制符的概念，最终结果是按照特定执行图的结果。当中部分可能以并行的方式以优化执行效率。总体而言可以被分为以下几类：
-
-1. Map
-Map 将一个队列的每一个元素执行特定的变换，执行前后队列的长度（通常情况下）保持不变。对于图像处理而言，这一过程可以是对齐，调色，降噪，施加蒙版或者滤镜等作用于每个单张图像的操作。
-
-2. Reduce
-Reduce 通过迭代（也可能不是迭代）一个队列的所有元素压缩为一个元素。执行完时，队列应当仅剩一个元素。在图像处理中，典型的Reduce操作包括导出视频，叠加一个队列的所有图像等。
-
-3. Filter
-Filter 按照规则从原始的队列中过滤掉不符合规则的所有元素，只保留满足条件的元素。执行后队列长度不应视为与原始队列等长。在图像处理中，典型的Filter操作有筛选流星，过滤爆闪图像等。
-
-4. Glimpse
-该操作不产生副作用，通常用于观察中间状态，抽样数据等。
-
-## 执行器
-节点向多线程执行器提交任务和附带参数，多线程执行器将任务排序（每一类执行器都默认并发数为1，即默认阻塞；但对于跨执行器则无限制），后对于每一个单一节点进行执行。
-
-总体分为CPU执行器和GPU执行器。执行器本身之负责接收任务和参数，以异步方式返回结果。
+- 最大值 / 最小值 / 均值叠加（Max / Min / Mean Stacking）
+- 迭代 Sigma Clipping 均值叠加
+- 渐入渐出权重（Fade-in / Fade-out）
+- 最大值叠加噪声均匀化（Max Noise Equalization）
+- EXIF 读取与合并（曝光时间累加等）
+- 多格式图像 I/O（TIFF 16-bit、JPEG、PNG 等）
 
 ---
 
-## 数据类型与传递（草稿）
+## 1. 架构总览
 
-### 核心数据类型
+```
+┌───────────────────────────────────────────────────────────────────┐
+│  用户层                                                           │
+│    YAML DAG 定义（dag/*.yaml）+ Python API（run_from_yaml）        │
+├───────────────────────────────────────────────────────────────────┤
+│  引擎层  engine/                                                  │
+│    build.py   ── YAML 解析、合法性校验、拓扑排序                     │
+│    wiring.py  ── Op 实例化、队列布线、feeder 协程生成                │
+│    executor.py── DAGExecutor 异步并发执行 + 全局取消                │
+├───────────────────────────────────────────────────────────────────┤
+│  算子层  ops/                                                     │
+│    BaseOp / ParallelBaseOp 基类 + 各具体算子                       │
+├───────────────────────────────────────────────────────────────────┤
+│  组件层  component/                                               │
+│    queue（异步背压队列）、merger（合并器）、dataloader（数据加载器）    │
+│    imgfio（图像 I/O）、tagged_image（dtype 管理）、utils 等          │
+└───────────────────────────────────────────────────────────────────┘
+```
 
-框架内节点间传递的数据均带有类型标识，便于执行器做调度与序列化。内置类型建议如下，**类型名可扩展**（运行时注册或声明即可）：
+**执行流程**：
 
-| 类型标识 | 含义 | 说明 |
-|----------|------|------|
-| `image` | 单张图像 | 二维或三维数组，附可选元数据（如尺寸、dtype、色彩空间） |
-| `sequence` | 图像序列 | 有序集合，长度可变；元素为 `image`，可带索引/时间戳等元数据 |
-| `mask` | 蒙版 | 与 `image` 同构，用于选区或权重；可为二值或连续值 |
-| `scalar` | 标量/简单值 | 数值、字符串、布尔等，用于配置或 Filter 的判据 |
-| `blob` | 任意二进制/结构化数据 | 对齐结果、检测表、工程文件等；由算子自行约定格式 |
-
-算子声明其**输入端口**与**输出端口**的名称及期望类型；执行时由运行时按 DAG 将上游输出按端口名绑定到下游输入。类型不匹配时可在运行前做静态检查或运行时报错（策略可配置）。
-
-### 传递语义
-
-- **按引用传递**：默认。大对象（如图像、序列）不在节点间拷贝，可能以文件形式暂存，传递句柄或引用，由执行器管理生命周期；适合单进程、多线程或进程内 DAG。
-- **按值 / 序列化**：跨进程或持久化缓存时，由执行器对 `image` / `sequence` / `blob` 做序列化与反序列化；可配置为「仅对指定类型/指定边」按值。
-- **懒加载**：`sequence` 可表示为「源 + 索引范围 + 加载器」，首访某帧时再加载，以降低内存与 I/O；是否启用由执行器或节点配置决定。
-
-扩展新类型时，需声明其「可引用传递」「可序列化」及（可选）「可懒加载」，以接入统一传递策略。
-
-### 端口与多输出
-
-- 每个节点有零个或多个**输入端口**、一个或多个**输出端口**；端口有**名称**与**类型**（可选，用于检查）。
-- 边的语义：**从「某节点的某输出端口」到「当前节点的某输入端口」**；同一输出可连到多条边（多路消费）。
-- 未连接的可选输入可使用节点级**默认值**或**配置项**填充；必选输入未连接则建图/运行前报错。
+```
+YAML 文件
+   │
+   ▼
+build.validate_and_build_order()   →  ValidatedDag（校验通过的 DAG 结构 + 拓扑序）
+   │
+   ▼
+wiring.instantiate_and_wire()      →  Op 实例列表 + feeder 协程 + output 收集队列
+   │
+   ▼
+executor.DAGExecutor.execute()     →  所有节点并发启动，由队列背压自然调度
+   │
+   ▼
+收集 output 队列结果                →  dict[str, Any]
+```
 
 ---
 
-## DAG 具象表示（草稿）
+## 2. 核心概念
 
-### 图的组成
+### 2.1 DAG 计算图
 
-- **节点（Node）**：唯一 id、算子类型（或算子名）、静态配置（键值）、以及**输入映射**（见下）。
-- **输入映射**：将「上游节点 id + 该节点输出端口名」映射到「本节点输入端口名」。用户输入视为**虚拟源节点**，id 由用户在图中指定（如 `I1`, `I2`）。
-- **边**：由输入映射隐式表达，无需单独边列表；若需显式边列表（如可视化、校验），可从输入映射推导。
+处理流程通过 YAML 文件声明。一个 DAG 由四个顶层字段定义：
 
-同一 DAG 内节点 id 不可重复；虚拟源节点不执行算子，仅提供初始数据。
+| 字段 | 含义 |
+|------|------|
+| `inputs` | 全局序列输入（如文件名列表），type 必须为 `sequence` |
+| `configs` | 全局标量配置（如渐入比例、输出路径），支持 `default` |
+| `nodes` | 节点定义，每个节点指定 `op`、`inputs`、`configs`、`outputs` |
+| `outputs` | DAG 的目标输出，引用某个节点的输出端口 |
 
-### 表示格式（JSON Schema 风格）
+**Link 语法**：节点通过 link 字符串引用数据来源：
 
-以下为一种与实现无关的、可序列化的 DAG 描述方式，便于用 YAML/JSON 编辑或由程序生成。
+- `inputs.<name>` — 全局序列输入
+- `configs.<name>` — 全局标量配置
+- `<node_name>.<output_name>` — 其他节点的输出端口
+
+**最小示例**（仅均值叠加）：
 
 ```yaml
-# 可选：全局元数据
-meta:
-  version: "1"
-  description: "天地分离后分别叠加再合成"
+description: "均值叠加"
+version: "1"
 
-# 用户输入：id -> 类型（及可选说明）
 inputs:
-  I1: sequence   # 图像序列
-  I2: mask       # 天地分离蒙版
+  fnames: { type: sequence, required: true }
 
-# 节点列表：id 为键
+configs:
+  loader_type: { type: str, default: "img_file_list" }
+  loader_configs: { type: dict, default: {} }
+  int_weight: { type: bool, default: true }
+  output_filename: { type: str, default: "result.tif" }
+  output_dtype: { type: str, default: "uint8" }
+
 nodes:
-  A:
-    op: apply_mask          # 算子名或算子类型
-    config: {}              # 静态参数，如 cfg1/cfg2
+  data_loader:
+    op: ImgDataLoaderOp
     inputs:
-      images: I1             # 简写：单输入可直接写源节点 id（该节点单输出时）
-      mask: I2
-    # 输出由算子定义，如 sky, ground；此处不需列出
+      src: inputs.fnames             # 引用全局输入
+    configs:
+      loader_type: configs.loader_type
+      configs: configs.loader_configs
+    outputs:
+      result: { type: sequence }
 
-  B:
-    op: align_sequence
-    config: { reference: "first" }
+  meanstacker:
+    op: MeanStackerOp
     inputs:
-      sequence: A.sky       # 显式指定上游端口：节点A 的 sky 输出
-      reference: A.sky[0]  # 若运行时支持，可表示「A.sky 的第 0 帧」
+      data: data_loader.result       # 引用上游节点输出
+    configs:
+      int_weight: configs.int_weight
+    outputs:
+      result: { type: image }
 
-  C:
-    op: mean_stack
-    config: { clip_sigma: 2.0 }
-    inputs:
-      sequence: B.result
+  image_saver:
+    op: ImageSaveOp
+    configs:
+      image: meanstacker.result
+      output_filename: configs.output_filename
+      output_dtype: configs.output_dtype
+    outputs:
+      return_code: { type: int }
 
-  D:
-    op: mean_stack
-    config: {}
-    inputs:
-      sequence: A.ground
-
-  E:
-    op: add_images
-    config: {}
-    inputs:
-      a: C.result
-      b: D.result
+outputs:
+  result: image_saver.return_code    # DAG 的最终输出
 ```
 
-**简写约定**（可随实现二选一或同时支持）：
+### 2.2 Op 算子体系
 
-- `inputs.foo: X` 且 X 为节点 id（无 `.`）：表示「来自节点 X 的**默认/唯一**输出端口」。
-- `inputs.foo: X.port`：表示来自节点 X 的名为 `port` 的输出端口。
-- 可选：`X[k]` 表示序列的第 k 帧或第 k 个元素，由执行器/算子解释。
+所有算子继承自两个基类：
 
-### 与示例的对应
+| 基类 | 适用场景 | 核心方法 |
+|------|---------|---------|
+| `BaseOp` | 需要消费整个序列的聚合操作（如叠加） | `_async_execute(configs)` |
+| `ParallelBaseOp` | 逐帧独立处理的并行操作（如 EXIF 读取） | `_async_execute_single(data, configs)` |
 
-前述「使用方式」中的例子可对应为：
+**Op 声明规范**：每个 Op 通过类属性声明输入输出：
 
-- 输入：I1（图像序列）、I2（蒙版）。
-- 节点 A：`apply_mask(I1, I2) -> { sky, ground }`；B 消费 `A.sky`；C 消费 `B.result`；D 消费 `A.ground`；E 消费 `C.result` 与 `D.result`。
-- 图结构由 `inputs` 唯一确定：A→B→C→E，A→D→E；无环。
-
-### 扩展与兼容
-
-- **算子注册表**：运行时维护「op name → 实现（含输入/输出端口与类型）」的映射；新增算子只需注册，无需改 DAG 格式。
-- **类型标注**：可在 `inputs` 或节点上为端口补充类型（如 `I1: sequence  # image sequence`），用于静态检查或文档生成。
-- 若未来需要「子图」「条件分支」等，可在本格式上增加 `subgraph`、`condition` 等字段，而不破坏现有节点与输入映射的语义。
-
-以上为草稿，实现时可先支持最小子集（如仅 `inputs.port: node_id` 与 `node_id.port`），再逐步支持 `config`、类型检查与懒加载。
-
-### 最小可运行示例
-
-目录下的 `dag_minimal_example.py` 使用 **NetworkX** 实现了上述 DAG 的建图与执行最小例：从 `inputs` + `nodes` 建图、拓扑排序、按序解析输入引用（`I1` / `A.sky` 等）并调用占位算子，验证整条链路。运行方式：
-
-```bash
-python hoshicore/ops/dag_minimal_example.py
+```python
+class MyOp(BaseOp):
+    EXECUTOR = "cpu"                                    # 执行器标识（可选）
+    INPUTS  = {"data": {"type": "sequence", "required": True}}
+    CONFIGS = {"threshold": {"type": "float", "default": 0.5}}
+    OUTPUTS = {"result": {"type": "image"}}
 ```
 
-依赖：`networkx`、`numpy`（`pip install networkx numpy`）。
+- `INPUTS`：序列数据输入，由队列流式传递
+- `CONFIGS`：标量配置，在 `pre_execute()` 阶段一次性读取
+- `OUTPUTS`：输出端口，结果通过广播推送到所有下游
 
+**内置算子一览**：
 
-### 节点的定义(新)
+| Op | 类型 | 功能 |
+|----|------|------|
+| `ImgDataLoaderOp` | BaseOp | 异步加载图像序列，支持文件列表和内存数组两种模式 |
+| `WeightGeneratorOp` | BaseOp | 根据 `fin` / `fout` 参数生成渐入渐出权重序列 |
+| `TrailStackerOp` | BaseOp | 最大值叠加（星轨），支持可选权重 |
+| `MinStackerOp` | BaseOp | 最小值叠加 |
+| `MeanStackerOp` | BaseOp | 均值叠加 |
+| `SigmaClippingStackerOp` | BaseOp | 迭代 Sigma Clipping 均值叠加，输出均值图像和统计信息 |
+| `MaxNoiseEqualizationOp` | BaseOp | 最大值叠加噪声均匀化，消除校正后的空间不均匀伪影 |
+| `ExifReadOp` | ParallelBaseOp | 并行读取 EXIF 信息（CONCURRENCY=4） |
+| `ExifReduceOp` | BaseOp | EXIF 信息聚合（如曝光时间累加） |
+| `ImageSaveOp` | BaseOp | 图像保存，支持 dtype 转换和 EXIF 写入 |
 
-异步实现下，节点的定义被重新考虑为更可读的直观形式。
+### 2.3 数据流与队列机制
 
-#### 类定义：
-类定义包含
-```py
-EXECUTOR: Optional[str] = None # 描述节点在什么设备上存在高负载。如果不指定，则代表该操作不是高负载的，可以理论上无限并发。
-INPUTS: Optional[dict[str, Any]] = None # 描述输入的序列数据
-CONFIGS: Optional[dict[str, Any]] = None # 描述输入的配置节点和类型。配置通常是只需要get一次就行的数值。
-OUTPUT: Optional[dict[str,Any]] = None # 描述输入的数据节点和类型 
+节点间通过 `RichContextQueue`（异步背压队列）连接，形成流式数据管道：
+
 ```
-这与之前相同。这些元数据主要是在类别检查阶段生效，确保有向图可以正确连接和执行。
+Feeder（全局数据注入）
+    │
+    ▼  put()
+┌─────────────────┐    get()    ┌─────────────────┐
+│ RichContextQueue │ ────────► │    Op 节点       │
+└─────────────────┘            │                  │
+                               │  处理后 put()     │
+                               └───────┬──────────┘
+                                       │ broadcast
+                          ┌────────────┼────────────┐
+                          ▼            ▼            ▼
+                      Queue A      Queue B      Queue C
+                    （下游节点）  （下游节点）  （输出收集）
+```
 
-#### 初始化
-传递一个节点具体的配置数据以进行初始化。未配置的参数会使用类默认的配置进行初始化。
+**关键机制**：
 
-对于INPUTS，将会创建异步队列。外部有向图引擎将负责将INPUTS关联到其他的OUTPUTS。
+- **背压控制**：队列 `maxsize=1`（默认），上游生产速度自动适配下游消费速度
+- **长度协调**：生产者通过 `set_length()` 广播序列长度，消费者通过 `get_length()` 等待就绪
+- **信号传播**：正常结束发送 `SENTINEL`，异常发送 `CancellationToken`，下游自动感知
+- **文件缓存**：`FileCacheQueue` 支持将大对象自动序列化到磁盘，降低内存压力
 
-因此类似的，OUTPUTS默认是一个{输出队列名：广播列表}的节点管理。有向图将会决定将哪些其他节点的INPUTS放到OUTPUTS队列中。
+---
 
-#### 执行
-再检查所有输入都已经被配置之后，将会使用for循环加载数据
+## 3. 使用方式
 
+### 3.1 快速上手
 
+最简调用方式——通过 `run_from_yaml` 一行启动：
 
-1. 属性定义
-是串行节点还是并行节点：并行节点不存在上下文依赖；串行节点对序列数据存在依赖。
-并行节点其实是一种简化的串行节点，方便接口实现。
+```python
+from hoshicore.engine.wiring import run_from_yaml
+import asyncio
 
-2. 执行器设备
+results = asyncio.run(run_from_yaml(
+    "hoshicore/dag/fifo_startrail.yaml",
+    global_inputs={"fnames": ["img001.jpg", "img002.jpg", "img003.jpg"]},
+    global_configs={
+        "fin": 0.2,          # 渐入比例
+        "fout": 0.2,         # 渐出比例
+        "int_weight": True,  # 整型权重优化
+        "output_filename": "result.tif",
+    },
+))
+```
 
-### 数据的加载和加载器
+也可以分步调用以获得更多控制：
 
-源数据/目标数据可能存在以下类型，因此如何实现加载器其实挺头疼的...
+```python
+from hoshicore.engine.build import _load_yaml, validate_and_build_order
+from hoshicore.engine.wiring import run_dag
+import asyncio
 
-1. 来源于文件中，核心入参为n长度的文件队列。ImgSeriesLoader允许以异步的形式访问数据。
-2. 来源于视频，核心入参为视频文件名+起止的时间戳/帧数。
-3. 完全存在于内存的数据，直接通过下标进行访问。
-4. 来自于缓存区，类似1.
+# 1. 加载并校验 DAG
+spec = _load_yaml("hoshicore/dag/fifo_startrail.yaml")
+dag = validate_and_build_order(spec)
 
-### 算子的简并
+# 2. 执行
+results = asyncio.run(run_dag(
+    dag,
+    global_inputs={"fnames": file_list},
+    global_configs={"fin": 0.1, "fout": 0.1},
+    progress=True,  # 显示 tqdm 进度条
+))
+```
 
-由于处理批数据，流转在中间的数据被设计为（默认）经由文件储存。然而，如果每一个节点都以文件作为媒介，那么执行效率可以想见非常低效。容易想见，所有的Map类型算子其实可以被合并串行执行。这也是滤镜系统的设计原理。
+### 3.2 编写自定义 YAML DAG
 
-因此为Reduce算子增加一个 Filter List。或者 Map算子也增加。
+编写步骤：
+
+1. **定义 `inputs`**：声明序列输入（通常是文件名列表）
+2. **定义 `configs`**：声明全局配置项及其默认值
+3. **定义 `nodes`**：每个节点指定使用的 `op`，并通过 link 语法连接上游数据
+4. **定义 `outputs`**：指定最终需要收集的节点输出
+
+**布线规则**：
+
+- YAML 中未布线但 Op 声明了 `default` 的 config 会被引擎自动注入
+- 可选输入（`required: False`）未布线时会被标记为非活跃，Op 内部可通过 `self.inputs[key].active` 判断
+- 引擎会自动校验 link 合法性（引用的节点/端口/全局字段是否存在）
+
+**Op 注册表**：引擎内置的 `DEFAULT_OP_REGISTRY` 包含所有标准算子。在 YAML 的 `op` 字段中使用注册表中的键名即可引用对应的算子类。
+
+### 3.3 编写自定义 Op
+
+**并行算子示例**（逐帧独立处理）：
+
+```python
+from hoshicore.ops.base import ParallelBaseOp
+
+class MyFilterOp(ParallelBaseOp):
+    INPUTS = {"data": {"type": "sequence", "required": True}}
+    CONFIGS = {"threshold": {"type": "float", "default": 0.5}}
+    OUTPUTS = {"result": {"type": "sequence"}}
+    CONCURRENCY = 4  # 并发度
+
+    async def _async_execute_single(self, data, configs):
+        img = await data['data']
+        threshold = configs['threshold']
+        result = img * (img > threshold)
+        return {"result": result}
+```
+
+**聚合算子示例**（消费整个序列）：
+
+```python
+from hoshicore.ops.base import BaseOp
+
+class MySumOp(BaseOp):
+    INPUTS = {"data": {"type": "sequence", "required": True}}
+    OUTPUTS = {"result": {"type": "image"}}
+
+    async def _async_execute(self, configs):
+        total = None
+        for i in range(self.length):
+            data = self._async_convert_inputs()
+            img = await data['data']
+            total = img if total is None else total + img
+        for queue in self.outputs['result']:
+            await queue.put(total)
+```
+
+**注册并使用**：
+
+```python
+from hoshicore.engine.wiring import DEFAULT_OP_REGISTRY, run_from_yaml
+import asyncio
+
+my_registry = {**DEFAULT_OP_REGISTRY, "MyFilterOp": MyFilterOp}
+
+results = asyncio.run(run_from_yaml(
+    "my_dag.yaml",
+    global_inputs={...},
+    global_configs={...},
+    op_registry=my_registry,
+))
+```
+
+### 3.4 子图嵌套（SubDagOp）
+
+通过 `create_sub_dag_op()` 可以将一个完整的 YAML DAG 封装为单个 Op 节点，嵌入到父 DAG 中：
+
+```python
+from hoshicore.ops.sub_dag import create_sub_dag_op
+from hoshicore.engine.wiring import DEFAULT_OP_REGISTRY
+
+# 从 YAML 创建子图 Op 类
+SigmaClipTrailOp = create_sub_dag_op(
+    "hoshicore/dag/fix_startrail.yaml",
+    op_name="SigmaClipTrailOp",
+)
+
+# 注册后即可在父 DAG 的 YAML 中使用
+my_registry = {**DEFAULT_OP_REGISTRY, "SigmaClipTrailOp": SigmaClipTrailOp}
+```
+
+子图的 `INPUTS` / `CONFIGS` / `OUTPUTS` 自动从 YAML 推导。数据通过队列桥接（`_bridge_queue`）流式传输，无需缓存整个序列。支持多级嵌套。
+
+---
+
+## 4. 内置 DAG 工作流
+
+### `fifo_startrail.yaml` — 渐入渐出星轨叠加
+
+```
+inputs.fnames ──┬──► ImgDataLoaderOp ──────────┐
+                │                               ├──► TrailStackerOp ───┐
+                ├──► WeightGeneratorOp ─────────┘                      │
+                │                                                      ├─► ImageSaveOp
+                └──► ExifReadOp ──────► ExifReduceOp ──────────────────┘
+```
+
+支持渐入渐出权重的最大值叠加，同时合并 EXIF 曝光时间。
+
+**关键配置**：`fin`（渐入比例）、`fout`（渐出比例）、`int_weight`（整型权重优化）
+
+### `fix_startrail.yaml` — 噪声均匀化星轨叠加
+
+```
+inputs.fnames ──┬──► ImgDataLoaderOp ──┬──► TrailStackerOp ─────────┐
+                │                      │                            │
+                │                      └──► SigmaClippingStackerOp ─┤
+                │                             │ statistics           │
+                │                             ▼                     │
+                │                      MaxNoiseEqualizationOp ──────┤
+                │                                                   ├─► ImageSaveOp
+                └──► ExifReadOp ──────► ExifReduceOp ───────────────┘
+```
+
+在最大值叠加基础上，利用 Sigma Clipping 的统计信息（逐像素均值和方差）进行噪声均匀化校正，消除镜头校正引入的空间不均匀伪影。详见 [噪声均匀化方案](./noise-equalization.md)。
+
+### `mean_only.yaml` — 纯均值叠加
+
+```
+inputs.fnames ──────► ImgDataLoaderOp ──────► MeanStackerOp ──► ImageSaveOp
+```
+
+最简工作流，仅做均值叠加和保存。
+
+---
+
+## 5. 项目目录结构
+
+```
+hoshicore/
+├── engine/                 # 引擎层：DAG 构建、布线、执行
+│   ├── build.py            #   YAML 解析 + 合法性校验 + 拓扑排序 → ValidatedDag
+│   ├── wiring.py           #   Op 实例化 + 队列连接 + feeder 生成 + run_dag / run_from_yaml
+│   └── executor.py         #   DAGExecutor：异步并发调度 + 全局取消机制
+│
+├── ops/                    # 算子层：所有 Op 定义
+│   ├── base.py             #   BaseOp / ParallelBaseOp 基类
+│   ├── dataloader.py       #   ImgDataLoaderOp（异步图像加载）
+│   ├── weight_generator.py #   WeightGeneratorOp（渐入渐出权重）
+│   ├── trailstacker.py     #   TrailStackerOp / MinStackerOp / MeanStackerOp
+│   │                       #   SigmaClippingStackerOp / MaxNoiseEqualizationOp
+│   ├── exif_op.py          #   ExifReadOp / ExifReduceOp
+│   ├── image_saver.py      #   ImageSaveOp
+│   └── sub_dag.py          #   SubDagOp + create_sub_dag_op()（子图嵌套）
+│
+├── component/              # 组件层：底层基础设施
+│   ├── queue.py            #   RichContextQueue / FileCacheQueue / CancellationToken
+│   ├── merger.py           #   MaxMerger / MinMerger / MeanMerger / SigmaClippingMerger
+│   ├── dataloader.py       #   BaseLoader / ImgFileListLoader / ArrayLoader
+│   ├── imgfio.py           #   图像读写（save_img 等）
+│   ├── tagged_image.py     #   FloatImage / dtype 管理 / 缩放工具
+│   ├── frame_buffer.py     #   DiskFrameBuffer（磁盘帧缓冲，用于 Sigma Clipping 多 pass）
+│   ├── noise_equalization.py # equalize_noise()（噪声均匀化核心算法）
+│   ├── exifdata.py         #   ExifData / 读写工具
+│   ├── progress.py         #   ProgressTracker / DummyTracker（进度条管理）
+│   └── utils.py            #   FastGaussianParam / dtype 工具 / 通用辅助函数
+│
+├── dag/                    # 预置 DAG 定义
+│   ├── fifo_startrail.yaml #   渐入渐出星轨叠加
+│   ├── fix_startrail.yaml  #   噪声均匀化星轨叠加
+│   └── mean_only.yaml      #   纯均值叠加
+│
+├── ezlib/                  # 遗留工具库
+│   └── arg.py              #   StackConfigArg / ImgInfo 等数据类
+│
+└── starlib/                # 星点工具库
+    ├── stardetect.py       #   星点检测
+    └── starshrink.py       #   星点缩小
+```
+
+---
+
+## 6. 相关文档
+
+| 文档 | 内容 |
+|------|------|
+| [DAG 节点定义规范](./dag_node_definition.md) | YAML DAG 的完整 schema 说明，包含字段定义、link 语法和校验规则 |
+| [Op 算子设计](./op.md) | Op 基类设计、队列机制、信号传播、异常处理的详细说明 |
+| [噪声均匀化方案](./noise-equalization.md) | 最大值叠加噪声均匀化的数学推导和算法流程 |
+| [开发者日志](./dev-log.md) | 成像模型推导、噪声分析等技术背景 |

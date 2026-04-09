@@ -80,7 +80,7 @@ class TrailStackerOp(BaseOp):
                     continue
 
                 try:
-                    merger.merge(cur_img, weight)
+                    await self._run_cpu(merger.merge, cur_img, weight)
                 except AssertionError as e:
                     err_msg_collector.append(
                         f"Shape of {cur_filename} does not match.")
@@ -214,7 +214,7 @@ class SigmaClippingStackerOp(BaseOp):
                     continue
 
                 frame_buffer.append(cur_img, weight)
-                mean_merger.merge(cur_img, weight)
+                await self._run_cpu(mean_merger.merge, cur_img, weight)
                 stacked_num += 1
                 self.tracker.update(self.name)
 
@@ -246,7 +246,7 @@ class SigmaClippingStackerOp(BaseOp):
 
                 for idx in range(len(frame_buffer)):
                     raw, weight = frame_buffer[idx]
-                    clip_merger.merge(raw, weight)
+                    await self._run_cpu(clip_merger.merge, raw, weight)
                     self.tracker.update(self.name)
 
                 # 构造 accepted FGP: fgp_total - rejected
