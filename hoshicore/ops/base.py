@@ -126,6 +126,26 @@ class BaseOp(object):
             except:
                 pass
 
+    async def _broadcast_outputs(self, results: dict[str, Any]) -> None:
+        """将结果广播到对应的输出队列。
+
+        与 _async_convert_inputs 对称的输出接口：子类在 _async_execute 中构造
+        {output_name: value} 字典，通过本方法统一推送。
+
+        - 仅推送 results 中存在的 key；未提供的输出端口不受影响
+        - 输出端口无下游连接（空队列列表）时静默跳过
+        - 所有 put 并发执行以最小化延迟
+
+        Args:
+            results: 输出名称到值的映射，key 必须是 OUTPUTS 中声明的端口名。
+        """
+        tasks = []
+        for key, value in results.items():
+            for queue in self.outputs[key]:
+                tasks.append(queue.put(value))
+        if tasks:
+            await asyncio.gather(*tasks)
+
     async def _run_cpu(self, fn, *args, **kwargs):
         """将 CPU 密集型同步函数卸载到线程池执行，释放事件循环。
 
@@ -176,7 +196,7 @@ class ParallelBaseOp(BaseOp):
                 break
             result = await self._async_execute_single(data, configs)
             self.tracker.update(self.name)
-            await self._broadcast_result(result)
+            await self._broadcast_outputs(result)
         self.tracker.close_bar(self.name)
 
     async def _execute_concurrent(self, configs: dict[str, Any]) -> None:
@@ -202,16 +222,8 @@ class ParallelBaseOp(BaseOp):
             await asyncio.gather(*[process_item(i) for i in range(window_len)])
 
             for result in results:
-                await self._broadcast_result(result)
+                await self._broadcast_outputs(result)
         self.tracker.close_bar(self.name)
-
-    async def _broadcast_result(self, result: dict[str, Any]) -> None:
-        """广播结果到所有输出队列"""
-        tasks = []
-        for key, queue_list in self.outputs.items():
-            for queue in queue_list:
-                tasks.append(queue.put(result[key]))
-        await asyncio.gather(*tasks)
 
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
                                     configs: dict[str, Any]) -> dict[str, Any]:
