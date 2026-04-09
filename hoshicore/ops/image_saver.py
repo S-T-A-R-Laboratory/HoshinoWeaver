@@ -94,5 +94,4 @@ class ImageSaveOp(BaseOp):
             return_code = 1
 
         # 广播返回码
-        for queue in self.outputs['return_code']:
-            await queue.put(return_code)
+        await self._broadcast_outputs({"return_code": return_code})

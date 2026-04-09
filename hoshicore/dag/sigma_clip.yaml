@@ -1,0 +1,63 @@
+description: "Sigma Clipping sub-DAG: MeanStacker + DiskBuffer + SigmaClipIterator"
+version: "1"
+
+# ── 全局输入 ──
+# 与原 SigmaClippingStackerOp 的 INPUTS 对齐
+inputs:
+  data: { type: sequence, required: true }
+  weight: { type: sequence, required: false }
+
+# ── 全局配置 ──
+# 与原 SigmaClippingStackerOp 的 CONFIGS 对齐
+configs:
+  int_weight: { type: bool, default: true }
+  rej_high: { type: float, default: 3.0 }
+  rej_low: { type: float, default: 3.0 }
+  max_iter: { type: int, default: 5 }
+  early_converge_ratio: { type: float, default: 0.99 }
+
+# ── 节点 ──
+#
+#  inputs.data ──────┬──► mean_stacker ──► statistics ──┐
+#                    │                                   ├──► sigma_clip_iter ──► result / statistics
+#                    └──► disk_buffer  ──► buffer_handle─┘
+#  inputs.weight ────┤
+#                    └──► (mean_stacker.weight, disk_buffer.weight)
+#
+nodes:
+  mean_stacker:
+    op: MeanStackerOp
+    inputs:
+      data: inputs.data
+      weight: inputs.weight
+    configs:
+      int_weight: configs.int_weight
+    outputs:
+      result: { type: image }
+      statistics: { type: image }
+
+  disk_buffer:
+    op: DiskBufferWriterOp
+    inputs:
+      data: inputs.data
+      weight: inputs.weight
+    outputs:
+      buffer_handle: { type: image }
+
+  sigma_clip_iter:
+    op: SigmaClipIteratorOp
+    configs:
+      fgp_total: mean_stacker.statistics
+      buffer_handle: disk_buffer.buffer_handle
+      rej_high: configs.rej_high
+      rej_low: configs.rej_low
+      max_iter: configs.max_iter
+      early_converge_ratio: configs.early_converge_ratio
+    outputs:
+      result: { type: image }
+      statistics: { type: image }
+
+# ── 全局输出 ──
+outputs:
+  result: sigma_clip_iter.result
+  statistics: sigma_clip_iter.statistics

@@ -1,4 +1,3 @@
-import asyncio
 from typing import Any
 from loguru import logger
 
@@ -60,7 +59,7 @@ class ImgDataLoaderOp(BaseOp):
         try:
             index = 0
             async for item in loader:
-                await self._broadcast_result(item)
+                await self._broadcast_outputs({"result": item})
                 self.tracker.update(self.name)
                 index += 1
         except Exception as e:
@@ -70,12 +69,6 @@ class ImgDataLoaderOp(BaseOp):
             raise e
         finally:
             self.tracker.close_bar(self.name)
-
-    async def _broadcast_result(self, result):
-        tasks = []
-        for queue in self.outputs['result']:
-            tasks.append(queue.put(result))
-        await asyncio.gather(*tasks)
 
     def build_loader_class(self, loader_type: str):
         mapping = {

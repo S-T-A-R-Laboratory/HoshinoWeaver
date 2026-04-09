@@ -105,12 +105,6 @@ class WeightGeneratorOp(BaseOp):
         async def stream_weights():
             """逐帧将权重推送到输出队列。"""
             for i in range(length):
-                await self._broadcast_result(weights[i])
+                await self._broadcast_outputs({"result": weights[i]})
 
         await asyncio.gather(drain_input(), stream_weights())
-
-    async def _broadcast_result(self, result) -> None:
-        tasks = []
-        for queue in self.outputs['result']:
-            tasks.append(queue.put(result))
-        await asyncio.gather(*tasks)

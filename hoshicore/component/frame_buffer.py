@@ -32,6 +32,7 @@ class DiskFrameBuffer:
         self.prefix = base64.urlsafe_b64encode(os.urandom(6)).decode("ascii")
         self._count = 0
         self._paths: list[Path] = []
+        self._cleaned = False
 
     def append(self, frame: np.ndarray,
                weight: Optional[Union[float, np.ndarray]] = None) -> None:
@@ -77,6 +78,8 @@ class DiskFrameBuffer:
 
     def cleanup(self) -> None:
         """删除所有临时缓冲文件。"""
+        if self._cleaned:
+            return
         for p in self._paths:
             try:
                 p.unlink()
@@ -84,5 +87,11 @@ class DiskFrameBuffer:
                 pass
         self._paths.clear()
         self._count = 0
+        self._cleaned = True
         logger.debug(
             f"DiskFrameBuffer cleaned up (prefix={self.prefix}).")
+
+    def __del__(self):
+        """安全网：防止异常中断（如用户 Ctrl-C）导致临时文件泄漏。"""
+        if not self._cleaned and self._paths:
+            self.cleanup()

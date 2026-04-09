@@ -1,4 +1,3 @@
-from asyncio import gather
 import fractions
 from typing import Any, Awaitable, Mapping, Optional
 
@@ -55,19 +54,13 @@ class ExifReduceOp(BaseOp):
                         time = fractions.Fraction(int(float(time) * 100), 100)
                     time_cumsum += fractions.Fraction(time)
             if base_exif is None:
-                await self._boardcast_result(None)
+                await self._broadcast_outputs({"result": None})
                 return
             base_exif.set_exif(
                 CommonExifTags.ExposureTime,
                 "/".join(map(str, time_cumsum.as_integer_ratio())))
             logger.info(
                 f"Calculated total exposure time = {time_cumsum:.2f}s.")
-            await self._boardcast_result(base_exif)
+            await self._broadcast_outputs({"result": base_exif})
         else:
             raise ValueError(f"Unsupported merge method: {merge_method}")
-
-    async def _boardcast_result(self, exif: Optional[ExifData]):
-        put_tasks = []
-        for queue in self.outputs['result']:
-            put_tasks.append(queue.put(exif))
-        await gather(*put_tasks)

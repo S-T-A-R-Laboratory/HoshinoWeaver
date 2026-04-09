@@ -27,7 +27,8 @@ SubDagOp —— 将完整子 DAG 封装为单个 Op 节点。
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, Union
 
 from loguru import logger
 
@@ -69,6 +70,7 @@ class SubDagOp(BaseOp):
             sub_global_configs[key] = value
 
         # ── 3) 实例化 + 布线子图 ──
+        # dag_search_paths 使用模块级默认值，无需显式传递
         sub_ops, sub_feeders, sub_output_queues = instantiate_and_wire(
             sub_dag, sub_global_inputs, sub_global_configs,
         )
@@ -93,17 +95,15 @@ class SubDagOp(BaseOp):
         )
 
         # ── 5) 将子图结果推到 SubDagOp 的输出队列 ──
-        for out_name, value in sub_results.items():
-            if out_name in self.outputs:
-                put_tasks = [q.put(value) for q in self.outputs[out_name]]
-                if put_tasks:
-                    await asyncio.gather(*put_tasks)
+        # 过滤出本 Op 声明的输出端口（子图可能有额外内部输出）
+        broadcast = {k: v for k, v in sub_results.items() if k in self.outputs}
+        await self._broadcast_outputs(broadcast)
 
         logger.info(f"[SubDag] '{self.name}': execution completed.")
 
 
 def create_sub_dag_op(
-    yaml_path: str,
+    yaml_path: Union[str, Path],
     op_name: str = "SubDagOp",
     op_registry: Optional[dict[str, type[BaseOp]]] = None,
 ) -> type[SubDagOp]:
@@ -124,7 +124,8 @@ def create_sub_dag_op(
     """
     from ..engine.build import _load_yaml
 
-    spec = _load_yaml(yaml_path)
+    yaml_path = Path(yaml_path)
+    spec = _load_yaml(str(yaml_path))
 
     # 从 YAML spec 推导 INPUTS
     inputs_spec: dict[str, dict[str, Any]] = {}

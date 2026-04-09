@@ -70,7 +70,7 @@ nodes:
       result: { type: object }
 
   simgaclipstacker:
-    op: SigmaClippingStackerOp
+    op: sigma_clip.yaml
     inputs:
       data: data_loader.result
     configs:
