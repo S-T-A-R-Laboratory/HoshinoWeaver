@@ -126,6 +126,15 @@ class BaseOp(object):
             except:
                 pass
 
+    async def _run_cpu(self, fn, *args, **kwargs):
+        """将 CPU 密集型同步函数卸载到线程池执行，释放事件循环。
+
+        利用 numpy C 扩展释放 GIL 的特性，使 CPU 计算与 I/O 操作可以重叠执行。
+
+        设计为统一入口：后续阶段可无缝替换为 ProcessPoolExecutor 以实现真正多核并行。
+        """
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
     def __str__(self):
         return self.__class__.__name__
 
