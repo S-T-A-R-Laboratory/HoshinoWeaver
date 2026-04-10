@@ -24,7 +24,7 @@ configs:
   loader_configs: { type: dict, default: {} }
 nodes:
   weight_generator:
-    op: generate_weight
+    op: WeightGeneratorOp
     inputs:
       sequence: inputs.fnames
     configs:
