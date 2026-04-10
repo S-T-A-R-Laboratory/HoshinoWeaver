@@ -3,6 +3,7 @@ import asyncio
 from loguru import logger
 from ..component.progress import DummyTracker
 from ..component.queue import RichContextQueue, FileCacheQueue, CancellationError, CancellationToken
+from ..component.utils import time_cost_warpper
 
 
 class BaseOp(object):
@@ -13,6 +14,11 @@ class BaseOp(object):
     MAX_SIZE: int = 1
     PROGRESS_DESC: Optional[str] = None  # 非 None 时 execute() 自动创建进度条
     _SENTINEL = object()
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if '_async_execute' in cls.__dict__:
+            cls._async_execute = time_cost_warpper(cls._async_execute)
 
     def __init__(self, name: str):
         self.config: dict[str, RichContextQueue] = {

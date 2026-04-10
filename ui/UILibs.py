@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QLabel, QTreeWidget, QAbstractItemView, QMenu, QTr
 from PySide6.QtWidgets import QComboBox, QDialogButtonBox, QVBoxLayout, QPushButton, QFrame
 from PySide6.QtGui import QAction, QPixmap, QWheelEvent, QMouseEvent, QPainter, QImage, QColor, QBrush, QPolygon, QCursor
 
-from hoshicore.ezlib.progressbar import QueueProgressbar
+from hoshicore.component.progress import DummyTracker
 import rawpy
 
 class imgDisplayQFrame(QFrame):
@@ -284,28 +284,50 @@ class ImgTreeWidget(QTreeWidget):
             else:
                 pass
 
-class qtProgressBar(QueueProgressbar,QObject):
-    progress_signal = Signal(int)
+class QtSignalTracker(DummyTracker, QObject):
+    """将 DAG 多节点进度聚合为单一百分比，通过 Qt Signal 通知 UI。"""
+    progress_updated = Signal(int, str)   # (percent, active_op_desc)
+    finished = Signal()
 
-    def __init__(self, tot_num: int, desc: str = "") -> None:
+    def __init__(self):
         QObject.__init__(self)
-        QueueProgressbar.__init__(self, tot_num, desc)
+        DummyTracker.__init__(self)
+        self._bars: dict[str, dict] = {}
+        self._total_items: int = 0
+        self._completed_items: int = 0
 
-    def reset(self, tot_num: Optional[int] = 0, desc: str = "") -> None:
-        super().reset(tot_num, desc)
-        self.progress_signal.emit(0)
+    def create_bar(self, name, total, desc=None, unit="imgs"):
+        if name in self._bars:
+            old = self._bars[name]
+            self._total_items -= old['total']
+            self._completed_items -= old['progress']
+        self._bars[name] = {'total': total, 'progress': 0, 'desc': desc or name}
+        self._total_items += total
+        self._emit()
 
-    def update(self):
-        val = round(self.progress/self.tot_num*100,0)
-        if val == 100:
-            val = 99.9
-        self.progress_signal.emit(val)
-        
-        # QApplication.processEvents()
-        # time.sleep(1)
+    def update(self, name, n=1):
+        bar = self._bars.get(name)
+        if bar:
+            bar['progress'] += n
+            self._completed_items += n
+            self._emit()
 
-    def finish(self):
-        self.progress_signal.emit(100)
+    def close_bar(self, name):
+        pass  # 保留已完成的贡献，不减进度
+
+    def close_all(self):
+        self._bars.clear()
+        self._total_items = 0
+        self._completed_items = 0
+        self.finished.emit()
+
+    def reset_bar(self, name, total, desc=None):
+        self.create_bar(name, total, desc)
+
+    def _emit(self):
+        pct = min(int(self._completed_items / self._total_items * 100), 99) if self._total_items > 0 else 0
+        active = next((b['desc'] for b in self._bars.values() if b['progress'] < b['total']), "")
+        self.progress_updated.emit(pct, active)
 
 class uQDialog(QDialog):
     def __init__(self, parent=None):

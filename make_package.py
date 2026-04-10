@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from loguru import logger
 
-from ezlib.utils import VERSION, SOFTWARE_NAME, time_cost_warpper
+from hoshicore.component.utils import VERSION, SOFTWARE_NAME, time_cost_warpper
 
 # alias
 join_path = os.path.join
@@ -22,6 +22,7 @@ GUI_FILENAME = "HoshinoWeaver desktop"
 
 logger.remove()
 logger.add(sys.stdout, level="INFO")
+
 
 @time_cost_warpper
 def nuitka_compile(header, options, target):
@@ -195,7 +196,7 @@ if (not platform.startswith("macos")) or args.debug_gui:
     print("Merging...", end="", flush=True)
     shutil.move(
         join_path(compile_path, f"{CLI_FILENAME}.dist",
-                f"{CLI_FILENAME}{exec_suffix}"),
+                  f"{CLI_FILENAME}{exec_suffix}"),
         join_path(compile_path, f"{GUI_FILENAME}.dist"))
     shutil.rmtree(join_path(compile_path, f"{CLI_FILENAME}.dist"))
     print("Done.")
@@ -215,4 +216,5 @@ if apply_zip:
         file_to_zip(join_path(compile_path, FINAL_DIR_NAME), zipfile_op)
     print("Done.")
 
-logger.info(f"Package script finished. Total time cost {(time.time()-t0):.2f}s.")
+logger.info(
+    f"Package script finished. Total time cost {(time.time()-t0):.2f}s.")

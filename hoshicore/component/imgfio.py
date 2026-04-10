@@ -175,3 +175,37 @@ def analyze_attr(attr_list: list[dict], attr_name: str) -> dict:
                 mode_num=sorted_attr_count[0][1],
                 other_dist=sorted_attr_count[1:],
                 other_fname_list=other_fname_list)
+
+
+
+@time_cost_warpper
+def scan_all_exif(fname_list: list[str]) -> list:
+    """
+    快速检查输入，并给出一系列可能会导致叠加任务无法正常进行的风险提示。
+    
+    目前有后缀名检查suffix，图像尺寸检查size_str，位数检查bits。位数检查有一定局限性，tiff不支持（pillow的底层问题，对tiff支持弱）
+
+    由于部分数值不一定能够读取到，不推荐作为强制卡控。
+
+    返回一个dict的list。每个dict包含5个字段：
+    
+    1. 检查的属性名 attr_name (str)
+    2. 该属性最主要的模式 mode_attr (str)
+    3. 主要模式的数量 mode_num (int)
+    4. 其他模式的及数量分布 other_dist (Optional[list[tuple[str,int]]])
+    5. 非主要模式的文件名列表 other_fname_list (Optional[list])
+
+    Args:
+        fname_list (list[str]): 文件名列表
+
+    Returns:
+        list[dict]: 返回风险提示列表。
+    """
+    attr_list = list(map(get_img_attrs, fname_list))
+    # 后缀名检查
+    suffix_dict = analyze_attr(attr_list, "suffix")
+    # 尺寸检查
+    size_dict = analyze_attr(attr_list, "size")
+    # 位数检查
+    bits_dict = analyze_attr(attr_list, "bits")
+    return [suffix_dict, size_dict, bits_dict]
