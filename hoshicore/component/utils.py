@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import multiprocessing as mp
 import sys
 import time
@@ -164,23 +165,32 @@ def get_resize(opt: Optional[str], raw_wh: Union[list, tuple]):
 
 def time_cost_warpper(func: Callable) -> Callable:
     """A decorator that supports to record time cost of the given function.
-
-    Args:
-        func (Callable): _description_
-
-    Returns:
-        Callable: _description_
+    Supports both sync and async functions.
     """
+
+    def _log_cost(t0: float, args):
+        cls_name = ""
+        if args and hasattr(args[0], func.__name__):
+            cls_name = args[0].__class__.__name__ + "."
+        logger.info(
+            f"{cls_name}{func.__name__} time cost: {(time.time()-t0):.2f}s.")
+
+    if asyncio.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            t0 = time.time()
+            res = await func(*args, **kwargs)
+            _log_cost(t0, args)
+            return res
+
+        return async_wrapper
 
     @wraps(func)
     def do_func(*args, **kwargs):
         t0 = time.time()
         res = func(*args, **kwargs)
-        cls_name = ""
-        if hasattr(args[0], func.__name__):
-            cls_name = args[0].__class__.__name__ + "."
-        logger.info(
-            f"{cls_name}{func.__name__} time cost: {(time.time()-t0):.2f}s.")
+        _log_cost(t0, args)
         return res
 
     return do_func

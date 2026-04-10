@@ -23,7 +23,7 @@ from typing import Any, Awaitable, Optional, Sequence
 
 from loguru import logger
 
-from ..component.progress import ProgressTracker
+from ..component.progress import DummyTracker, ProgressTracker
 from ..component.queue import RichContextQueue
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
@@ -354,6 +354,7 @@ async def run_dag(
     op_registry: Optional[dict[str, type[BaseOp]]] = None,
     progress: bool = True,
     dag_search_paths: Optional[list[Path]] = None,
+    tracker: Optional[DummyTracker] = None,
 ) -> dict[str, Any]:
     """
     端到端执行 DAG：实例化 → 布线 → 并发执行 → 收集结果。
@@ -363,9 +364,10 @@ async def run_dag(
         global_inputs:    全局输入数据 (name → Sequence)。
         global_configs:   全局配置数据 (name → value)。
         op_registry:      Op 注册表，None 使用默认注册表。
-        progress:         是否显示 tqdm 进度条。
+        progress:         是否显示 tqdm 进度条（外部传入 tracker 时忽略）。
         dag_search_paths: 子图 YAML 搜索路径。None 使用 DEFAULT_DAG_SEARCH_PATHS。
                           传入后会覆盖模块级默认值（影响本次执行及嵌套子图）。
+        tracker:          外部注入的进度追踪器。传入时优先使用，忽略 progress 参数。
 
     Returns:
         dict: 全局输出 name → value 的映射。
@@ -377,9 +379,11 @@ async def run_dag(
                                                        global_configs,
                                                        op_registry)
 
-    # 注入进度追踪器（progress=False 时保持 DummyTracker 缺省值）
-    tracker: Optional[ProgressTracker] = None
-    if progress:
+    # 注入进度追踪器：外部 tracker 优先，否则按 progress 参数创建 tqdm tracker
+    if tracker is not None:
+        for op in ops:
+            op.tracker = tracker
+    elif progress:
         tracker = ProgressTracker()
         for op in ops:
             op.tracker = tracker
@@ -418,6 +422,7 @@ async def run_from_yaml(
     op_registry: Optional[dict[str, type[BaseOp]]] = None,
     progress: bool = True,
     dag_search_paths: Optional[list[Path]] = None,
+    tracker: Optional[DummyTracker] = None,
 ) -> dict[str, Any]:
     """
     便捷入口：从 YAML 文件加载、校验、并端到端执行 DAG。
@@ -433,6 +438,7 @@ async def run_from_yaml(
     Args:
         dag_search_paths: 子图 YAML 搜索路径列表。None 使用默认值
                           [hoshicore/dag/]。用户可追加自定义目录。
+        tracker:          外部注入的进度追踪器。传入时优先使用，忽略 progress 参数。
     """
     from .build import _load_yaml, validate_and_build_order
 
@@ -443,7 +449,8 @@ async def run_from_yaml(
                          global_configs,
                          op_registry,
                          progress=progress,
-                         dag_search_paths=dag_search_paths)
+                         dag_search_paths=dag_search_paths,
+                         tracker=tracker)
 
 
 # ────────────────────────────────────────────────────────────────

@@ -17,10 +17,10 @@ from PySide6.QtCore import Qt, QPoint, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QHeaderView,QTreeWidgetItem, QAbstractItemView, QDialog
 from PySide6.QtGui import QFont, QMouseEvent, QCursor, QColor, QIcon
 
-from hoshicore.ezlib.utils import ORG_NAME, SOFTWARE_NAME, VERSION
+from hoshicore.component.utils import ORG_NAME, SOFTWARE_NAME, VERSION
 from ui.UI import Ui_HNW,ui_choose_mode,Ui_guide
 from ui.UIUtils import SlotHandler
-from ui.UILibs import qtProgressBar,borderFrame
+from ui.UILibs import borderFrame
 
 class HNW_guide(QDialog, Ui_guide):
     def __init__(self, callback, display_always_flag=True,parent=None):
@@ -591,7 +591,6 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # 进度条定义
         self.star_trail_process_bar.setValue(0)
-        self.qtbar_star_trail = qtProgressBar(tot_num=0)
 
         self._preview_img = ['', None]
 
@@ -788,9 +787,6 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 开始按钮
         self.btn_star_trail_start.clicked.connect(
             self.slot_handler.star_trail_start_process)
-        # 进度条
-        self.qtbar_star_trail.progress_signal.connect(
-            self.slot_handler.update_progress_bar)
 
         # 分隔条拖动 先不用了
         # self.splitter.splitterMoved.connect(self.img_view_label.setImage)

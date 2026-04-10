@@ -5,22 +5,18 @@
 import re
 import asyncio
 from qasync import asyncSlot
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from PySide6.QtCore import Slot,QSize, Qt, QPoint, QSize
 from PySide6.QtWidgets import QFileDialog, QMainWindow,QDialog,QTreeWidgetItem,QPushButton,QHBoxLayout,QWidget,QMenu
 from PySide6.QtGui import QIcon, QCursor, QBrush, QColor
 
 # 导入自定义组件
-from ui.UILibs import ClickableLabel,exifCheckDialog,CategoryDialog
+from ui.UILibs import ClickableLabel,exifCheckDialog,CategoryDialog,QtSignalTracker
 # 导入图标资源
 from ui import resource
 
 # 导入Core接口
-from hoshicore.ezlib import launch
-
-from hoshicore.ezlib.progressbar import QueueProgressbar
-from hoshicore.ezlib import scan_all_exif
+from hoshicore.engine.wiring import run_from_yaml
+from hoshicore.component.imgfio import scan_all_exif
 
 class SlotHandler(QMainWindow):
     # 文件检查约束级别：normal-异常情况仅提示；strong-异常情况不允许叠加
@@ -491,16 +487,15 @@ class SlotHandler(QMainWindow):
         self.window.jpg_level.setText(str(self.window._jpg_quality))
         self.detect_status()
 
-    @Slot()
-    def update_progress_bar(self, value):
+    @Slot(int, str)
+    def update_progress_bar(self, percent, desc=''):
         '''
         更新进度条的槽函数
         '''
-        self.window.star_trail_process_bar.setValue(value)
-        if value < 100:
-            self.window._status_n['tips'] = f'当前进度{value}%，请勿操作'
+        self.window.star_trail_process_bar.setValue(percent)
+        if percent < 100:
+            self.window._status_n['tips'] = desc or f'当前进度{percent}%，请勿操作'
             self.window._status_n['status'] = f'处理中'
-
         else:
             self.window._status_n['tips'] = f'已完成~(文件路径：{self.window._output_file_path_cache[self.window._output_file_type]})'
             self.window._status_n['status'] = f'任务完成'
@@ -858,79 +853,70 @@ class SlotHandler(QMainWindow):
                 self.window._task = asyncio.ensure_future(self.start_task())
 
     @asyncSlot()
-    async def start_task(self):    
+    async def start_task(self):
         # 清空预览
         self.view_file()
         # 设置界面不可操作
         self.set_widget_handleable(handleable = False, task_type='star_trail')
         self.window._status = 'running'
 
-        self.window.qtbar_star_trail.reset(len(self.window._input_files['亮场']))
-        # 调用叠加api
-        loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor() as pool:
-            partial_func = partial(
-                launch, 
-                img_files = self.window._input_files['亮场'],
-                mode = self.window._mode,
-                output_fname = self.window._output_file_path,
-                fin_ratio = self.window._fade_in/100,
-                fout_ratio = self.window._fade_out/100,
-                int_weight = self.window._int_weight,
-                resize = None,
-                output_bits = self.window._output_bits,
-                ground_mask = self.window._input_files['蒙版'][0] if len(self.window._input_files['蒙版'])>1 and self.window._mask_able else None,
-                filter_list=None,
-                debug_mode = True,
-                rej_high = self.window._rej_high,
-                rej_low = self.window._rej_low,
-                max_iter = self.window._max_iter,
-                png_compressing = self.window._png_compressing,
-                jpg_quality = self.window._jpg_quality,
-                progressbar = self.window.qtbar_star_trail
-            )
-            star_trail_res = await loop.run_in_executor(pool,partial_func)
+        # 创建 Qt 进度追踪器并连接信号
+        qt_tracker = QtSignalTracker()
+        qt_tracker.progress_updated.connect(self.update_progress_bar)
+        qt_tracker.finished.connect(lambda: self.update_progress_bar(100, ''))
 
-            # temp = {
-            #     'img_files' : self.window._input_files['亮场'],
-            #     'mode' : self.window._mode,
-            #     'output_fname' : self.window._output_file_path,
-            #     'fin_ratio' : self.window._fade_in/100,
-            #     'fout_ratio' : self.window._fade_out/100,
-            #     'int_weight' : self.window._int_weight,
-            #     'output_bits' : self.window._output_bits,
-            #     'ground_mask' : self.window._input_files['蒙版'][0] if len(self.window._input_files['蒙版'])>1 and self.window._mask_able else None,
-            #     'rej_high' : self.window._rej_high,
-            #     'rej_low' : self.window._rej_low,
-            #     'max_iter' : self.window._max_iter,
-            #     'png_compressing' : self.window._png_compressing,
-            #     'jpg_quality' : self.window._jpg_quality
-            # }
-            # print(temp)
-            # time.sleep(10)
-            # star_trail_res = {'status':True}
-            
-            # 解除界面控件禁用
+        # 根据 mode 选择 DAG YAML 和构造参数
+        mode = self.window._mode
+        BITS_MAP = {'8': 'uint8', '16': 'uint16', '32': 'uint32'}
+        output_dtype = BITS_MAP.get(str(self.window._output_bits), 'uint8')
+
+        global_inputs = {"fnames": self.window._input_files['亮场']}
+        global_configs = {
+            "output_filename": self.window._output_file_path,
+            "output_dtype": output_dtype,
+            "int_weight": self.window._int_weight,
+        }
+
+        if mode == 'max':
+            yaml_path = "./hoshicore/dag/fifo_startrail.yaml"
+            global_configs["fin"] = self.window._fade_in / 100
+            global_configs["fout"] = self.window._fade_out / 100
+        elif mode == 'mean':
+            yaml_path = "./hoshicore/dag/mean_only.yaml"
+        elif mode == 'sigmaclip-mean':
+            yaml_path = "./hoshicore/dag/sigma_clip.yaml"
+            global_configs["rej_high"] = self.window._rej_high
+            global_configs["rej_low"] = self.window._rej_low
+            global_configs["max_iter"] = self.window._max_iter
+        elif mode == 'mask-mix':
+            yaml_path = "./hoshicore/dag/fix_startrail.yaml"
+            global_configs["fin"] = self.window._fade_in / 100
+            global_configs["fout"] = self.window._fade_out / 100
+            global_configs["rej_high"] = self.window._rej_high
+            global_configs["rej_low"] = self.window._rej_low
+            global_configs["max_iter"] = self.window._max_iter
+        else:
+            yaml_path = "./hoshicore/dag/fifo_startrail.yaml"
+
+        try:
+            await run_from_yaml(
+                yaml_path, global_inputs, global_configs,
+                tracker=qt_tracker, progress=False)
+
+            # 执行成功
+            self.view_file(self.window._output_file_path)
+            self.window._status = 'successed'
+            self.window._status_n['status'] = '任务完成'
+            self.window._status_n['tips_2'] = ''
+        except Exception as e:
+            self.window.status_text.setStyleSheet("#status_text {color:rgba(200,0,0,200)}")
+            self.window.star_trial_tips.setStyleSheet("#star_trial_tips {color:rgba(200,0,0,200)}")
+            self.view_file(file_path = '')
+            self.window._status = 'failed'
+            self.window._status_n['tips_2'] = ''
+            self.window._status_n['status'] = '任务失败'
+        finally:
             self.set_widget_handleable(handleable = True)
-            
-            if star_trail_res['status'] is True:
-                # 执行成功时 修改tips为已完成，修改状态为已完成，展示图片
-                # self.display_star_trail_tips('已完成！',color='green')
-                self.view_file(self.window._output_file_path)
-                self.window._status = 'successed'
-                self.window._status_n['status'] = '任务完成'
-                self.window._status_n['tips_2'] = ''
-                self.window.qtbar_star_trail.finish()
-            else:
-                self.window.status_text.setStyleSheet("#status_text {color:rgba(200,0,0,200)}")
-                self.window.star_trial_tips.setStyleSheet("#star_trial_tips {color:rgba(200,0,0,200)}")
-                # 执行成功时 修改tips为失败，修改状态为失败，不展示任何图像
-                # self.display_star_trail_tips('叠加失败！',color='red')
-                self.view_file(file_path = '')
-                self.window._status = 'failed'
-                self.window._status_n['tips_2'] = ''
-                self.window._status_n['status'] = '任务失败'
-            
             self.update_status_display()
             
 
