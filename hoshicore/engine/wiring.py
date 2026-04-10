@@ -287,7 +287,7 @@ def instantiate_and_wire(
                         f"({op_inst.__class__.__name__}) is not wired in YAML "
                         f"— node may hang in pre_execute().")
                     logger.error(err_msg)
-                    raise err_msg
+                    raise ValueError(err_msg)
 
     # ══════ 3) 校验全局数据齐备 ══════
     missing_inputs = [n for n in seq_targets if n not in global_inputs]

@@ -78,7 +78,9 @@ class SubDagOp(BaseOp):
             sub_global_inputs,
             sub_global_configs,
         )
-
+        # 向所有子op同步自己的tracker
+        for op in sub_ops:
+            op.tracker = self.tracker
         logger.info(
             f"[SubDag] '{self.name}': {len(sub_ops)} nodes, "
             f"{len(sub_feeders)} feeders, {len(sub_output_queues)} outputs")
@@ -135,7 +137,7 @@ def create_sub_dag_op(
     for name, entry in spec.get("inputs", {}).items():
         inputs_spec[name] = {
             "type": entry.get("type", "sequence"),
-            "required": True,
+            "required": entry.get("required", True),
         }
 
     # 从 YAML spec 推导 CONFIGS

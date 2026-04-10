@@ -4,8 +4,7 @@ version: "1"
 # ── 全局输入 ──
 # 与原 SigmaClippingStackerOp 的 INPUTS 对齐
 inputs:
-  data: { type: sequence, required: true }
-  weight: { type: sequence, required: false }
+  data: { type: sequence}
 
 # ── 全局配置 ──
 # 与原 SigmaClippingStackerOp 的 CONFIGS 对齐
@@ -18,7 +17,7 @@ configs:
 
 # ── 节点 ──
 #
-#  inputs.data ──────┬──► mean_stacker ──► statistics ──┐
+#  inputs.data ──────┬──► mean_stacker ──► statistics ───┐
 #                    │                                   ├──► sigma_clip_iter ──► result / statistics
 #                    └──► disk_buffer  ──► buffer_handle─┘
 #  inputs.weight ────┤
@@ -29,7 +28,6 @@ nodes:
     op: MeanStackerOp
     inputs:
       data: inputs.data
-      weight: inputs.weight
     configs:
       int_weight: configs.int_weight
     outputs:
@@ -40,7 +38,6 @@ nodes:
     op: DiskBufferWriterOp
     inputs:
       data: inputs.data
-      weight: inputs.weight
     outputs:
       buffer_handle: { type: image }
 

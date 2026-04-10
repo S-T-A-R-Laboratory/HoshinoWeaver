@@ -176,6 +176,7 @@ class SigmaClipIteratorOp(BaseOp):
         early_converge_ratio: float = configs['early_converge_ratio']
 
         try:
+            fgp_total.inplace_calc = False
             ref_fgp = fgp_total
             last_n = ref_fgp.n.copy()
             accepted = None
@@ -223,6 +224,7 @@ class SigmaClipIteratorOp(BaseOp):
 
             # 输出
             result = FloatImage(accepted.mu, dtype=accepted.source_dtype)
+            accepted.inplace_calc = False  # 输出前关闭 inplace_calc，避免下游误用导致数据被修改
             await self._broadcast_outputs({
                 "result": result,
                 "statistics": accepted,

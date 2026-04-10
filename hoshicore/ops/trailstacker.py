@@ -101,6 +101,7 @@ class TrailStackerOp(BaseOp):
             # 输出结果
             outputs: dict[str, Any] = {"result": merger.merged_image}
             if "statistics" in self.OUTPUTS:
+                merger.result.inplace_calc = False  # 输出前关闭 inplace_calc，避免下游误用导致数据被修改
                 outputs["statistics"] = merger.result
             await self._broadcast_outputs(outputs)
 
