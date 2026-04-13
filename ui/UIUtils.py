@@ -865,6 +865,9 @@ class SlotHandler(QMainWindow):
         qt_tracker.progress_updated.connect(self.update_progress_bar)
         qt_tracker.finished.connect(lambda: self.update_progress_bar(100, ''))
 
+        # 创建取消事件，供 cancel_task 触发
+        self.window._cancel_event = asyncio.Event()
+
         # 根据 mode 选择 DAG YAML 和构造参数
         mode = self.window._mode
         BITS_MAP = {'8': 'uint8', '16': 'uint16', '32': 'uint32'}
@@ -901,13 +904,17 @@ class SlotHandler(QMainWindow):
         try:
             await run_from_yaml(
                 yaml_path, global_inputs, global_configs,
-                tracker=qt_tracker, progress=False)
+                tracker=qt_tracker, progress=False,
+                cancel_event=self.window._cancel_event)
 
             # 执行成功
             self.view_file(self.window._output_file_path)
             self.window._status = 'successed'
             self.window._status_n['status'] = '任务完成'
             self.window._status_n['tips_2'] = ''
+        except asyncio.CancelledError:
+            # 用户主动取消 — cancel_task() 已处理 UI 状态
+            pass
         except Exception as e:
             self.window.status_text.setStyleSheet("#status_text {color:rgba(200,0,0,200)}")
             self.window.star_trial_tips.setStyleSheet("#star_trial_tips {color:rgba(200,0,0,200)}")
@@ -923,9 +930,12 @@ class SlotHandler(QMainWindow):
     @Slot()
     def cancel_task(self):
         if self.window._status == 'running':
-            # 取消任务
+            # 触发协作式取消：Op 在下一个 _run_cpu 检查点退出
+            if hasattr(self.window, '_cancel_event'):
+                self.window._cancel_event.set()
+            # 取消 asyncio task 以打断 gather 层面的 await
             self.window._task.cancel()
-            # 取消任务后 修改tips为已停止，修改状态为cancelled，不展示任何图像，恢复按钮为可点击，修改开始按钮为“开始叠加”
+            # 取消任务后 修改tips为已停止，修改状态为cancelled，不展示任何图像，恢复按钮为可点击，修改开始按钮为"开始叠加"
             self.display_star_trail_tips('已停止叠加！',color='red')
             self.view_file(file_path = '')
             self.window._status = 'cancelled'

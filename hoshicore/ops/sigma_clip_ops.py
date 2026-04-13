@@ -32,6 +32,7 @@ from ..component.merger import MeanMerger, SigmaClippingMerger
 from ..component.tagged_image import FloatImage
 from ..component.utils import FastGaussianParam
 from ..engine.registry import register_op
+from ..component.queue import StreamExhausted
 from .base import BaseOp
 
 
@@ -80,7 +81,7 @@ class DiskBufferWriterOp(BaseOp):
                     upper = self._async_convert_inputs()
                     cur_img = await upper['data']
                     weight = (await upper['weight']) if has_weight else None
-                except StopIteration:
+                except StreamExhausted:
                     logger.warning(
                         f"{self.name}: upstream ended at {i}/{tot_num}")
                     break
