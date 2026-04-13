@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Optional, Sequence
 from loguru import logger
 
 from ..component.progress import DummyTracker, ProgressTracker
-from ..component.queue import RichContextQueue
+from ..component.queue import RichContextQueue, StreamExhausted
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
@@ -128,9 +128,18 @@ async def _bridge_queue(
     logger.info(f"[Bridge] '{name}': {length} items → {len(targets)} queue(s)")
     for queue in targets:
         await queue.set_length(length)
-    for _ in range(length):
-        item = await source.get()
-        await asyncio.gather(*(q.put(item) for q in targets))
+    if length is not None:
+        for _ in range(length):
+            item = await source.get()
+            await asyncio.gather(*(q.put(item) for q in targets))
+    else:
+        # sentinel 驱动：转发直到 StreamExhausted
+        while True:
+            try:
+                item = await source.get()
+            except StreamExhausted:
+                break
+            await asyncio.gather(*(q.put(item) for q in targets))
 
 
 # ────────────────────────────────────────────────────────────────
@@ -337,6 +346,9 @@ def instantiate_and_wire(
             logger.debug(
                 f"Output '{out_name}' ← {provider_node}.{output_name}")
 
+    # ══════ 6) 静态检测变长源冲突 ══════
+    _check_variable_source_conflicts(dag, instances)
+
     logger.info(f"DAG wired: {len(instances)} node(s), "
                 f"{len(feeders)} feeder(s), {len(output_queues)} output(s)")
     return list(instances.values()), feeders, output_queues
@@ -355,6 +367,7 @@ async def run_dag(
     progress: bool = True,
     dag_search_paths: Optional[list[Path]] = None,
     tracker: Optional[DummyTracker] = None,
+    cancel_event: Optional[asyncio.Event] = None,
 ) -> dict[str, Any]:
     """
     端到端执行 DAG：实例化 → 布线 → 并发执行 → 收集结果。
@@ -368,6 +381,7 @@ async def run_dag(
         dag_search_paths: 子图 YAML 搜索路径。None 使用 DEFAULT_DAG_SEARCH_PATHS。
                           传入后会覆盖模块级默认值（影响本次执行及嵌套子图）。
         tracker:          外部注入的进度追踪器。传入时优先使用，忽略 progress 参数。
+        cancel_event:     外部取消事件。set() 后 Op 在下一个 _run_cpu 检查点退出。
 
     Returns:
         dict: 全局输出 name → value 的映射。
@@ -390,6 +404,12 @@ async def run_dag(
 
     executor = DAGExecutor(ops)
 
+    # 注入取消事件：外部传入优先，否则使用 executor 自身的 cancel_event
+    if cancel_event is not None:
+        executor.cancel_event = cancel_event
+    for op in ops:
+        op._cancel_event = executor.cancel_event
+
     logger.info(f"DAG execution starting ({len(ops)} nodes)...")
 
     # 结果收集协程 —— 必须与 executor 并发运行。
@@ -404,11 +424,15 @@ async def run_dag(
         for name, queue in output_queues.items():
             results[name] = await queue.get()
 
-    # Feeders、Executor、结果收集 三者并发运行
-    await asyncio.gather(*feeders, executor.execute(), _collect_outputs())
-
-    if tracker is not None:
-        tracker.close_all()
+    try:
+        # Feeders、Executor、结果收集 三者并发运行
+        await asyncio.gather(*feeders, executor.execute(), _collect_outputs())
+    except asyncio.CancelledError:
+        logger.info("DAG cancelled by external request")
+        raise
+    finally:
+        if tracker is not None:
+            tracker.close_all()
 
     logger.info("DAG execution completed. Results collected.")
     return results
@@ -423,6 +447,7 @@ async def run_from_yaml(
     progress: bool = True,
     dag_search_paths: Optional[list[Path]] = None,
     tracker: Optional[DummyTracker] = None,
+    cancel_event: Optional[asyncio.Event] = None,
 ) -> dict[str, Any]:
     """
     便捷入口：从 YAML 文件加载、校验、并端到端执行 DAG。
@@ -439,6 +464,7 @@ async def run_from_yaml(
         dag_search_paths: 子图 YAML 搜索路径列表。None 使用默认值
                           [hoshicore/dag/]。用户可追加自定义目录。
         tracker:          外部注入的进度追踪器。传入时优先使用，忽略 progress 参数。
+        cancel_event:     外部取消事件。set() 后 Op 在下一个检查点退出。
     """
     from .build import _load_yaml, validate_and_build_order
 
@@ -450,7 +476,8 @@ async def run_from_yaml(
                          op_registry,
                          progress=progress,
                          dag_search_paths=dag_search_paths,
-                         tracker=tracker)
+                         tracker=tracker,
+                         cancel_event=cancel_event)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -480,3 +507,81 @@ def _resolve_configs(
         if name not in resolved:
             resolved[name] = value
     return resolved
+
+
+def _check_variable_source_conflicts(
+    dag: ValidatedDag,
+    instances: dict[str, BaseOp],
+) -> None:
+    """静态检测变长源冲突：不同 VARIABLE_OUTPUT 源的序列输出汇入同一节点时报错。
+
+    沿拓扑序为每个 (node, output_port) 标记其变长源：
+        - None: 固定长度
+        - str:  变长源节点名（VARIABLE_OUTPUT=True 的节点）
+
+    传播规则：
+        - VARIABLE_OUTPUT 节点：自身即变长源
+        - 普通节点：继承上游唯一变长源（若有）
+        - 多个不同变长源汇入 → ValueError
+        - 固定长度 + 变长源混合 → ValueError
+    """
+    nodes_spec = dag.nodes
+    # (provider_node, output_port) → 变长源节点名 or None
+    port_var_source: dict[tuple[str, str], Optional[str]] = {}
+
+    for node_name in dag.exec_order:
+        op_inst = instances[node_name]
+        node_spec = nodes_spec[node_name]
+
+        # ── 收集本节点序列输入的变长源 ──
+        input_var_sources: set[str] = set()
+        has_fixed_seq = False
+
+        for loc, src in _iter_node_src_links(node_spec):
+            section, arg_name = loc.split(".", 1)
+            if section != "inputs":
+                continue
+            if op_inst.INPUTS.get(arg_name, {}).get("type") != "sequence":
+                continue
+
+            parsed = _parse_link(src)
+            if parsed[0] == "node":
+                provider_node, output_name = parsed[1], parsed[2]
+                src_var = port_var_source.get((provider_node, output_name))
+                if src_var is not None:
+                    input_var_sources.add(src_var)
+                else:
+                    has_fixed_seq = True
+            else:
+                # global inputs → 固定长度
+                has_fixed_seq = True
+
+        # ── 冲突检测 1：多个不同变长源 ──
+        if len(input_var_sources) > 1:
+            raise ValueError(
+                f"Node '{node_name}' ({op_inst.__class__.__name__}) receives "
+                f"sequence inputs from multiple variable-length sources: "
+                f"{sorted(input_var_sources)}. "
+                f"Use FilterGate pattern to align sequences from a single source."
+            )
+
+        # ── 冲突检测 2：固定 + 变长混合 ──
+        if has_fixed_seq and input_var_sources:
+            raise ValueError(
+                f"Node '{node_name}' ({op_inst.__class__.__name__}) mixes "
+                f"fixed-length and variable-length sequence inputs "
+                f"(variable source: {next(iter(input_var_sources))}). "
+                f"Use FilterGate pattern to align sequences before merging."
+            )
+
+        # ── 确定本节点序列输出的变长源 ──
+        if op_inst.VARIABLE_OUTPUT:
+            var_source = node_name
+        elif input_var_sources:
+            var_source = next(iter(input_var_sources))
+        else:
+            var_source = None
+
+        for output_name, output_spec in op_inst.OUTPUTS.items():
+            if output_spec.get("type") == "sequence":
+                port_var_source[(node_name, output_name)] = var_source

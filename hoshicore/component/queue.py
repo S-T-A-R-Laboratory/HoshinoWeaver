@@ -22,6 +22,15 @@ class CancellationError(Exception):
     pass
 
 
+class StreamExhausted(Exception):
+    """队列正常结束信号。
+
+    替代 StopIteration：PEP 479 禁止 StopIteration 从协程中传播
+    （会被包装为 RuntimeError），故使用自定义异常。
+    """
+    pass
+
+
 class CancellationToken:
     """取消令牌：携带异常信息"""
     def __init__(self, error: Exception, source_node: str):
@@ -46,33 +55,38 @@ class RichContextQueue(object):
             await self.queue.put(item)
 
     async def get(self) -> Any:
-        """从队列获取对象，自动处理信号"""
+        """从队列获取对象，自动处理信号。
+
+        信号（SENTINEL / CancellationToken）消费后会无条件回填，
+        确保同一队列的其他并发消费者也能收到终止信号。
+        """
         item = await self.queue.get()
 
         # 检查取消令牌
         if isinstance(item, CancellationToken):
+            self.queue.put_nowait(item)  # 回填，让并发消费者也能收到
             raise CancellationError(
                 f"Upstream node '{item.source_node}' failed: {item.error}"
             ) from item.error
 
         # 检查结束信号
         if item is RichContextQueue._SENTINEL:
-            raise StopIteration("Stream ended normally")
+            self.queue.put_nowait(item)  # 回填，让并发消费者也能收到
+            raise StreamExhausted("Stream ended normally")
 
         return item
     
-    async def set_length(self, length: int):
-        """由生产者设置序列长度"""
+    async def set_length(self, length: Optional[int]):
+        """由生产者设置序列长度。None 表示长度未知（sentinel 驱动）。"""
         async with self._put_lock:
-            if self.length is not None and self.length != length:
+            if self.length is not None and length is not None and self.length != length:
                 raise ValueError(f"Length mismatch: {self.length} vs {length}")
             self.length = length
             self._length_event.set()
-    
-    async def get_length(self) -> int:
-        """消费者等待并获取序列长度"""
+
+    async def get_length(self) -> Optional[int]:
+        """消费者等待并获取序列长度。返回 None 表示长度未知。"""
         await self._length_event.wait()
-        assert self.length is not None, "Null length error (usually not expected to happen)"
         return self.length
 
 

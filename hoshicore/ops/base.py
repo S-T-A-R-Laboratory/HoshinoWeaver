@@ -1,8 +1,9 @@
 from typing import Any, Optional, Sequence, Awaitable, Mapping
 import asyncio
+import itertools
 from loguru import logger
 from ..component.progress import DummyTracker
-from ..component.queue import RichContextQueue, FileCacheQueue, CancellationError, CancellationToken
+from ..component.queue import RichContextQueue, FileCacheQueue, CancellationError, CancellationToken, StreamExhausted
 from ..component.utils import time_cost_warpper
 
 
@@ -12,6 +13,7 @@ class BaseOp(object):
     CONFIGS: dict[str, Any] = {}
     OUTPUTS: dict[str, Any] = {}
     MAX_SIZE: int = 1
+    VARIABLE_OUTPUT: bool = False  # True 时标记为变长输出（Filter 类）
     PROGRESS_DESC: Optional[str] = None  # 非 None 时 execute() 自动创建进度条
     _SENTINEL = object()
 
@@ -36,44 +38,95 @@ class BaseOp(object):
         self.length: Optional[int] = None
         self.name = name
         self.tracker = DummyTracker()
+        self._cancel_event: Optional[asyncio.Event] = None  # 由 wiring 注入
 
     async def pre_execute(self) -> dict[str, Any]:
         """
         该方法在执行器执行之前被调用。
-        通常而言，执行器会等待所有配置数据都准备好，并且确认长度信息已经就绪。
+        等待所有配置数据就绪，确认长度信息就绪，并向下游广播输出长度。
         """
 
-        # 验证所有序列输入等长（跳过未布线的可选输入）
-        input_lengths = {}
+        # ── 1. 收集输入长度（可能含 None）──
+        input_lengths: dict[str, Optional[int]] = {}
         for name, queue in self.inputs.items():
             if not queue.active:
                 continue
             input_lengths[name] = await queue.get_length()
-        seq_lengths = [
-            length for name, length in input_lengths.items()
-            if self.INPUTS[name].get("type") == "sequence"
-        ]
-        if seq_lengths and len(set(seq_lengths)) > 1:
-            raise ValueError(f"Input sequence length mismatch: {seq_lengths}")
 
-        # 向所有输出的序列类队列广播长度
-        self.length = self._infer_output_length(input_lengths)
+        # ── 2. 分类：哪些序列输入长度已知，哪些未知 ──
+        known_seq = {
+            name: length for name, length in input_lengths.items()
+            if self.INPUTS[name].get("type") == "sequence" and length is not None
+        }
+        none_seq = {
+            name: length for name, length in input_lengths.items()
+            if self.INPUTS[name].get("type") == "sequence" and length is None
+        }
+
+        # ── 3. 混合检查（最先执行，阻止 int+None 混合）──
+        if known_seq and none_seq:
+            raise ValueError(
+                f"{self.name}: cannot mix known-length and sentinel-driven "
+                f"sequence inputs — known: {list(known_seq.keys())} "
+                f"(lengths: {list(known_seq.values())}), "
+                f"unknown: {list(none_seq.keys())}. "
+                f"Use FilterGate pattern to align sequences before merging."
+            )
+
+        # ── 4. 等长校验（仅对已知长度）──
+        if len(set(known_seq.values())) > 1:
+            raise ValueError(f"Input sequence length mismatch: {dict(known_seq)}")
+
+        # ── 5. self.length = 输入序列长度（用于迭代）──
+        if known_seq:
+            self.length = next(iter(known_seq.values()))
+        elif none_seq:
+            self.length = None  # 全部 sentinel 驱动
+        else:
+            self.length = None  # 无序列输入（如仅 config 驱动的 Op）
+
+        # ── 6. 输出长度广播 ──
+        output_length = self._infer_output_length(input_lengths)
         for key, queue_list in self.outputs.items():
             if self.OUTPUTS[key].get("type") != "sequence":
                 continue
             for queue in queue_list:
-                await queue.set_length(self.length)
+                await queue.set_length(output_length)
 
-        # 等待配置就绪
+        # ── 7. 等待配置就绪 ──
         return {x: await self.config[x].get() for x in self.config.keys()}
 
-    def _infer_output_length(self, input_lengths: dict[str, int]) -> int:
-        """输出序列长度"""
-        # 默认：如果有序列输入，输出长度等于输入长度
-        seq_lengths = [length for name, length in input_lengths.items()]
-        if seq_lengths:
-            return seq_lengths[0]
-        return 1  # 无序列输入，输出单个结果
+    def _infer_output_length(self, input_lengths: dict[str, Optional[int]]) -> Optional[int]:
+        """推断输出序列长度。
+
+        返回 int: 已知长度，在 pre_execute 中立即广播。
+        返回 None: 长度未知（Filter 类），sentinel 驱动。
+
+        子类可 override 此方法。Filter 类 Op 返回 None 即可。
+        """
+        for name, length in input_lengths.items():
+            if length is not None:
+                return length
+        return None if input_lengths else 1
+
+    def _input_range(self):
+        """返回输入序列迭代范围。
+
+        - self.length is int: range(N)（长度已知，有界迭代）
+        - self.length is None: itertools.count()（sentinel 驱动，无限迭代，
+          配合 except StreamExhausted: break 使用）
+        """
+        if self.length is not None:
+            return range(self.length)
+        return itertools.count()
+
+    async def _set_output_length(self, length: int) -> None:
+        """手动设置输出序列长度（用于 Filter 类 Op 延迟广播场景）。"""
+        for key, queue_list in self.outputs.items():
+            if self.OUTPUTS[key].get("type") != "sequence":
+                continue
+            for queue in queue_list:
+                await queue.set_length(length)
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         raise NotImplementedError("Subclass must implement this method")
@@ -89,6 +142,12 @@ class BaseOp(object):
             # 上游取消：直接传播
             await self._propagate_cancellation_from_upstream()
             raise
+        except asyncio.CancelledError:
+            # 外部取消（如 UI）→ 转化为内部取消语义
+            logger.info(f"{self.name}: cancelled by external request")
+            cancel_err = CancellationError("External cancellation")
+            await self._propagate_cancellation(cancel_err)
+            raise cancel_err
         except Exception as e:
             # 本节点异常：创建取消令牌并传播
             logger.error(f"{self.name} failed: {e}")
@@ -159,7 +218,10 @@ class BaseOp(object):
 
         设计为统一入口：后续阶段可无缝替换为 ProcessPoolExecutor 以实现真正多核并行。
         """
-        return await asyncio.to_thread(fn, *args, **kwargs)
+        result = await asyncio.to_thread(fn, *args, **kwargs)
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            raise CancellationError("Cancelled during CPU execution")
+        return result
 
     def __str__(self):
         return self.__class__.__name__
@@ -190,47 +252,107 @@ class ParallelBaseOp(BaseOp):
             await self._execute_concurrent(configs)
 
     async def _execute_serial(self, configs: dict[str, Any]) -> None:
-        """串行执行"""
-        if self.length is None:
-            raise ValueError("Length is not set")
-        self.tracker.create_bar(self.name, self.length)
-        for i in range(self.length):
+        """串行执行（支持定长和 sentinel 驱动两种模式）"""
+        if self.length is not None:
+            self.tracker.create_bar(self.name, self.length)
+        for i in self._input_range():
+            data = self._async_convert_inputs()
             try:
-                data = self._async_convert_inputs()
-            except StopIteration:
-                logger.warning(f"{self.name}: upstream ended at {i}/{self.length}")
+                result = await self._async_execute_single(data, configs)
+            except StreamExhausted:
+                # sentinel 从 _async_execute_single 内部 await data[key] 时抛出
+                # 清理未 await 的 coroutine，避免 RuntimeWarning
+                for awaitable in data.values():
+                    if hasattr(awaitable, 'close'):
+                        awaitable.close()
                 break
-            result = await self._async_execute_single(data, configs)
-            self.tracker.update(self.name)
+            if self.length is not None:
+                self.tracker.update(self.name)
             await self._broadcast_outputs(result)
-        self.tracker.close_bar(self.name)
+        if self.length is not None:
+            self.tracker.close_bar(self.name)
 
     async def _execute_concurrent(self, configs: dict[str, Any]) -> None:
-        """并发执行：滑动窗口保证输出有序"""
-        if self.length is None:
-            raise ValueError("Length is not set")
-        self.tracker.create_bar(self.name, self.length)
+        """并发执行：滑动窗口保证输出有序。
+
+        支持定长和 sentinel 驱动两种模式：
+        - 定长模式：按 window_size 分批，每批固定数量任务。
+        - sentinel 模式：每批启动 window_size 个任务，遇到 StreamExhausted
+          的任务标记为 None，广播时跳过。批内有任何 sentinel 命中即结束外层循环。
+        """
+        if self.length is not None:
+            self.tracker.create_bar(self.name, self.length)
         window_size = self.WINDOW_SIZE or (self.CONCURRENCY * 2)
         semaphore = asyncio.Semaphore(self.CONCURRENCY)
+        _STOP = object()  # 内部标记：该槽位遇到 sentinel
 
-        for window_start in range(0, self.length, window_size):
-            window_end = min(window_start + window_size, self.length)
-            window_len = window_end - window_start
-            results: list[dict[str, Any]] = [{}] * window_len
+        for window_start in self._input_range():
+            if window_start % window_size != 0:
+                continue  # _input_range 逐步递增，只在窗口边界启动批次
+            if self.length is not None:
+                window_len = min(window_size, self.length - window_start)
+            else:
+                window_len = window_size
+            results: list = [_STOP] * window_len
 
             async def process_item(local_idx: int):
                 async with semaphore:
                     data = self._async_convert_inputs()
-                    result = await self._async_execute_single(data, configs)
+                    try:
+                        result = await self._async_execute_single(data, configs)
+                    except StreamExhausted:
+                        for awaitable in data.values():
+                            if hasattr(awaitable, 'close'):
+                                awaitable.close()
+                        return  # results[local_idx] 保持 _STOP
                     results[local_idx] = result
-                    self.tracker.update(self.name)
+                    if self.length is not None:
+                        self.tracker.update(self.name)
 
             await asyncio.gather(*[process_item(i) for i in range(window_len)])
 
+            has_stop = False
             for result in results:
+                if result is _STOP:
+                    has_stop = True
+                    continue
                 await self._broadcast_outputs(result)
-        self.tracker.close_bar(self.name)
+            if has_stop:
+                break  # 本窗口内有 sentinel → 序列结束
+
+        if self.length is not None:
+            self.tracker.close_bar(self.name)
 
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
                                     configs: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("Subclass must implement this method")
+
+
+class FilterBaseOp(BaseOp):
+    """Filter 类算子基类：输出序列长度不等于输入序列长度。
+
+    子类实现 _async_execute，在循环中选择性地调用 _broadcast_outputs。
+    输出自动标记为 sentinel 驱动（_infer_output_length → None）。
+    wiring 层通过 VARIABLE_OUTPUT 做静态冲突检测。
+
+    典型用法::
+
+        @register_op()
+        class MyFilter(FilterBaseOp):
+            INPUTS = {"data": {"type": "sequence", "required": True}}
+            OUTPUTS = {"result": {"type": "sequence"}}
+
+            async def _async_execute(self, configs):
+                for i in self._input_range():
+                    data = self._async_convert_inputs()
+                    try:
+                        item = await data['data']
+                    except StreamExhausted:
+                        break
+                    if predicate(item):
+                        await self._broadcast_outputs({"result": item})
+    """
+    VARIABLE_OUTPUT = True
+
+    def _infer_output_length(self, input_lengths):
+        return None

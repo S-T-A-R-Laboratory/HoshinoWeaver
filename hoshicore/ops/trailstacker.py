@@ -10,6 +10,7 @@ from ..component.noise_equalization import equalize_noise
 from ..component.tagged_image import FloatImage, align_dtype_pair
 from ..component.utils import FastGaussianParam
 from ..engine.registry import register_op
+from ..component.queue import StreamExhausted
 from .base import BaseOp
 
 
@@ -66,7 +67,7 @@ class TrailStackerOp(BaseOp):
                     cur_img = await upper_stream_data['data']
                     weight = (await upper_stream_data['weight']
                               ) if has_weight else None
-                except StopIteration:
+                except StreamExhausted:
                     logger.warning(
                         f"{self.name}: upstream ended at {i}/{tot_num}")
                     break
