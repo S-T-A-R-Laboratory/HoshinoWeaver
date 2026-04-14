@@ -10,10 +10,13 @@ dtype 级差与 rescale 工具函数。
 """
 from __future__ import annotations
 
+import pickle
 from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
+
+from .ipc_queue import register_shm_transportable
 
 # ── dtype 级差表 ──
 # 级差 = DTYPE_LEVEL[dtype]，两个 dtype 之间每差一级对应 256^(n+1) 的放缩
@@ -116,6 +119,7 @@ def align_dtype_pair(
         return arr_a, rescale_array(arr_b, dtype_b, dtype_a), dtype_a
 
 
+@register_shm_transportable
 @dataclass(slots=True)
 class FloatImage(object):
     """轻量级的Float矩阵包装器，包含原始数据范围dtype。
@@ -133,3 +137,13 @@ class FloatImage(object):
             target_dtype = self.dtype
 
         return rescale_array(self.data, self.dtype, target_dtype)
+
+    def __shm_pack__(self) -> tuple[np.ndarray, bytes]:
+        """ShmTransportable 协议：提取主数组和元数据。"""
+        return self.data, pickle.dumps({"dtype": str(self.dtype)})
+
+    @classmethod
+    def __shm_unpack__(cls, array: np.ndarray, meta: bytes) -> FloatImage:
+        """ShmTransportable 协议：从 shm 数组和元数据重建对象。"""
+        m = pickle.loads(meta)
+        return cls(data=array, dtype=np.dtype(m["dtype"]))

@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Optional, Sequence
 from loguru import logger
 
 from ..component.progress import DummyTracker, ProgressTracker
-from ..component.queue import RichContextQueue, StreamExhausted
+from ..component.queue import BaseQueue, RichContextQueue, StreamExhausted
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
@@ -44,7 +44,12 @@ DEFAULT_DAG_SEARCH_PATHS: list[Path] = [_BUILTIN_DAG_DIR]
 
 
 def set_dag_search_paths(paths: list[Path]) -> None:
-    """覆盖全局 DAG 搜索路径（用于用户自定义子图目录）。"""
+    """覆盖全局 DAG 搜索路径（用于用户自定义子图目录）。
+
+    注意：此函数修改模块级全局变量，非线程安全。
+    同一进程中并发执行多个 DAG 时搜索路径会互相覆盖。
+    当前单用户 CLI 场景无此问题；未来如需并发可改用 contextvars。
+    """
     global DEFAULT_DAG_SEARCH_PATHS
     DEFAULT_DAG_SEARCH_PATHS = [Path(p) for p in paths]
 
@@ -79,7 +84,7 @@ def _resolve_sub_dag_yaml(op_name: str) -> Path:
 async def _feed_sequence(
     name: str,
     data: Sequence[Any],
-    targets: list[RichContextQueue],
+    targets: list[BaseQueue],
 ) -> None:
     """将全局序列输入逐项推送到所有目标队列。
 
@@ -98,7 +103,7 @@ async def _feed_sequence(
 async def _feed_config(
     name: str,
     value: Any,
-    targets: list[RichContextQueue],
+    targets: list[BaseQueue],
 ) -> None:
     """将全局标量配置推送到所有目标队列（每队列推送一次）。"""
     logger.debug(f"[Feeder] Global config '{name}' → {len(targets)} queue(s)")
@@ -108,8 +113,8 @@ async def _feed_config(
 
 async def _bridge_queue(
     name: str,
-    source: RichContextQueue,
-    targets: list[RichContextQueue],
+    source: BaseQueue,
+    targets: list[BaseQueue],
 ) -> None:
     """将上游 RichContextQueue 的数据流式转发到所有目标队列。
 
@@ -140,6 +145,9 @@ async def _bridge_queue(
             except StreamExhausted:
                 break
             await asyncio.gather(*(q.put(item) for q in targets))
+        # 转发 sentinel 到所有 targets，使下游 Op 感知流结束
+        for q in targets:
+            await q.put(BaseQueue._SENTINEL)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -421,8 +429,10 @@ async def run_dag(
     results: dict[str, Any] = {}
 
     async def _collect_outputs():
-        for name, queue in output_queues.items():
+        async def _get_one(name, queue):
             results[name] = await queue.get()
+        await asyncio.gather(
+            *[_get_one(n, q) for n, q in output_queues.items()])
 
     try:
         # Feeders、Executor、结果收集 三者并发运行

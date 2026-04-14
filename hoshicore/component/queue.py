@@ -38,8 +38,30 @@ class CancellationToken:
         self.source_node = source_node
 
 
-class RichContextQueue(object):
-    _SENTINEL = object()  # 正常结束信号
+class BaseQueue:
+    """队列接口基类。RichContextQueue 和 IPCQueue 的公共协议。
+
+    所有 Op 通过此接口与队列交互，不直接依赖具体实现。
+    """
+    _SENTINEL = object()  # 正常结束信号（所有子类共享）
+
+    active: bool
+
+    async def put(self, item: Any) -> None:
+        raise NotImplementedError
+
+    async def get(self) -> Any:
+        raise NotImplementedError
+
+    async def set_length(self, length: Optional[int]) -> None:
+        raise NotImplementedError
+
+    async def get_length(self) -> Optional[int]:
+        raise NotImplementedError
+
+
+class RichContextQueue(BaseQueue):
+    """进程内异步队列，基于 asyncio.Queue。"""
 
     def __init__(self, maxsize: int, **kwargs):
         self.queue = Queue(maxsize=maxsize)
@@ -70,7 +92,7 @@ class RichContextQueue(object):
             ) from item.error
 
         # 检查结束信号
-        if item is RichContextQueue._SENTINEL:
+        if item is BaseQueue._SENTINEL:
             self.queue.put_nowait(item)  # 回填，让并发消费者也能收到
             raise StreamExhausted("Stream ended normally")
 
@@ -135,7 +157,16 @@ class FileCacheQueue(RichContextQueue):
             raise ValueError(f"不支持的序列化器: {self.serializer}")
 
     async def put(self, item: Any) -> None:
-        """将对象放入队列，使用文件缓存"""
+        """将对象放入队列，使用文件缓存。
+
+        信号对象（SENTINEL / CancellationToken）直接入队，不序列化到文件。
+        """
+        # 信号直接入队（不经过文件序列化）
+        if item is BaseQueue._SENTINEL or isinstance(item, CancellationToken):
+            async with self._put_lock:
+                await self.queue.put(item)
+            return
+
         async with self._put_lock:
             filename = self._get_next_filename()
             file_path = self.temp_path / filename
@@ -146,12 +177,26 @@ class FileCacheQueue(RichContextQueue):
             await self.queue.put(str(file_path))
 
     async def get(self) -> Any:
-        """从队列获取对象，读取文件缓存"""
-        file_path = await self.queue.get()
-        item: Any = None
-        # 读取并反序列化对象
+        """从队列获取对象，读取文件缓存。
+
+        信号对象（SENTINEL / CancellationToken）回填后抛出对应异常。
+        """
+        item = await self.queue.get()
+
+        # 信号检测（与 RichContextQueue.get 一致）
+        if isinstance(item, CancellationToken):
+            self.queue.put_nowait(item)
+            raise CancellationError(
+                f"Upstream node '{item.source_node}' failed: {item.error}"
+            ) from item.error
+        if item is BaseQueue._SENTINEL:
+            self.queue.put_nowait(item)
+            raise StreamExhausted("Stream ended normally")
+
+        # 正常数据：item 是文件路径字符串
+        file_path = item
         try:
-            item = await to_thread(self._load_from_file, file_path)
+            data = await to_thread(self._load_from_file, file_path)
         except Exception as e:
             raise ValueError(f"读取文件缓存失败: {e}") from e
         finally:
@@ -160,7 +205,7 @@ class FileCacheQueue(RichContextQueue):
                     os.remove(file_path)
             except OSError:
                 pass
-        return item
+        return data
 
     def _get_next_filename(self) -> str:
         """生成下一个缓存文件名"""

@@ -37,11 +37,13 @@ Operator的设计是异步的。图开始执行时，所有节点被启动，但
 - `MAX_SIZE`: 队列最大容量（默认为1）
 
 **实例属性：**
-- `config`: 配置队列字典 `{name: RichContextQueue}`
-- `inputs`: 输入队列字典 `{name: RichContextQueue}`
-- `outputs`: 输出队列列表字典 `{name: list[RichContextQueue]}`
-- `length`: 序列长度（可选）
+- `config`: 配置队列字典 `{name: BaseQueue}`
+- `inputs`: 输入队列字典 `{name: BaseQueue}`
+- `outputs`: 输出队列列表字典 `{name: list[BaseQueue]}`
+- `length`: 序列长度（可选，`None` 表示 sentinel 驱动）
 - `name`: 节点名称
+- `tracker`: 进度追踪器（`DummyTracker` 默认，由 wiring 注入 `ProgressTracker` 或 `ProxyTracker`）
+- `_cancel_event`: 取消事件（`asyncio.Event` 或 `mp.Event`，由 wiring 注入）
 
 **核心方法：**
 ```python
@@ -84,10 +86,60 @@ def _execute_single(data: dict[str, Any], configs: dict[str, Any]) -> dict[str, 
     # 同步版本，data已经是实际值
 ```
 
+### FilterBaseOp
+
+变长输出的过滤算子基类。输出序列长度不等于输入长度（如条件过滤），由 sentinel 信号驱动下游结束。
+
+**类属性：**
+- `VARIABLE_OUTPUT = True`：自动标记为变长输出
+- `_infer_output_length()` 始终返回 `None`（sentinel 驱动）
+
+**核心方法：**
+```python
+async def _async_execute(configs: dict[str, Any]) -> None
+    # 子类实现：循环中选择性调用 _broadcast_outputs
+    # 使用 self._input_range() 配合 except StreamExhausted: break
+```
+
+**使用模式：**
+```python
+class MyFilter(FilterBaseOp):
+    INPUTS = {"data": {"type": "sequence", "required": True}}
+    OUTPUTS = {"result": {"type": "sequence"}}
+
+    async def _async_execute(self, configs):
+        for i in self._input_range():
+            data = self._async_convert_inputs()
+            try:
+                item = await data['data']
+            except StreamExhausted:
+                break
+            if predicate(item):
+                await self._broadcast_outputs({"result": item})
+```
+
+**静态冲突检测**：引擎在布线阶段检测变长源冲突：
+- 多个不同 `VARIABLE_OUTPUT` 源的序列汇入同一节点 → 报错
+- 固定长度 + 变长序列混合汇入 → 报错
+
 ## 队列类型
 
+### BaseQueue
+
+所有队列的抽象基类，定义统一接口。Op 代码仅依赖此接口，不直接依赖具体实现。
+
+```python
+class BaseQueue:
+    _SENTINEL = object()         # 所有子类共享的正常结束信号
+    active: bool
+    async def put(self, item) -> None
+    async def get(self) -> Any
+    async def set_length(self, length: Optional[int]) -> None
+    async def get_length(self) -> Optional[int]
+```
+
 ### RichContextQueue
-基础异步队列，基于`asyncio.Queue`实现。
+进程内异步队列，基于`asyncio.Queue`实现。继承 `BaseQueue`。
 
 **特性：**
 - 支持异步put/get操作
@@ -102,6 +154,30 @@ def _execute_single(data: dict[str, Any], configs: dict[str, Any]) -> dict[str, 
 - 自动管理临时文件
 - get时自动删除缓存文件
 - 适用于大数据对象的传递
+
+### IPCQueue
+跨进程异步队列，继承 `BaseQueue`。用于多进程模式下不同进程的 Op 之间通信。
+
+**传输策略（分层）：**
+
+| 数据类型 | 传输方式 |
+|---------|---------|
+| `np.ndarray`（大于阈值） | `multiprocessing.shared_memory` 零拷贝 |
+| `ShmTransportable` 对象（如 `FloatImage`） | 主数组走 shm + 元数据走 pickle |
+| 其他对象（float、FGP 等） | `pickle` via `Pipe` |
+| 控制帧（sentinel / cancel） | 标记帧 via `Pipe` |
+
+**背压机制：** 双信号量（`mp.Semaphore`），与 `RichContextQueue(maxsize=N)` 语义一致。
+
+**SharedMemory 生命周期：** producer 创建 → 发送描述符 → consumer 读取 + unlink → `cleanup()` 安全网兜底。
+
+**ShmTransportable 协议：** 轻量包装类实现此协议即可获得 SharedMemory 传输优化：
+```python
+class ShmTransportable(Protocol):
+    def __shm_pack__(self) -> tuple[np.ndarray, bytes]: ...
+    @classmethod
+    def __shm_unpack__(cls, array: np.ndarray, meta: bytes) -> Self: ...
+```
 
 ## 实现示例
 
@@ -161,7 +237,7 @@ async def _send_sentinel(self) -> None:
     """发送正常结束信号"""
     for queue_list in self.outputs.values():
         for queue in queue_list:
-            await queue.put(RichContextQueue._SENTINEL)
+            await queue.put(BaseQueue._SENTINEL)
 ```
 
 ### 取消令牌（CancellationToken）
@@ -174,9 +250,11 @@ class CancellationToken:
 ```
 
 ### 队列自动信号处理
-`RichContextQueue.get()`会自动检测并处理信号：
-- 遇到`_SENTINEL`：抛出`StopIteration`
-- 遇到`CancellationToken`：抛出`CancellationError`
+`BaseQueue.get()`（RichContextQueue 和 IPCQueue 均实现）会自动检测并处理信号：
+- 遇到`_SENTINEL`：回填后抛出`StreamExhausted`（替代 PEP 479 禁止的 `StopIteration`）
+- 遇到`CancellationToken`：回填后抛出`CancellationError`
+
+**回填语义**：信号消费后会无条件回填到队列，确保同一队列的多个并发消费者都能收到终止信号。
 
 ### 异常传播流程
 ```python
@@ -209,82 +287,47 @@ class DAGExecutor:
             raise
 ```
 
+## 多进程支持
+
+### 进程分组
+
+`multiprocess.compute_process_groups()` 使用贪心拓扑序算法将 Op 分配到进程组：
+
+- **组 0**（主进程）：`EXECUTOR = None` 的 Op（I/O 型），以及 feeder 协程
+- **组 1..N**（worker 进程）：`EXECUTOR = "cpu"` 的 Op，通过反亲和约束分散
+
+分组评分函数：`score(p) = α × (上游在 p 中的数量) - β × (p 中同 EXECUTOR 节点数)`
+
+### 跨进程进度追踪
+
+Worker 进程中的 Op 使用 `ProxyTracker`（而非 `ProgressTracker`），将 `(method_name, *args)` 元组通过 `mp.Queue` 发送到主进程：
+
+```
+Worker 进程:  op.tracker.update(name)  →  ProxyTracker._q.put(("update", name, 1))
+                                                    │
+                                                    ▼  mp.Queue
+Main 进程:  TrackerEventConsumer.run()  →  tracker.update(name, 1)  →  tqdm 更新
+```
+
+### 跨进程取消
+
+- `cancel_event` 使用 `multiprocessing.Event`（跨平台），替代 `asyncio.Event`
+- `CancellationToken` 通过 IPCQueue 的控制帧传播（`("cancel", error_str, source_node)` 标记帧）
+- `_run_cpu` 的取消检查 `mp.Event.is_set()` 是线程安全的，直接兼容
+
 ## 设计问题与改进建议
 
-### ✅ 已解决的问题
+#### 9. SubDagOp 多进程行为
+**问题：** SubDagOp 内部创建子 DAG + event loop。如果 SubDag 跨越进程边界需要递归处理。
 
-#### 1. 结束信号机制 ✅
-**解决方案：** 实现了双信号机制（SENTINEL + CancellationToken）
-- `RichContextQueue`在`get()`时自动检测信号
-- `BaseOp.execute()`统一处理异常并传播信号
-- `DAGExecutor`提供全局取消协调
-
-#### 2. 序列长度传播机制 ✅
-**解决方案：** 使用`asyncio.Event`实现阻塞式长度协调
-- 生产者通过`queue.set_length()`设置长度并触发事件
-- 消费者通过`queue.get_length()`等待长度就绪
-- `BaseOp.pre_execute()`验证输入等长并向下游广播
-
-#### 3. ParallelBaseOp并发执行 ✅
-**解决方案：** 实现滑动窗口并发执行
-- `CONCURRENCY=1`：串行执行（简化实现）
-- `CONCURRENCY>1`：滑动窗口并发，保证输出有序
-- `WINDOW_SIZE`可配置，默认为`CONCURRENCY * 2`
-
-#### 4. 输入数据消费顺序 ✅
-**解决方案：** 滑动窗口内顺序消费，窗口间顺序输出
-- 每个窗口内按索引顺序调用`_async_convert_inputs()`
-- 结果存储在预分配的列表中
-- 窗口完成后按顺序广播结果
-
-### 🟡 待优化问题
-
-#### 5. 输出广播可能相互阻塞 ⚠️
-**问题：** `_broadcast_result()`使用嵌套循环顺序`await`，如果某个队列满会阻塞其他队列。
-
-**当前实现：**
-```python
-async def _broadcast_result(self, result: dict[str, Any]) -> None:
-    for key, queue_list in self.outputs.items():
-        for queue in queue_list:
-            await queue.put(result[key])  # 顺序等待
-```
-
-**建议：** 使用`asyncio.gather`并发广播
-```python
-async def _broadcast_result(self, result: dict[str, Any]) -> None:
-    tasks = []
-    for key, queue_list in self.outputs.items():
-        for queue in queue_list:
-            tasks.append(queue.put(result[key]))
-    await asyncio.gather(*tasks)
-```
-
-#### 6. 错误处理机制不统一
-**问题：** 各算子的错误处理策略不一致
-- `DataLoaderOp`中异常被捕获并continue
-- 缺少统一的错误恢复策略
-
-**建议：** 在BaseOp层面定义错误处理接口，支持可配置的错误策略（跳过/重试/中止）。
-
-### 🟢 次要问题
-
-#### 7. 类型标注不完整
-- `_async_convert_inputs`返回`dict[str, Awaitable[Any]]`但未在类型中体现
-- `_execute_single`和`_async_execute_single`的关系不清晰
-
-#### 8. 队列容量管理
-- `MAX_SIZE=1`作为默认值可能导致频繁阻塞
-- 没有根据节点类型（生产者/消费者/转换器）动态调整队列大小的机制
-
-#### 9. 资源清理
-- `FileCacheQueue`有`clear()`方法，但BaseOp没有cleanup接口
-- DAG执行失败时可能残留临时文件
+**当前约束：** 初版约束 SubDagOp 整体在单一进程内。
 
 ### 架构优势
 
 ✅ 异步设计支持流式处理和并发执行
-✅ 队列机制实现了解耦和背压控制
+✅ 队列机制实现了解耦和背压控制（`BaseQueue` 统一接口）
 ✅ 广播机制支持一对多的数据流
 ✅ `FileCacheQueue`支持大数据对象的内存优化
-✅ 基类分层清晰（BaseOp/ParallelBaseOp）
+✅ 基类分层清晰（BaseOp / ParallelBaseOp / FilterBaseOp）
+✅ 多进程对 Op 完全透明
+✅ SharedMemory 零拷贝避免跨进程序列化开销

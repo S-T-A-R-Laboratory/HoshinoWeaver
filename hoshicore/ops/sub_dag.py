@@ -78,15 +78,18 @@ class SubDagOp(BaseOp):
             sub_global_inputs,
             sub_global_configs,
         )
-        # 向所有子op同步自己的tracker
+        # 向所有子op同步 tracker 和 cancel_event
         for op in sub_ops:
             op.tracker = self.tracker
+            op._cancel_event = self._cancel_event
         logger.info(
             f"[SubDag] '{self.name}': {len(sub_ops)} nodes, "
             f"{len(sub_feeders)} feeders, {len(sub_output_queues)} outputs")
 
         # ── 4) 执行子图 + 收集结果 ──
         sub_executor = DAGExecutor(sub_ops)
+        if self._cancel_event is not None:
+            sub_executor.cancel_event = self._cancel_event
         sub_results: dict[str, Any] = {}
 
         async def _collect_sub_outputs():
