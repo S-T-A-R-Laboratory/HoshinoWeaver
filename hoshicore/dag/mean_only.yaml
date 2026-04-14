@@ -16,8 +16,12 @@ configs:
 
 # ── 节点 ──
 #
-#  inputs.fnames ─────► data_loader ─────────► meanstacker ──► image_saver
-#
+#  inputs.fnames ──┬──► data_loader ─────────► meanstacker ───┐
+#                  │                                          │
+#                  │                                          ├─► image_saver
+#                  │                                          │
+#                  └──► exif_loader ─────────► exif_reducer ──┘
+
 nodes:
   data_loader:
     op: ImgDataLoaderOp

@@ -205,8 +205,7 @@ def instantiate_and_wire(
             resolved = _resolve_sub_dag_yaml(op_name)
             sub_dag_cls = create_sub_dag_op(resolved, op_name=op_name)
             registry[op_name] = sub_dag_cls
-            logger.info(
-                f"Resolved sub-DAG '{op_name}' → {resolved}")
+            logger.info(f"Resolved sub-DAG '{op_name}' → {resolved}")
 
         if op_name not in registry:
             raise ValueError(
@@ -429,8 +428,10 @@ async def run_dag(
     results: dict[str, Any] = {}
 
     async def _collect_outputs():
+
         async def _get_one(name, queue):
             results[name] = await queue.get()
+
         await asyncio.gather(
             *[_get_one(n, q) for n, q in output_queues.items()])
 
@@ -477,6 +478,7 @@ async def run_from_yaml(
         cancel_event:     外部取消事件。set() 后 Op 在下一个检查点退出。
     """
     from .build import _load_yaml, validate_and_build_order
+    from .multiprocess import run_dag_multiprocess
 
     spec = _load_yaml(yaml_path)
     dag = validate_and_build_order(spec)
@@ -581,8 +583,7 @@ def _check_variable_source_conflicts(
                 f"Node '{node_name}' ({op_inst.__class__.__name__}) mixes "
                 f"fixed-length and variable-length sequence inputs "
                 f"(variable source: {next(iter(input_var_sources))}). "
-                f"Use FilterGate pattern to align sequences before merging."
-            )
+                f"Use FilterGate pattern to align sequences before merging.")
 
         # ── 确定本节点序列输出的变长源 ──
         if op_inst.VARIABLE_OUTPUT:

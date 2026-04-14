@@ -1,4 +1,4 @@
-description: "简化星轨叠加（无 EXIF 处理）"
+description: "带有渐入渐出的最大值-平均值混合星轨叠加，生成渐入渐出星轨+地景平均值的高画质图像"
 version: "1"
 
 # ── 全局输入 ──
@@ -12,16 +12,27 @@ configs:
   int_weight: { type: bool, default: true }
   exif_reduce_type: { type: str, default: "sum" }
   loader_type: { type: str, default: "img_file_list" }
+  rej_high: { type: float, default: 3.0 }
+  rej_low: { type: float, default: 3.0 }
+  max_iter: { type: int, default: 5 }
+  mask: { type: str, default: null }
+  minus_only: { type: bool, default: true }
   loader_configs: { type: dict, default: {} }
   output_filename: { type: str, default: "result.tif" }
   output_dtype: { type: str, default: "uint8" }
 
 # ── 节点 ──
 #
-#  inputs.fnames ──┬──► data_loader ──────────┐
-#                  │                          ├──► trailstacker ──► image_saver
-#                  └──► weight_generator ─────┘
-#
+#                  ┬──► data_loader ────────┬──► simgaclipstacker ──┐
+#                  │                        │                       │                                    
+#  inputs.fnames ──┤                        ├──► trailstacker(max) ─┼──► mne ───┬───► image_saver
+#                  │                        │                       │           │  
+#                  ├──► weight_generator ───┘                       │           │
+#                  │                                                │           │
+#  configs.mask ───│─────► load_mask ───────────────────────────────┘           │                            
+#                  │                                                            │
+#                  └──► exif_loader ──► exif_reducer ───────────────────────────┘
+
 nodes:
   data_loader:
     op: ImgDataLoaderOp
@@ -47,7 +58,7 @@ nodes:
     op: TrailStackerOp
     inputs:
       data: data_loader.result
-    #  weight: weight_generator.result
+      weight: weight_generator.result
     configs:
       int_weight: configs.int_weight
     outputs:
@@ -69,12 +80,22 @@ nodes:
     outputs:
       result: { type: object }
 
+  load_mask:
+    op: LoadMaskImageOp
+    configs:
+      path: configs.mask
+    outputs:
+      result: { type: image }
+
   simgaclipstacker:
     op: sigma_clip.yaml
     inputs:
       data: data_loader.result
     configs:
       int_weight: configs.int_weight
+      rej_high: configs.rej_high
+      rej_low: configs.rej_low
+      max_iter: configs.max_iter
     outputs:
       result: { type: image }
       statistics: { type: image }
@@ -83,6 +104,8 @@ nodes:
     configs:
       max_img: trailstacker.result
       statistics: simgaclipstacker.statistics
+      mask: load_mask.result
+      minus_only: configs.minus_only
     outputs:
       result: { type: image }
 

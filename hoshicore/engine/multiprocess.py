@@ -426,7 +426,7 @@ async def run_dag_multiprocess(
     progress: bool = True,
     dag_search_paths: Optional[list[Path]] = None,
     tracker: Optional[DummyTracker] = None,
-    cancel_event_ext: Optional[asyncio.Event] = None,
+    cancel_event: Optional[asyncio.Event] = None,
     num_workers: int = 1,
 ) -> dict[str, Any]:
     """多进程执行 DAG。
@@ -444,7 +444,7 @@ async def run_dag_multiprocess(
         progress: 是否显示进度条。
         dag_search_paths: 子图搜索路径。
         tracker: 外部进度追踪器。
-        cancel_event_ext: 外部取消事件（asyncio.Event）。
+        cancel_event: 外部取消事件（asyncio.Event）。
         num_workers: worker 进程数。
 
     Returns:
@@ -467,7 +467,7 @@ async def run_dag_multiprocess(
         return await run_dag(
             dag, global_inputs, global_configs, op_registry,
             progress=progress, dag_search_paths=dag_search_paths,
-            tracker=tracker, cancel_event=cancel_event_ext)
+            tracker=tracker, cancel_event=cancel_event)
 
     # ── 3) 注入 IPCQueue ──
     ipc_queues = inject_ipc_queues(dag, instances, assign)
@@ -494,8 +494,8 @@ async def run_dag_multiprocess(
     # ── 6) 跨进程取消事件 ──
     mp_cancel: mp.Event = mp.Event()
     main_executor = DAGExecutor(main_ops)
-    if cancel_event_ext is not None:
-        main_executor.cancel_event = cancel_event_ext
+    if cancel_event is not None:
+        main_executor.cancel_event = cancel_event
     for op in main_ops:
         op._cancel_event = main_executor.cancel_event
 

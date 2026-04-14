@@ -17,12 +17,10 @@ configs:
 
 # ── 节点 ──
 #
-#  inputs.data ──────┬──► mean_stacker ──► statistics ───┐
-#                    │                                   ├──► sigma_clip_iter ──► result / statistics
-#                    └──► disk_buffer  ──► buffer_handle─┘
-#  inputs.weight ────┤
-#                    └──► (mean_stacker.weight, disk_buffer.weight)
-#
+#  inputs.data ──────┬──► disk_buffer  ─────┐
+#                    │                      ├──► sigma_clip_iter ──► result / statistics
+#                    └──► mean_stacker ─────┘
+
 nodes:
   mean_stacker:
     op: MeanStackerOp
