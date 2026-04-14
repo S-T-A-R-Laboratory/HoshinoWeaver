@@ -28,7 +28,7 @@ class DAGExecutor:
         except Exception as e:
             # 任一节点失败，触发全局取消
             self.cancel_event.set()
-            logger.error(f"DAG execution failed: {e}")
+            logger.error(f"DAG execution failed: {e.__repr__()}")
 
             # 等待所有任务结束
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -47,5 +47,5 @@ class DAGExecutor:
             logger.info(f"{node.name}: cancelled by upstream")
         except Exception as e:
             self.failed_nodes.append((node.name, e))
-            logger.error(f"{node.name}: execution failed - {e}")
+            logger.error(f"{node.name}: execution failed - {e.__repr__()}")
             raise

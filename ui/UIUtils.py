@@ -887,17 +887,18 @@ class SlotHandler(QMainWindow):
         elif mode == 'mean':
             yaml_path = "./hoshicore/dag/mean_only.yaml"
         elif mode == 'sigmaclip-mean':
-            yaml_path = "./hoshicore/dag/sigma_clip.yaml"
+            yaml_path = "./hoshicore/dag/sigma_clipping_mean.yaml"
             global_configs["rej_high"] = self.window._rej_high
             global_configs["rej_low"] = self.window._rej_low
             global_configs["max_iter"] = self.window._max_iter
         elif mode == 'mask-mix':
-            yaml_path = "./hoshicore/dag/fix_startrail.yaml"
+            yaml_path = "./hoshicore/dag/mix_startrail.yaml"
             global_configs["fin"] = self.window._fade_in / 100
             global_configs["fout"] = self.window._fade_out / 100
             global_configs["rej_high"] = self.window._rej_high
             global_configs["rej_low"] = self.window._rej_low
             global_configs["max_iter"] = self.window._max_iter
+            global_configs['mask'] = self.window.mask_file_path
         else:
             yaml_path = "./hoshicore/dag/fifo_startrail.yaml"
 

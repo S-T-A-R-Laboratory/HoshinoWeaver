@@ -1,5 +1,6 @@
 from typing import Any, Optional
 
+import cv2
 import numpy as np
 from loguru import logger
 
@@ -93,7 +94,8 @@ class TrailStackerOp(BaseOp):
 
             if stacked_num == 0:
                 raise ValueError(
-                    f"{self.name}: No valid frames loaded from {tot_num} inputs.")
+                    f"{self.name}: No valid frames loaded from {tot_num} inputs."
+                )
 
             logger.info(
                 f"{self.name} successfully stacked {stacked_num} " +
@@ -130,6 +132,7 @@ class MeanStackerOp(TrailStackerOp):
         },
     }
 
+
 @register_op()
 class MaxNoiseEqualizationOp(BaseOp):
     """最大值叠加噪声均匀化算子。
@@ -150,18 +153,39 @@ class MaxNoiseEqualizationOp(BaseOp):
             "type": "image",
             "required": True
         },
+        "mask": {
+            "type": "image",
+            "required": False,
+            "default": None
+        },
+        "minus_only": {
+            "type": "bool",
+            "required": False,
+            "default": False,
+        },
         "top_fraction": {
             "type": "float",
             "default": 0.02
+        },
+        "sigma_reject": {
+            "type": "float",
+            "default": 3.0
+        },
+        "highlight_preserve": {
+            "type": "float",
+            "default": 0.9
         },
     }
     OUTPUTS = {"result": {"type": "image"}}
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         top_fraction: float = configs['top_fraction']
+        max_raw = configs['max_img']
+        accepted: FastGaussianParam = configs['statistics']
+        minus_only: bool = configs['minus_only']
+        sigma_reject: float = configs['sigma_reject']
+        highlight_preserve: float = configs['highlight_preserve']
         try:
-            max_raw = configs['max_img']
-            accepted: FastGaussianParam = configs['statistics']
 
             # ── dtype 对齐 ──
             # max_raw 来自 TrailStackerOp，其 dtype 即语义级别（可能被 int_weight 放缩）
@@ -186,9 +210,20 @@ class MaxNoiseEqualizationOp(BaseOp):
                                        mean_img,
                                        std_img,
                                        n_img,
-                                       top_fraction=top_fraction)
-
-            result = np.round(corrected).astype(output_dtype)
+                                       minus_only=minus_only,
+                                       top_fraction=top_fraction,
+                                       sigma_reject=sigma_reject,
+                                       highlight_preserve=highlight_preserve)
+            mask: Optional[np.ndarray] = configs['mask']
+            if mask is not None:
+                # mask 尺寸修正
+                mask = cv2.resize(mask,
+                                  (corrected.shape[1], corrected.shape[0]),
+                                  interpolation=cv2.INTER_CUBIC)
+                result = (corrected * mask + mean_img *
+                          (1 - mask)).astype(output_dtype)
+            else:
+                result = np.round(corrected).astype(output_dtype)
 
             await self._broadcast_outputs({"result": result})
 
