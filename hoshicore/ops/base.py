@@ -3,7 +3,7 @@ import asyncio
 import itertools
 from loguru import logger
 from ..component.progress import DummyTracker
-from ..component.queue import RichContextQueue, FileCacheQueue, CancellationError, CancellationToken, StreamExhausted
+from ..component.queue import BaseQueue, RichContextQueue, FileCacheQueue, CancellationError, CancellationToken, StreamExhausted
 from ..component.utils import time_cost_warpper
 
 
@@ -15,7 +15,6 @@ class BaseOp(object):
     MAX_SIZE: int = 1
     VARIABLE_OUTPUT: bool = False  # True 时标记为变长输出（Filter 类）
     PROGRESS_DESC: Optional[str] = None  # 非 None 时 execute() 自动创建进度条
-    _SENTINEL = object()
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -23,22 +22,22 @@ class BaseOp(object):
             cls._async_execute = time_cost_warpper(cls._async_execute)
 
     def __init__(self, name: str):
-        self.config: dict[str, RichContextQueue] = {
+        self.config: dict[str, BaseQueue] = {
             x: RichContextQueue(maxsize=self.MAX_SIZE)
             for x in self.CONFIGS.keys()
         }
-        self.inputs: dict[str, RichContextQueue] = {
+        self.inputs: dict[str, BaseQueue] = {
             x: RichContextQueue(maxsize=self.MAX_SIZE)
             for x in self.INPUTS.keys()
         }
-        self.outputs: dict[str, list[RichContextQueue]] = {
+        self.outputs: dict[str, list[BaseQueue]] = {
             x: []
             for x in self.OUTPUTS.keys()
         }
         self.length: Optional[int] = None
         self.name = name
         self.tracker = DummyTracker()
-        self._cancel_event: Optional[asyncio.Event] = None  # 由 wiring 注入
+        self._cancel_event: Optional[Any] = None  # asyncio.Event 或 mp.Event，由 wiring 注入
 
     async def pre_execute(self) -> dict[str, Any]:
         """
@@ -168,7 +167,7 @@ class BaseOp(object):
         """发送正常结束信号"""
         for queue_list in self.outputs.values():
             for queue in queue_list:
-                await queue.put(RichContextQueue._SENTINEL)
+                await queue.put(BaseQueue._SENTINEL)
 
     async def _propagate_cancellation(self, error: Exception) -> None:
         """传播取消令牌（本节点异常）"""
@@ -178,18 +177,35 @@ class BaseOp(object):
                 await queue.put(token)
 
     async def _propagate_cancellation_from_upstream(self) -> None:
-        """传播取消令牌（上游异常）"""
+        """传播取消令牌（上游异常）。
+
+        从输入队列中提取 CancellationToken 并转发到所有输出队列。
+        对于 IPCQueue 等无法同步提取 token 的实现，创建新的
+        CancellationToken 确保下游能收到取消信号。
+        """
+        token = None
         for input_queue in self.inputs.values():
             try:
-                while not input_queue.queue.empty():
-                    item = input_queue.queue.get_nowait()
-                    if isinstance(item, CancellationToken):
-                        for queue_list in self.outputs.values():
-                            for queue in queue_list:
-                                await queue.put(item)
-                        return
-            except:
+                # RichContextQueue 有内部 asyncio.Queue，可以同步检查
+                if hasattr(input_queue, 'queue'):
+                    while not input_queue.queue.empty():
+                        item = input_queue.queue.get_nowait()
+                        if isinstance(item, CancellationToken):
+                            token = item
+                            break
+                if token is not None:
+                    break
+            except Exception:
                 pass
+
+        if token is None:
+            # IPCQueue 或无法提取 token：创建通用 cancel token 确保传播不中断
+            token = CancellationToken(
+                CancellationError("Upstream cancellation"), self.name)
+
+        for queue_list in self.outputs.values():
+            for queue in queue_list:
+                await queue.put(token)
 
     async def _broadcast_outputs(self, results: dict[str, Any]) -> None:
         """将结果广播到对应的输出队列。
@@ -279,6 +295,12 @@ class ParallelBaseOp(BaseOp):
         - 定长模式：按 window_size 分批，每批固定数量任务。
         - sentinel 模式：每批启动 window_size 个任务，遇到 StreamExhausted
           的任务标记为 None，广播时跳过。批内有任何 sentinel 命中即结束外层循环。
+
+        注意：窗口内多任务并发调用 queue.get()，数据帧分配顺序依赖
+        CPython asyncio.Queue 的 FIFO 唤醒实现（基于 collections.deque）。
+        语言规范未明确保证此行为，但所有主流 CPython 版本均如此。
+        如需严格保证顺序，需要串行预取数据后并发处理，但这会改变
+        _async_execute_single 的接口签名（从 Awaitable 变为已解析值）。
         """
         if self.length is not None:
             self.tracker.create_bar(self.name, self.length)

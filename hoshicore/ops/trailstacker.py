@@ -92,8 +92,8 @@ class TrailStackerOp(BaseOp):
                 self.tracker.update(self.name)
 
             if stacked_num == 0:
-                logger.warning(f"No valid frames are loaded!")
-                return
+                raise ValueError(
+                    f"{self.name}: No valid frames loaded from {tot_num} inputs.")
 
             logger.info(
                 f"{self.name} successfully stacked {stacked_num} " +
