@@ -239,3 +239,98 @@ class SigmaClipIteratorOp(BaseOp):
         finally:
             # 无条件清理 buffer：无论成功、失败还是中断
             frame_buffer.cleanup()
+
+
+@register_op()
+class MedianReduceOp(BaseOp):
+    """中位数堆栈：从磁盘缓冲帧中计算逐像素中位数。
+
+    按空间分块（chunk_rows 行）处理以控制内存峰值。
+    对每个块加载所有帧的对应行范围，沿帧轴取 median。
+
+    输入 buffer_handle 来自 DiskBufferWriterOp。
+    """
+
+    EXECUTOR = "cpu"
+    CONFIGS: dict[str, dict[str, Any]] = {
+        "buffer_handle": {
+            "type": "image",
+            "required": True,
+        },
+        "chunk_rows": {
+            "type": "int",
+            "default": 32,
+        },
+    }
+    OUTPUTS = {
+        "result": {
+            "type": "image",
+        },
+    }
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        frame_buffer: DiskFrameBuffer = configs['buffer_handle']
+        chunk_rows: int = configs['chunk_rows']
+        n_frames = len(frame_buffer)
+
+        if n_frames == 0:
+            raise ValueError(f"{self.name}: buffer is empty, nothing to stack.")
+
+        # 读取第一帧获取尺寸信息
+        first_frame, _ = frame_buffer[0]
+        h, w = first_frame.shape[:2]
+        channels = first_frame.shape[2] if first_frame.ndim == 3 else 1
+        source_dtype = first_frame.dtype
+
+        logger.info(
+            f"{self.name}: computing median of {n_frames} frames "
+            f"({h}x{w}x{channels}, dtype={source_dtype}), "
+            f"chunk_rows={chunk_rows}")
+
+        # 按行分块计算中位数
+        result_chunks = []
+        n_chunks = (h + chunk_rows - 1) // chunk_rows
+
+        self.tracker.create_bar(self.name, n_chunks,
+                                desc=f"{self.name} [Median]", unit="chunks")
+
+        try:
+            for chunk_idx in range(n_chunks):
+                row_start = chunk_idx * chunk_rows
+                row_end = min(row_start + chunk_rows, h)
+                actual_rows = row_end - row_start
+
+                # 加载所有帧的对应行范围
+                if first_frame.ndim == 3:
+                    stack = np.empty(
+                        (n_frames, actual_rows, w, channels),
+                        dtype=np.float32)
+                else:
+                    stack = np.empty(
+                        (n_frames, actual_rows, w), dtype=np.float32)
+
+                for frame_idx in range(n_frames):
+                    frame_data, _ = frame_buffer[frame_idx]
+                    stack[frame_idx] = frame_data[
+                        row_start:row_end].astype(np.float32)
+
+                # 沿帧轴取中位数
+                chunk_median = await self._run_cpu(
+                    np.median, stack, axis=0)
+                result_chunks.append(chunk_median)
+                self.tracker.update(self.name)
+
+            # 拼接所有块
+            result_array = np.concatenate(result_chunks, axis=0)
+
+            result = FloatImage(data=result_array, dtype=source_dtype)
+            await self._broadcast_outputs({"result": result})
+
+            logger.info(f"{self.name}: median stacking complete.")
+
+        except Exception as e:
+            logger.error(f"{self.name} failed: {e}")
+            raise
+        finally:
+            self.tracker.close_bar(self.name)
+            frame_buffer.cleanup()

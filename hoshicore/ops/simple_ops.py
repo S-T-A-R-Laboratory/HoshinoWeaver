@@ -1,9 +1,12 @@
-from typing import Any, Optional
+import os
+from typing import Any, Awaitable, Mapping, Optional
 
 import cv2
 import numpy as np
 from loguru import logger
 
+from ..component.calibration import (calibration_divide, calibration_subtract,
+                                     crop_roi, natural_sort_key, resize_image)
 from ..component.frame_buffer import DiskFrameBuffer
 from ..component.imgfio import load_img
 from ..component.merger import (MaxMerger, MeanMerger, MinMerger,
@@ -12,7 +15,7 @@ from ..component.noise_equalization import equalize_noise
 from ..component.tagged_image import FloatImage, align_dtype_pair
 from ..component.utils import DTYPE_MAX_VALUE, FastGaussianParam
 from ..engine.registry import register_op
-from .base import BaseOp
+from .base import BaseOp, ParallelBaseOp
 
 
 @register_op()
@@ -76,3 +79,267 @@ class LoadMaskImageOp(BaseOp):
             normalized_mask = mask / np.max(mask)
 
         await self._broadcast_outputs({"result": normalized_mask})
+
+
+# ── 图像缩放 ──
+
+
+@register_op()
+class ImageResizeOp(ParallelBaseOp):
+    """图像缩放：按比例或目标尺寸缩放序列帧。
+
+    优先级: scale > (width, height) > passthrough（全部为 None 则不缩放）。
+    interpolation 为 "auto" 时缩小用 area，放大用 cubic。
+    """
+
+    INPUTS: dict[str, Any] = {
+        "data": {"type": "sequence"},
+    }
+    CONFIGS: dict[str, Any] = {
+        "scale":         {"type": "float", "default": None},
+        "width":         {"type": "int",   "default": None},
+        "height":        {"type": "int",   "default": None},
+        "interpolation": {"type": "str",   "default": "auto"},
+    }
+    OUTPUTS: dict[str, Any] = {
+        "result": {"type": "sequence"},
+    }
+
+    async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
+                                    configs: dict[str, Any]) -> dict[str, Any]:
+        frame = await data['data']
+        scale = configs.get('scale')
+        width = configs.get('width')
+        height = configs.get('height')
+        interpolation = configs.get('interpolation', 'auto')
+
+        if isinstance(frame, FloatImage):
+            resized = resize_image(frame.data, scale, width, height,
+                                   interpolation)
+            result = FloatImage(data=resized, dtype=frame.dtype)
+        elif isinstance(frame, np.ndarray):
+            result = resize_image(frame, scale, width, height, interpolation)
+        else:
+            result = frame
+
+        return {"result": result}
+
+
+# ── 图像裁切 ──
+
+
+@register_op()
+class ImageCropOp(ParallelBaseOp):
+    """图像 ROI 裁切：从序列帧中裁取指定区域。"""
+
+    INPUTS: dict[str, Any] = {
+        "data": {"type": "sequence"},
+    }
+    CONFIGS: dict[str, Any] = {
+        "x":          {"type": "int", "required": True},
+        "y":          {"type": "int", "required": True},
+        "roi_width":  {"type": "int", "required": True},
+        "roi_height": {"type": "int", "required": True},
+    }
+    OUTPUTS: dict[str, Any] = {
+        "result": {"type": "sequence"},
+    }
+
+    async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
+                                    configs: dict[str, Any]) -> dict[str, Any]:
+        frame = await data['data']
+        x = configs['x']
+        y = configs['y']
+        w = configs['roi_width']
+        h = configs['roi_height']
+
+        if isinstance(frame, FloatImage):
+            cropped = crop_roi(frame.data, x, y, w, h)
+            result = FloatImage(data=cropped, dtype=frame.dtype)
+        elif isinstance(frame, np.ndarray):
+            result = crop_roi(frame, x, y, w, h)
+        else:
+            result = frame
+
+        return {"result": result}
+
+
+# ── 校准减法 ──
+
+
+@register_op()
+class CalibrationSubtractOp(ParallelBaseOp):
+    """通用校准减法：逐帧减去参考帧（暗场 / 偏置帧）。
+
+    reference 为 None 时直接 passthrough（用户未提供校准帧）。
+    """
+
+    EXECUTOR = "cpu"
+    INPUTS: dict[str, Any] = {
+        "data": {"type": "sequence"},
+    }
+    CONFIGS: dict[str, Any] = {
+        "reference": {"type": "image", "default": None},
+    }
+    OUTPUTS: dict[str, Any] = {
+        "result": {"type": "sequence"},
+    }
+
+    async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
+                                    configs: dict[str, Any]) -> dict[str, Any]:
+        frame = await data['data']
+        ref = configs.get('reference')
+
+        if ref is None:
+            return {"result": frame}
+
+        # 拆包 FloatImage
+        if isinstance(frame, FloatImage):
+            frame_arr, frame_dtype = frame.data, frame.dtype
+        else:
+            frame_arr, frame_dtype = frame, frame.dtype
+
+        if isinstance(ref, FloatImage):
+            ref_arr, ref_dtype = ref.data, ref.dtype
+        else:
+            ref_arr, ref_dtype = ref, ref.dtype
+
+        result_arr, out_dtype = calibration_subtract(
+            frame_arr, ref_arr, frame_dtype, ref_dtype)
+
+        # 重包装
+        if isinstance(frame, FloatImage):
+            result = FloatImage(data=result_arr, dtype=out_dtype)
+        else:
+            result = result_arr
+
+        return {"result": result}
+
+
+# ── 校准除法 ──
+
+
+@register_op()
+class CalibrationDivideOp(ParallelBaseOp):
+    """通用校准除法：逐帧除以参考帧（平场校正）。
+
+    reference 为 None 时直接 passthrough。
+    """
+
+    EXECUTOR = "cpu"
+    INPUTS: dict[str, Any] = {
+        "data": {"type": "sequence"},
+    }
+    CONFIGS: dict[str, Any] = {
+        "reference": {"type": "image", "default": None},
+    }
+    OUTPUTS: dict[str, Any] = {
+        "result": {"type": "sequence"},
+    }
+
+    async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
+                                    configs: dict[str, Any]) -> dict[str, Any]:
+        frame = await data['data']
+        ref = configs.get('reference')
+
+        if ref is None:
+            return {"result": frame}
+
+        if isinstance(frame, FloatImage):
+            frame_arr, frame_dtype = frame.data, frame.dtype
+        else:
+            frame_arr, frame_dtype = frame, frame.dtype
+
+        if isinstance(ref, FloatImage):
+            ref_arr, ref_dtype = ref.data, ref.dtype
+        else:
+            ref_arr, ref_dtype = ref, ref.dtype
+
+        result_arr, out_dtype = calibration_divide(
+            frame_arr, ref_arr, frame_dtype, ref_dtype)
+
+        if isinstance(frame, FloatImage):
+            result = FloatImage(data=result_arr, dtype=out_dtype)
+        else:
+            result = result_arr
+
+        return {"result": result}
+
+
+# ── 序列排序 ──
+
+
+@register_op()
+class SequenceSortOp(BaseOp):
+    """序列排序：收集所有输入项，按指定规则排序后重新流式输出。
+
+    支持三种排序模式:
+    - "natural": 自然排序（数字部分按数值比较，如 img_2 < img_10）
+    - "name": 字符串排序
+    - "mtime": 按文件修改时间排序
+    """
+
+    INPUTS: dict[str, Any] = {
+        "data": {"type": "sequence"},
+    }
+    CONFIGS: dict[str, Any] = {
+        "sort_key": {"type": "str", "default": "natural"},
+        "reverse":  {"type": "bool", "default": False},
+    }
+    OUTPUTS: dict[str, Any] = {
+        "result": {"type": "sequence"},
+    }
+
+    def _infer_output_length(self, input_lengths):
+        return input_lengths.get('data')
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        sort_key_name: str = configs['sort_key']
+        reverse: bool = configs['reverse']
+        tot_num = self.length
+        assert tot_num is not None, \
+            "SequenceSortOp requires sequence length information."
+
+        # 收集阶段
+        items = []
+        for _ in range(tot_num):
+            item = await self.inputs['data'].get()
+            items.append(item)
+
+        # 排序阶段
+        key_funcs = {
+            "natural": natural_sort_key,
+            "name": str,
+            "mtime": lambda f: os.path.getmtime(str(f)),
+        }
+        key_fn = key_funcs.get(sort_key_name)
+        if key_fn is None:
+            raise ValueError(
+                f"Unsupported sort_key: {sort_key_name}. "
+                f"Available: {sorted(key_funcs.keys())}")
+
+        sorted_items = sorted(items, key=key_fn, reverse=reverse)
+        logger.info(
+            f"{self.name}: sorted {len(sorted_items)} items by '{sort_key_name}'")
+
+        # 输出阶段
+        for item in sorted_items:
+            await self._broadcast_outputs({"result": item})
+
+
+# ── None 输出 ──
+
+
+@register_op()
+class NoneOutputOp(BaseOp):
+    """输出 None 的极简 Op，用于 Meta YAML route="none" 场景。
+
+    下游 Passthrough 类 Op（如 CalibrationSubtractOp）收到 None 后直接跳过处理。
+    """
+
+    OUTPUTS: dict[str, Any] = {
+        "result": {"type": "image"},
+    }
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        await self._broadcast_outputs({"result": None})
