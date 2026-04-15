@@ -110,8 +110,10 @@ def equalize_noise(max_img: NDArray,
         f"background pixels={np.sum(bg_mask)} ({np.mean(bg_mask)*100:.2f}%)")
 
     if not np.any(bg_mask):
-        raise ValueError(
-            f"No background pixels found with top_fraction={top_fraction}")
+        logger.warning(
+            f"Skip equalize_noise processing because "
+            f"no background pixels found with top_fraction={top_fraction}.")
+        return max_img
 
     # Step 3: 估计经验偏移系数 ĉ_n^eff
     residual = (max_img - mean_img)[bg_mask]
@@ -124,7 +126,10 @@ def equalize_noise(max_img: NDArray,
     )
 
     if not np.any(valid):
-        raise ValueError("No valid background pixels with σ > 0")
+        logger.warning("Skip equalize_noise processing because "
+                       "no valid background pixels with σ > 0. "
+                       "Maybe all images have same values?")
+        return max_img
 
     r_valid = residual[valid]
     s_valid = sigma_bg[valid]

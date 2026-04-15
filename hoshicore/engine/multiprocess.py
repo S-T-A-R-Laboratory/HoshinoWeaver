@@ -34,14 +34,16 @@ from ..component.progress import (
     ProxyTracker,
     TrackerEventConsumer,
 )
-from ..component.queue import BaseQueue
+from ..component.queue import BaseQueue, RichContextQueue
 from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
 from .executor import DAGExecutor
 from .wiring import (
     DEFAULT_DAG_SEARCH_PATHS,
+    _bridge_queue,
     _feed_config,
     _feed_sequence,
+    _resolve_configs,
     _resolve_sub_dag_yaml,
     instantiate_and_wire,
     run_dag,
@@ -77,7 +79,7 @@ def compute_process_groups(
     if num_workers <= 0:
         return {name: 0 for name in dag.exec_order}
 
-    total_groups = num_workers + 1  # group 0 = main
+    total_groups = num_workers + 1  # group 0 = main, 1..num_workers = workers
     assign: dict[str, int] = {}
 
     # 每个组中 EXECUTOR 类型的计数
@@ -208,8 +210,8 @@ def inject_ipc_queues(
                     f"{node_name}.{section}.{arg_name} "
                     f"(group {provider_group} → {consumer_group})")
             else:
-                # 全局 feeder → worker：feeder targets 中的引用需要替换
-                # 这由调用者在 feeder targets 列表中处理
+                # 全局 feeder → worker：consumer 端队列已替换为 IPCQueue，
+                # 调用者需通过 _rebuild_feeders 重建 feeder 协程以使用新队列
                 logger.info(
                     f"IPCQueue: global.{parsed[1]} → "
                     f"{node_name}.{section}.{arg_name} "
@@ -414,6 +416,90 @@ def _collect_boundary_queues(
 
 
 # ────────────────────────────────────────────────────────────────
+# Feeder 重建
+# ────────────────────────────────────────────────────────────────
+
+
+def _rebuild_feeders(
+    dag: ValidatedDag,
+    instances: dict[str, BaseOp],
+    global_inputs: dict[str, Any],
+    global_configs: dict[str, Any],
+    assign: dict[str, int],
+) -> list[Awaitable[None]]:
+    """从已布线（可能已注入 IPCQueue）的 Op 实例重新收集 feeder 协程。
+
+    inject_ipc_queues 会替换 Op 的 inputs/config 队列为 IPCQueue，
+    但 instantiate_and_wire 返回的 feeder 协程仍持有旧的 RichContextQueue
+    引用。本函数根据 Op 实例的**当前**队列状态重新构建 feeder 列表。
+
+    全局 inputs/configs feeder 覆盖所有节点（包括 worker 节点，因其
+    队列已被 inject_ipc_queues 替换为 IPCQueue，feeder 直接推送）。
+    unwired config 默认值仅注入主进程节点（worker 节点由 _worker_main
+    自行处理）。
+    """
+    nodes_spec = dag.nodes
+    effective_configs = _resolve_configs(dag.global_configs, global_configs)
+
+    # 按 link 来源重新收集目标队列（从 Op 实例的当前队列获取）
+    seq_targets: dict[str, list[BaseQueue]] = {}
+    cfg_targets: dict[str, list[BaseQueue]] = {}
+
+    for node_name in dag.exec_order:
+        node_spec = nodes_spec[node_name]
+        for loc, src in _iter_node_src_links(node_spec):
+            parsed = _parse_link(src)
+            section, arg_name = loc.split(".", 1)
+            op_inst = instances[node_name]
+
+            if parsed[0] == "inputs":
+                if section == "inputs":
+                    target_queue = op_inst.inputs[arg_name]
+                else:
+                    target_queue = op_inst.config[arg_name]
+                seq_targets.setdefault(parsed[1], []).append(target_queue)
+            elif parsed[0] == "configs":
+                if section == "inputs":
+                    target_queue = op_inst.inputs[arg_name]
+                else:
+                    target_queue = op_inst.config[arg_name]
+                cfg_targets.setdefault(parsed[1], []).append(target_queue)
+
+    # 重建 feeder 协程
+    feeders: list[Awaitable[None]] = []
+    for name, targets in seq_targets.items():
+        source = global_inputs[name]
+        if isinstance(source, RichContextQueue):
+            feeders.append(_bridge_queue(name, source, targets))
+        else:
+            feeders.append(_feed_sequence(name, source, targets))
+    for name, targets in cfg_targets.items():
+        source = effective_configs[name]
+        if isinstance(source, RichContextQueue):
+            feeders.append(_bridge_queue(name, source, targets))
+        else:
+            feeders.append(_feed_config(name, source, targets))
+
+    # 主进程 Op 的 unwired config 默认值注入（worker 由 _worker_main 处理）
+    for node_name in dag.exec_order:
+        if assign.get(node_name, 0) != 0:
+            continue  # worker 节点跳过
+        op_inst = instances[node_name]
+        node_spec = nodes_spec[node_name]
+        yaml_cfg_keys: set[str] = set()
+        cfg_section = node_spec.get("configs")
+        if isinstance(cfg_section, dict):
+            yaml_cfg_keys = set(cfg_section.keys())
+        for key, spec in op_inst.CONFIGS.items():
+            if key not in yaml_cfg_keys and "default" in spec:
+                feeders.append(
+                    _feed_config(f"{node_name}.{key}", spec["default"],
+                                 [op_inst.config[key]]))
+
+    return feeders
+
+
+# ────────────────────────────────────────────────────────────────
 # 多进程执行入口
 # ────────────────────────────────────────────────────────────────
 
@@ -427,7 +513,7 @@ async def run_dag_multiprocess(
     dag_search_paths: Optional[list[Path]] = None,
     tracker: Optional[DummyTracker] = None,
     cancel_event: Optional[asyncio.Event] = None,
-    num_workers: int = 1,
+    num_workers: Optional[int] = None,
 ) -> dict[str, Any]:
     """多进程执行 DAG。
 
@@ -460,10 +546,14 @@ async def run_dag_multiprocess(
     instances = {op.name: op for op in ops}
 
     # ── 2) 计算进程分组 ──
-    assign = compute_process_groups(dag, instances, num_workers)
+    assert num_workers > 0, "num_workers must be > 0"
+    assign = compute_process_groups(dag, instances, num_workers - 1)
 
     if all(g == 0 for g in assign.values()):
         logger.info("All ops in main process, single-process fallback.")
+        for f in feeders:
+            if hasattr(f, 'close'):
+                f.close()
         return await run_dag(
             dag, global_inputs, global_configs, op_registry,
             progress=progress, dag_search_paths=dag_search_paths,
@@ -471,6 +561,15 @@ async def run_dag_multiprocess(
 
     # ── 3) 注入 IPCQueue ──
     ipc_queues = inject_ipc_queues(dag, instances, assign)
+
+    # ── 3b) 重建 feeder 协程 ──
+    # inject_ipc_queues 替换了 Op 的队列引用，旧 feeder 协程持有过时引用。
+    # 关闭旧协程（避免 "coroutine was never awaited" 警告），然后重建。
+    for f in feeders:
+        if hasattr(f, 'close'):
+            f.close()
+    feeders = _rebuild_feeders(
+        dag, instances, global_inputs, global_configs, assign)
 
     # ── 4) 分离主进程和 worker 进程的 Op ──
     main_ops = [op for op in ops if assign[op.name] == 0]
@@ -546,12 +645,22 @@ async def run_dag_multiprocess(
 
     async def _main_run():
         barrier.wait()  # 等所有 worker 就绪
-        tasks: list[Awaitable] = [*feeders, _collect_outputs()]
-        if main_ops:
-            tasks.append(main_executor.execute())
+        # consumer.run() 不能放入 gather：它会阻塞直到收到 stop 信号，
+        # 而 stop 只在 _main_run 完成后的 finally 中调用 → 死锁。
+        # 改为 create_task 在后台运行，主工作完成后在 finally 中 stop。
+        consumer_task = None
         if consumer is not None:
-            tasks.append(consumer.run())
-        await asyncio.gather(*tasks)
+            consumer_task = asyncio.create_task(consumer.run())
+        try:
+            tasks: list[Awaitable] = [*feeders, _collect_outputs()]
+            if main_ops:
+                tasks.append(main_executor.execute())
+            await asyncio.gather(*tasks)
+        finally:
+            if consumer is not None:
+                consumer.stop()
+            if consumer_task is not None:
+                await consumer_task
 
     try:
         await _main_run()
@@ -564,8 +673,6 @@ async def run_dag_multiprocess(
         mp_cancel.set()
         raise
     finally:
-        if consumer is not None:
-            consumer.stop()
         for p in processes:
             p.join(timeout=10)
             if p.is_alive():
