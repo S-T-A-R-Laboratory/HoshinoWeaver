@@ -60,11 +60,12 @@ class ExifReduceOp(BaseOp):
             if base_exif is None:
                 await self._broadcast_outputs({"result": None})
                 return
-            base_exif.set_exif(
-                CommonExifTags.ExposureTime,
-                "/".join(map(str, time_cumsum.as_integer_ratio())))
+            if float(time_cumsum) != 0:
+                base_exif.set_exif(
+                    CommonExifTags.ExposureTime,
+                    "/".join(map(str, time_cumsum.as_integer_ratio())))
             logger.info(
-                f"Calculated total exposure time = {time_cumsum:.2f}s.")
+                f"Calculated total exposure time = {float(time_cumsum):.2f}s.")
             await self._broadcast_outputs({"result": base_exif})
         else:
             raise ValueError(f"Unsupported merge method: {merge_method}")

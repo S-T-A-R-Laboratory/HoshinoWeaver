@@ -94,8 +94,12 @@ def register_shm_transportable(cls: type) -> type:
 _TAG_ARRAY = "array"
 _TAG_SHM_OBJ = "shm_obj"
 _TAG_PICKLE = "pickle"
+_TAG_SHM_PICKLE = "shm_pickle"   # pickle 字节存入 SharedMemory（大对象防 pipe 阻塞）
 _TAG_SENTINEL = "sentinel"
 _TAG_CANCEL = "cancel"
+
+# pickle 超过此阈值时走 SharedMemory，避免 send() 阻塞 event loop 造成死锁。
+_PIPE_SAFE_THRESHOLD = 32 * 1024  # 32 KB，留一半余量给 pipe 控制帧
 
 
 class IPCQueue(BaseQueue):
@@ -141,29 +145,53 @@ class IPCQueue(BaseQueue):
         await asyncio.to_thread(self._empty_sem.acquire)
 
         try:
-            if item is BaseQueue._SENTINEL:
-                self._conn_a.send((_TAG_SENTINEL, None))
-            elif isinstance(item, CancellationToken):
-                self._conn_a.send(
-                    (_TAG_CANCEL, str(item.error), item.source_node))
-            elif isinstance(item, np.ndarray) and item.nbytes > self._shm_threshold:
-                ref = self._write_shm(item)
-                self._conn_a.send((_TAG_ARRAY, ref))
-            elif isinstance(item, ShmTransportable):
-                arr, meta = item.__shm_pack__()
-                if arr.nbytes > self._shm_threshold:
-                    ref = self._write_shm(arr)
-                    self._conn_a.send(
-                        (_TAG_SHM_OBJ, type(item).__qualname__, ref, meta))
-                else:
-                    self._conn_a.send((_TAG_PICKLE, pickle.dumps(item)))
-            else:
-                self._conn_a.send((_TAG_PICKLE, pickle.dumps(item)))
+            msg = self._pack_item(item)
         except Exception:
             self._empty_sem.release()
             raise
 
+        # send 在线程中执行，避免大数据阻塞 event loop。
+        # 先释放 filled_sem 再 send：让消费端的 recv 与 send 并发执行，
+        # 防止大数据超过 pipe buffer 时 send 阻塞等待 recv 而 recv 等待
+        # semaphore 的死锁。
         self._filled_sem.release()
+        await asyncio.to_thread(self._conn_a.send, msg)
+
+    def _pack_item(self, item: Any) -> tuple:
+        """将对象打包为 pipe 消息元组（同步，不做 I/O）。"""
+        if item is BaseQueue._SENTINEL:
+            return (_TAG_SENTINEL, None)
+
+        if isinstance(item, CancellationToken):
+            return (_TAG_CANCEL, str(item.error), item.source_node)
+
+        if isinstance(item, np.ndarray) and item.nbytes > self._shm_threshold:
+            ref = self._write_shm(item)
+            return (_TAG_ARRAY, ref)
+
+        if isinstance(item, ShmTransportable):
+            arr, meta = item.__shm_pack__()
+            if arr.nbytes > self._shm_threshold:
+                ref = self._write_shm(arr)
+                return (_TAG_SHM_OBJ, type(item).__qualname__, ref, meta)
+            # 小 ShmTransportable 走 pickle
+            data = pickle.dumps(item)
+            return self._pickle_or_shm(data)
+
+        data = pickle.dumps(item)
+        return self._pickle_or_shm(data)
+
+    def _pickle_or_shm(self, data: bytes) -> tuple:
+        """小 pickle 走 pipe，大 pickle 走 SharedMemory 防死锁。"""
+        if len(data) <= _PIPE_SAFE_THRESHOLD:
+            return (_TAG_PICKLE, data)
+        # 大 pickle：写入 SharedMemory，pipe 只传引用
+        shm = SharedMemory(create=True, size=len(data))
+        shm.buf[:len(data)] = data
+        name = shm.name
+        self._pending_shm_names.append(name)
+        shm.close()
+        return (_TAG_SHM_PICKLE, name, len(data))
 
     # ── get ──
 
@@ -205,6 +233,18 @@ class IPCQueue(BaseQueue):
 
         if tag == _TAG_PICKLE:
             return pickle.loads(msg[1])
+
+        if tag == _TAG_SHM_PICKLE:
+            shm_name, data_len = msg[1], msg[2]
+            shm = SharedMemory(name=shm_name, create=False)
+            data = bytes(shm.buf[:data_len])
+            shm.close()
+            shm.unlink()
+            try:
+                self._pending_shm_names.remove(shm_name)
+            except ValueError:
+                pass
+            return pickle.loads(data)
 
         raise ValueError(f"Unknown IPC message tag: {tag}")
 
