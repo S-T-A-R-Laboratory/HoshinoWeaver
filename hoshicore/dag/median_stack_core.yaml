@@ -1,0 +1,34 @@
+description: "Median Stacking sub-DAG: DiskBuffer + MedianReduce"
+version: "1"
+
+# ── 全局输入 ──
+inputs:
+  data: { type: sequence }
+
+# ── 全局配置 ──
+configs:
+  chunk_rows: { type: int, default: 32 }
+
+# ── 节点 ──
+#
+#  inputs.data ──► disk_buffer ──► median_reduce ──► result
+
+nodes:
+  disk_buffer:
+    op: DiskBufferWriterOp
+    inputs:
+      data: inputs.data
+    outputs:
+      buffer_handle: { type: image }
+
+  median_reduce:
+    op: MedianReduceOp
+    configs:
+      buffer_handle: disk_buffer.buffer_handle
+      chunk_rows: configs.chunk_rows
+    outputs:
+      result: { type: image }
+
+# ── 全局输出 ──
+outputs:
+  result: median_reduce.result
