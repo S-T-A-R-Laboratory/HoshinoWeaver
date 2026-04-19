@@ -11,7 +11,10 @@
         ↓ result (image) + statistics (FastGaussianParam)
 
 DiskBufferWriterOp：
-    消费序列输入，逐帧写入 DiskFrameBuffer，完成后将 buffer 实例推送给下游。
+    消费序列输入，逐帧缓存供下游多 pass 算法重放。
+    支持两种缓冲策略（通过 buffer_mode config 控制）：
+        - disk（默认）：将解码后的帧写入 DiskFrameBuffer（临时 .npz），读取快但占磁盘
+        - replay：保留原始文件路径到 SourceReplayBuffer，零临时文件但每 pass 重新 decode
     清理策略：
         - 正常完成：buffer 由下游 SigmaClipIteratorOp 在 finally 中清理
         - 自身异常：在 except 中立即清理，防止泄漏
@@ -27,7 +30,7 @@ from typing import Any, Optional
 import numpy as np
 from loguru import logger
 
-from ..component.frame_buffer import DiskFrameBuffer
+from ..component.frame_buffer import DiskFrameBuffer, SourceReplayBuffer
 from ..component.merger import MeanMerger, SigmaClippingMerger
 from ..component.tagged_image import FloatImage
 from ..component.utils import FastGaussianParam
@@ -38,10 +41,16 @@ from .base import BaseOp
 
 @register_op()
 class DiskBufferWriterOp(BaseOp):
-    """将序列帧写入磁盘缓冲区，供下游多 pass 算法重放。
+    """将序列帧缓存供下游多 pass 算法重放。
 
-    消费 data（必选）和 weight（可选）序列，逐帧写入 DiskFrameBuffer。
-    完成后通过 buffer_handle 端口将 DiskFrameBuffer 实例推给下游。
+    支持两种缓冲策略：
+        - disk（默认）：解码后的帧写入 DiskFrameBuffer（临时 .npz 文件）
+        - replay：保留原始文件路径到 SourceReplayBuffer，零临时文件
+
+    buffer_mode 配置：
+        - "auto"（默认）：有 fnames 输入 → replay，否则 → disk
+        - "disk"：强制使用 DiskFrameBuffer
+        - "replay"：强制使用 SourceReplayBuffer（需要 fnames 输入）
     """
 
     EXECUTOR = "cpu"
@@ -54,10 +63,20 @@ class DiskBufferWriterOp(BaseOp):
             "type": "sequence",
             "required": False,
         },
+        "fnames": {
+            "type": "sequence",
+            "required": False,
+        },
+    }
+    CONFIGS: dict[str, dict[str, Any]] = {
+        "buffer_mode": {
+            "type": "str",
+            "default": "auto",
+        },
     }
     OUTPUTS = {
         "buffer_handle": {
-            "type": "image",  # DiskFrameBuffer 实例，单次传递
+            "type": "image",  # BaseFrameBuffer 实例，单次传递
         },
     }
 
@@ -67,19 +86,37 @@ class DiskBufferWriterOp(BaseOp):
             "DiskBufferWriterOp requires sequence length information."
 
         has_weight = self.inputs['weight'].active
-        frame_buffer = DiskFrameBuffer()
+        has_fnames = self.inputs['fnames'].active
+        buffer_mode = configs.get("buffer_mode", "auto")
+
+        # 确定缓冲策略
+        use_replay = (buffer_mode == "replay" or
+                      (buffer_mode == "auto" and has_fnames))
+        if use_replay and not has_fnames:
+            raise ValueError(
+                f"{self.name}: replay mode requires 'fnames' input, "
+                f"but fnames is not wired.")
+
+        if use_replay:
+            frame_buffer = SourceReplayBuffer()
+            mode_label = "Replay"
+        else:
+            frame_buffer = DiskFrameBuffer()
+            mode_label = "Buffer"
+
         stacked_num = 0
         failed_num = 0
 
         self.tracker.create_bar(self.name,
                                 tot_num,
-                                desc=f"{self.name} [Buffer]")
+                                desc=f"{self.name} [{mode_label}]")
         try:
             for i in range(tot_num):
                 cur_filename = f"the {i + 1}-th frame"
                 try:
                     upper = self._async_convert_inputs()
                     cur_img = await upper['data']
+                    fname = (await upper['fnames']) if has_fnames else None
                     weight = (await upper['weight']) if has_weight else None
                 except StreamExhausted:
                     logger.warning(
@@ -93,7 +130,10 @@ class DiskBufferWriterOp(BaseOp):
                     self.tracker.update(self.name)
                     continue
 
-                frame_buffer.append(cur_img, weight)
+                if use_replay:
+                    frame_buffer.append(fname, weight)
+                else:
+                    frame_buffer.append(cur_img, weight)
                 stacked_num += 1
                 self.tracker.update(self.name)
 
@@ -104,13 +144,13 @@ class DiskBufferWriterOp(BaseOp):
 
             logger.info(
                 f"{self.name}: buffered {stacked_num}/{tot_num} frames "
-                f"({failed_num} fail(s)).")
+                f"({failed_num} fail(s)), mode={mode_label}.")
 
             # 将 buffer 实例推给下游
             await self._broadcast_outputs({"buffer_handle": frame_buffer})
 
         except Exception as e:
-            # 自身异常：立即清理 buffer 防止磁盘泄漏
+            # 自身异常：立即清理 buffer 防止泄漏
             logger.error(f"{self.name} failed: {e}")
             frame_buffer.cleanup()
             raise

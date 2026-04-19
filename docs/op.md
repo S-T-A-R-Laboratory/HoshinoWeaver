@@ -63,7 +63,8 @@ async def execute() -> None
 并行执行的基类，用于处理序列数据中的每个元素可以独立并行处理的场景。
 
 **类属性：**
-- `CONCURRENCY`: 并发度（默认为4，当前未实现）
+- `CONCURRENCY`: 并发度（默认为1，串行执行；>1 时使用滑动窗口并发）
+- `WINDOW_SIZE`: 滑动窗口大小（默认为 CONCURRENCY * 2）
 
 **核心方法：**
 ```python
@@ -314,6 +315,39 @@ Main 进程:  TrackerEventConsumer.run()  →  tracker.update(name, 1)  →  tqd
 - `cancel_event` 使用 `multiprocessing.Event`（跨平台），替代 `asyncio.Event`
 - `CancellationToken` 通过 IPCQueue 的控制帧传播（`("cancel", error_str, source_node)` 标记帧）
 - `_run_cpu` 的取消检查 `mp.Event.is_set()` 是线程安全的，直接兼容
+
+## Meta YAML 路由预处理
+
+`hoshicore/engine/meta.py` 提供 `meta_resolve()` 函数，将含路由字典的 Meta YAML 编译为标准 DAG spec dict。
+
+**路由节点语法**：在节点中使用 `route` 替代 `op`，声明可选的实现方式：
+
+```yaml
+main_stacker:
+  route:                          # 可选实现列表
+    mean: MeanStackerOp
+    median: median_stack_core.yaml
+    sigma_clip: sigma_clip.yaml
+  inputs:                         # 所有选项共享的输入
+    data: flat_divide.result
+  route_configs:                  # 按选项分组的专属配置
+    mean:
+      int_weight: configs.int_weight
+    sigma_clip:
+      int_weight: configs.int_weight
+      rej_high: configs.rej_high
+  outputs:
+    result: { type: image }
+```
+
+**解析流程**：`meta_resolve(meta_spec, route_choices)` 遍历节点，对含 `route` 字段的节点：
+1. 查找 `route_choices[node_name]` 获取用户选择
+2. 将 `route[choice]` 填入 `op` 字段
+3. 合并共享 `inputs` + `route_inputs[choice]`
+4. 合并共享 `configs` + `route_configs[choice]`
+5. 删除 `route` / `route_inputs` / `route_configs` 字段
+
+**辅助算子**：`NoneOutputOp` 输出 `None`，配合 `CalibrationSubtractOp` / `CalibrationDivideOp` 的 passthrough 行为实现可选校准阶段。
 
 ## 设计问题与改进建议
 
