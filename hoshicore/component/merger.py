@@ -9,7 +9,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .tagged_image import DTYPE_LEVEL, _SCALE_BASE, FloatImage
-from .utils import DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP, FastGaussianParam
+from .utils import (DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP,
+                     FastGaussianParam, HuberMeanParam)
 
 
 class BaseMerger(metaclass=ABCMeta):
@@ -171,3 +172,65 @@ class SigmaClippingMerger(MeanMerger):
         if weight is not None:
             new_img = new_img * weight
         return new_img
+
+
+class HuberWeightedMerger(BaseMerger):
+    """Huber 加权均值合并器（Phase 2 专用）。
+
+    接收外部提供的全局 mean/std（来自 Phase 1 的 MeanMerger），
+    对每帧计算 Huber 权重后累加到 HuberMeanParam。
+
+    用法与 SigmaClippingMerger 对称：
+        # Phase 1
+        mean_merger = MeanMerger(int_weight=...)
+        for frame in frames: mean_merger.merge(frame, weight)
+        fgp = mean_merger.result  # FastGaussianParam
+
+        # Phase 2
+        huber_merger = HuberWeightedMerger(ref_stats=fgp, huber_c=1.345)
+        for frame in frames: huber_merger.merge(frame, weight)
+        result = huber_merger.merged_image  # FloatImage
+
+    Args:
+        ref_stats: Phase 1 的 FastGaussianParam（提供 mean/std）。
+        huber_c: Huber 常数。默认 1.345（正态分布下 95% 渐近效率）。
+    """
+
+    def __init__(self, ref_stats: FastGaussianParam,
+                 huber_c: float = 1.345, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.ref_stats = ref_stats
+        self.huber_c = huber_c
+        self._ref_mean = ref_stats.mu.astype(np.float32)
+        self._ref_std = np.sqrt(
+            np.maximum(ref_stats.var, 0)).astype(np.float32)
+
+    def _pre_process(self, img: np.ndarray, weight=None) -> HuberMeanParam:
+        """计算 Huber 权重，构造单帧的 HuberMeanParam。"""
+        r = (img.astype(np.float32) - self._ref_mean) / (self._ref_std + 1e-10)
+        abs_r = np.abs(r)
+        huber_w = np.where(
+            abs_r <= self.huber_c,
+            np.ones_like(abs_r, dtype=np.float32),
+            (self.huber_c / (abs_r + 1e-10)).astype(np.float32),
+        )
+        if weight is not None:
+            huber_w = huber_w * weight
+
+        w_sum = (img * huber_w).astype(np.float64)
+        w_total = huber_w.astype(np.float64)
+        return HuberMeanParam(
+            weighted_sum=w_sum,
+            weight_total=w_total,
+            source_dtype=img.dtype,
+        )
+
+    def _merge(self, base_img: HuberMeanParam,
+               new_img: HuberMeanParam) -> HuberMeanParam:
+        return base_img + new_img
+
+    @property
+    def merged_image(self) -> Optional[FloatImage]:
+        if self.result is None:
+            return None
+        return FloatImage(self.result.mu, dtype=self._source_dtype)

@@ -450,6 +450,62 @@ class FastGaussianParam(object):
         return self.sum_mu.shape
 
 
+class HuberMeanParam:
+    """Huber 加权均值的流式累加器。
+
+    存储加权和 weighted_sum = Σ(w_i · x_i) 和权重总和 weight_total = Σ(w_i)，
+    最终结果 μ = weighted_sum / weight_total。
+
+    两者均为逐像素数组，支持 __add__ 用于分布式归约（merge_partial）。
+
+    Args:
+        weighted_sum: 加权像素和。
+        weight_total: 权重总和。
+        source_dtype: 原始图像的 dtype（用于构造 FloatImage 输出）。
+    """
+
+    def __init__(
+        self,
+        weighted_sum: np.ndarray,
+        weight_total: np.ndarray,
+        source_dtype: Optional[np.dtype] = None,
+    ):
+        self.weighted_sum = weighted_sum
+        self.weight_total = weight_total
+        self.source_dtype = source_dtype
+
+    def add(self, img: np.ndarray, huber_weight: np.ndarray,
+            frame_weight: Optional[Union[float, np.ndarray]] = None):
+        """累加一帧的 Huber 加权贡献。
+
+        Args:
+            img: 原始像素数组。
+            huber_weight: Huber 权重数组（逐像素），值域 (0, 1]。
+            frame_weight: 可选的帧级权重（如渐入渐出权重）。
+        """
+        w = huber_weight
+        if frame_weight is not None:
+            w = w * frame_weight
+        self.weighted_sum += (img * w).astype(self.weighted_sum.dtype)
+        self.weight_total += w.astype(self.weight_total.dtype)
+
+    def __add__(self, other: HuberMeanParam) -> HuberMeanParam:
+        return HuberMeanParam(
+            weighted_sum=self.weighted_sum + other.weighted_sum,
+            weight_total=self.weight_total + other.weight_total,
+            source_dtype=self.source_dtype,
+        )
+
+    @property
+    def mu(self) -> np.ndarray:
+        safe_total = np.where(self.weight_total > 0, self.weight_total, 1)
+        return np.round(self.weighted_sum / safe_total)
+
+    @property
+    def shape(self):
+        return self.weighted_sum.shape
+
+
 def get_scale_x(time: int, base: int = 256):
     return base**time + 1
 

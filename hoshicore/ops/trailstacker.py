@@ -21,6 +21,7 @@ class TrailStackerOp(BaseOp):
     叠加星轨
     """
     EXECUTOR = "cpu"
+    DECOMPOSABLE = True
     INPUTS: dict[str, dict[str, Any]] = {
         "data": {
             "type": "sequence",
@@ -44,6 +45,38 @@ class TrailStackerOp(BaseOp):
     }
     MERGER = MaxMerger
     MAX_SIZE: int = 1
+
+    @classmethod
+    def merge_partial(cls, partial_results: list[dict[str, Any]]) -> dict[str, Any]:
+        """合并多个 worker 的局部归约结果。
+
+        复用 MERGER._merge 做逐对归约。注意直接操作 merger.result
+        而非调用 merger.merge()，因为 partial 已经是完成归约的结果，
+        不需要再经过 _pre_process / int_weight 等预处理流程。
+
+        对于 Max/Min：result 是 ndarray，_merge = np.maximum / np.minimum。
+            合并 key 为 "result"。
+        对于 Mean：result 是 FastGaussianParam，_merge = FGP.__add__。
+            合并 key 为 "statistics"，最终从合并后的 FGP 提取 merged_image。
+        """
+        # MeanStackerOp 输出 statistics (FastGaussianParam)，需要用它做归约
+        merge_key = "statistics" if "statistics" in cls.OUTPUTS else "result"
+
+        merger = cls.MERGER(int_weight=False)
+        merger.result = partial_results[0][merge_key]
+        for partial in partial_results[1:]:
+            merger.result = merger._merge(merger.result, partial[merge_key])
+
+        # MeanMerger.merged_image 依赖 _source_dtype 构造 FloatImage；
+        # 从 FastGaussianParam.source_dtype 获取（Max/Min 不走此分支）。
+        if hasattr(merger.result, 'source_dtype'):
+            merger._source_dtype = merger.result.source_dtype
+
+        outputs: dict[str, Any] = {"result": merger.merged_image}
+        if "statistics" in cls.OUTPUTS:
+            merger.result.inplace_calc = False
+            outputs["statistics"] = merger.result
+        return outputs
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         int_weight: bool = configs['int_weight']

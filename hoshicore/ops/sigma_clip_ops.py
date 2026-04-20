@@ -31,7 +31,8 @@ import numpy as np
 from loguru import logger
 
 from ..component.frame_buffer import DiskFrameBuffer, SourceReplayBuffer
-from ..component.merger import MeanMerger, SigmaClippingMerger
+from ..component.merger import (MeanMerger, SigmaClippingMerger,
+                                HuberWeightedMerger)
 from ..component.tagged_image import FloatImage
 from ..component.utils import FastGaussianParam
 from ..engine.registry import register_op
@@ -278,6 +279,80 @@ class SigmaClipIteratorOp(BaseOp):
             raise
         finally:
             # 无条件清理 buffer：无论成功、失败还是中断
+            frame_buffer.cleanup()
+
+
+@register_op()
+class HuberMeanIteratorOp(BaseOp):
+    """Huber 加权均值（Phase 2）：基于 mean FGP 和缓冲帧进行单 pass Huber 加权。
+
+    接收：
+        - fgp_total: FastGaussianParam（来自 MeanStackerOp.statistics，Phase 1）
+        - buffer_handle: BaseFrameBuffer 实例（来自 DiskBufferWriterOp）
+        - huber_c: Huber 常数（默认 1.345，正态分布 95% 渐近效率）
+
+    输出：
+        - result: Huber 加权均值图像 (FloatImage)
+
+    与 SigmaClipIteratorOp 的结构对称，但只需单 pass（无迭代）。
+    """
+
+    EXECUTOR = "cpu"
+    CONFIGS: dict[str, dict[str, Any]] = {
+        "fgp_total": {
+            "type": "image",
+            "required": True,
+        },
+        "buffer_handle": {
+            "type": "image",
+            "required": True,
+        },
+        "huber_c": {
+            "type": "float",
+            "default": 1.345,
+        },
+    }
+    OUTPUTS = {
+        "result": {
+            "type": "image",
+        },
+    }
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        fgp_total: FastGaussianParam = configs['fgp_total']
+        frame_buffer: DiskFrameBuffer = configs['buffer_handle']
+        huber_c: float = configs['huber_c']
+
+        try:
+            huber_merger = HuberWeightedMerger(
+                ref_stats=fgp_total,
+                huber_c=huber_c,
+            )
+
+            n_frames = len(frame_buffer)
+            self.tracker.create_bar(
+                self.name, n_frames,
+                desc=f"{self.name} [Huber]")
+
+            for idx in range(n_frames):
+                raw, weight = frame_buffer[idx]
+                await self._run_cpu(huber_merger.merge, raw, weight)
+                self.tracker.update(self.name)
+
+            self.tracker.close_bar(self.name)
+
+            result = huber_merger.merged_image
+            if result is None:
+                raise ValueError(
+                    f"{self.name}: No valid frames processed.")
+
+            await self._broadcast_outputs({"result": result})
+            logger.info(f"{self.name} Huber mean complete.")
+
+        except Exception as e:
+            logger.error(f"{self.name} failed: {e}")
+            raise
+        finally:
             frame_buffer.cleanup()
 
 
