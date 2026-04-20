@@ -143,7 +143,6 @@ class MaxNoiseEqualizationOp(BaseOp):
 
     输出校正后的最大值图像。
     """
-    EXECUTOR = "cpu"
     CONFIGS: dict[str, dict[str, Any]] = {
         "max_img": {
             "type": "image",

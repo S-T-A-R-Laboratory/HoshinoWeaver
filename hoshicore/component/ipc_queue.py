@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import multiprocessing as mp
 import pickle
+from collections import deque
 from dataclasses import dataclass
 from multiprocessing.shared_memory import SharedMemory
 from typing import Any, Optional, Protocol, runtime_checkable
@@ -135,8 +136,16 @@ class IPCQueue(BaseQueue):
         self.active: bool = True
         self._shm_threshold = shm_threshold
 
-        # 异常清理：跟踪已创建但未被消费者释放的 shm
-        self._pending_shm_names: list[str] = []
+        # 异常清理：跟踪已创建但未被消费者释放的 shm。
+        # 注意：必须保持 SharedMemory 对象（而非仅名字）存活，
+        # 因为 Windows Named File Mapping 在最后一个 handle 关闭时立即销毁。
+        # 生产者必须持有 handle 直到消费者成功 attach。
+        #
+        # _pending_shm: 当前 _pack_item 正在构建的 slot 的 handle（临时）
+        # _slot_shm:    已发送但尚未确认消费的 slot handle 列表（按发送顺序）
+        #               每次 _empty_sem.acquire() 成功时 pop 并关闭最旧的一批
+        self._pending_shm: dict[str, SharedMemory] = {}
+        self._slot_shm: deque[list[SharedMemory]] = deque()
 
     # ── put ──
 
@@ -144,18 +153,31 @@ class IPCQueue(BaseQueue):
         """将对象放入队列（跨进程安全）。"""
         await asyncio.to_thread(self._empty_sem.acquire)
 
+        # _empty_sem 由消费者在 _read_shm() 之后释放，
+        # 所以此时最旧的 slot 已被消费者 attach 完毕，可以安全关闭生产者端 handle。
+        if self._slot_shm:
+            for shm in self._slot_shm.popleft():
+                shm.close()
+
+        before = set(self._pending_shm.keys())
         try:
             msg = self._pack_item(item)
         except Exception:
             self._empty_sem.release()
+            # 清理本次 pack 中途创建的 shm
+            for k in list(self._pending_shm.keys()):
+                if k not in before:
+                    self._pending_shm.pop(k).close()
             raise
 
-        # send 在线程中执行，避免大数据阻塞 event loop。
-        # 先释放 filled_sem 再 send：让消费端的 recv 与 send 并发执行，
-        # 防止大数据超过 pipe buffer 时 send 阻塞等待 recv 而 recv 等待
-        # semaphore 的死锁。
+        # 将本 slot 新创建的 handle 移入 _slot_shm，_pending_shm 保持干净
+        slot_handles = [self._pending_shm.pop(k)
+                        for k in list(self._pending_shm.keys())
+                        if k not in before]
+
         self._filled_sem.release()
         await asyncio.to_thread(self._conn_a.send, msg)
+        self._slot_shm.append(slot_handles)
 
     def _pack_item(self, item: Any) -> tuple:
         """将对象打包为 pipe 消息元组（同步，不做 I/O）。"""
@@ -188,10 +210,8 @@ class IPCQueue(BaseQueue):
         # 大 pickle：写入 SharedMemory，pipe 只传引用
         shm = SharedMemory(create=True, size=len(data))
         shm.buf[:len(data)] = data
-        name = shm.name
-        self._pending_shm_names.append(name)
-        shm.close()
-        return (_TAG_SHM_PICKLE, name, len(data))
+        self._pending_shm[shm.name] = shm  # 保持 handle 开放
+        return (_TAG_SHM_PICKLE, shm.name, len(data))
 
     # ── get ──
 
@@ -240,10 +260,6 @@ class IPCQueue(BaseQueue):
             data = bytes(shm.buf[:data_len])
             shm.close()
             shm.unlink()
-            try:
-                self._pending_shm_names.remove(shm_name)
-            except ValueError:
-                pass
             return pickle.loads(data)
 
         raise ValueError(f"Unknown IPC message tag: {tag}")
@@ -274,8 +290,7 @@ class IPCQueue(BaseQueue):
         view = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
         view[:] = arr  # 一次 memcpy
         ref = SharedArrayRef(shm.name, arr.shape, str(arr.dtype))
-        self._pending_shm_names.append(shm.name)
-        shm.close()  # 关闭本进程 fd，shm 块仍然存在
+        self._pending_shm[shm.name] = shm  # 保持 handle 开放，Windows 需要
         return ref
 
     def _read_shm(self, ref: SharedArrayRef) -> np.ndarray:
@@ -284,25 +299,30 @@ class IPCQueue(BaseQueue):
         arr = np.ndarray(
             ref.shape, dtype=np.dtype(ref.dtype), buffer=shm.buf).copy()
         shm.close()
-        shm.unlink()  # 消费者负责释放
-        try:
-            self._pending_shm_names.remove(ref.shm_name)
-        except ValueError:
-            pass  # 可能已被 cleanup 清理
+        shm.unlink()  # 消费者负责释放（Linux/macOS 有效；Windows 为 no-op）
         return arr
 
     # ── 清理 ──
 
     def cleanup(self) -> None:
         """清理所有未释放的 SharedMemory 块和 Pipe 连接。"""
-        for name in self._pending_shm_names:
+        # _pending_shm：pack 中途失败残留（正常情况为空）
+        for shm in list(self._pending_shm.values()):
             try:
-                shm = SharedMemory(name=name, create=False)
                 shm.close()
                 shm.unlink()
-            except FileNotFoundError:
-                pass  # 已被消费者释放
-        self._pending_shm_names.clear()
+            except (FileNotFoundError, OSError):
+                pass
+        self._pending_shm.clear()
+
+        # _slot_shm：已发送但尚未被下一次 put() 关闭的 handle
+        while self._slot_shm:
+            for shm in self._slot_shm.popleft():
+                try:
+                    shm.close()
+                    shm.unlink()
+                except (FileNotFoundError, OSError):
+                    pass
 
         for conn in (self._conn_a, self._conn_b):
             try:
@@ -312,5 +332,5 @@ class IPCQueue(BaseQueue):
 
     def __del__(self):
         """安全网：防止未清理的 SharedMemory 泄漏。"""
-        if self._pending_shm_names:
+        if self._pending_shm or self._slot_shm:
             self.cleanup()
