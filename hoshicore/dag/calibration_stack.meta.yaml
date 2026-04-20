@@ -16,6 +16,7 @@ configs:
   rej_high: { type: float, default: 3.0 }
   rej_low: { type: float, default: 3.0 }
   max_iter: { type: int, default: 5 }
+  huber_c: { type: float, default: 1.345 }
   exif_reduce_type: { type: str, default: "sum" }
   output_filename: { type: str, default: "result.tif" }
   output_dtype: { type: str, default: "uint8" }
@@ -151,6 +152,7 @@ nodes:
       mean: MeanStackerOp
       median: median_stack_core.yaml
       sigma_clip: sigma_clip.yaml
+      huber_mean: huber_mean.yaml
     inputs:
       data: flat_divide.result
     route_configs:
@@ -161,6 +163,9 @@ nodes:
         rej_high: configs.rej_high
         rej_low: configs.rej_low
         max_iter: configs.max_iter
+      huber_mean:
+        int_weight: configs.int_weight
+        huber_c: configs.huber_c
     outputs:
       result: { type: image }
 

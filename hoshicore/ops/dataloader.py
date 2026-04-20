@@ -11,11 +11,11 @@ from ..engine.registry import register_op
 class ImgDataLoaderOp(BaseOp):
     """
     通用异步数据加载器，用于异步预取数据，提高数据加载效率。
-    
+
     Args:
         loader (BaseLoader): 实际数据加载源。
         max_poolsize (int): 缓冲区最大存储样本数。
-    
+
     用法：
         dataloader = AsyncDataLoader(loader, max_poolsize=4)
         dataloader.start()
@@ -23,6 +23,7 @@ class ImgDataLoaderOp(BaseOp):
             ...
         dataloader.stop()
     """
+    DATA_PARALLEL = True
     INPUTS: dict[str, Any] = {
         "src": {
             "type": "sequence",
