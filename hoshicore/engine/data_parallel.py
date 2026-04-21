@@ -353,6 +353,8 @@ def _segment_worker_main(
     tracker_queue: mp.Queue,
     worker_id: int,
     dag_search_paths_str: list[str],
+    ready_event: mp.Event,
+    done_event: mp.Event,
 ) -> None:
     """Worker 进程入口：执行 I/O → Map 链 → Reduce 的完整流程。
 
@@ -365,13 +367,27 @@ def _segment_worker_main(
         tracker_queue: 进度事件队列。
         worker_id: Worker 编号。
         dag_search_paths_str: DAG 搜索路径。
+        ready_event: Worker 就绪信号（import 完成后 set）。
+        done_event: 主进程已读取完 output SharedMemory 后 set。
+                    Worker 必须等待此事件再退出，否则 Windows 上
+                    进程退出会销毁 SharedMemory 的 Named File Mapping。
     """
-    from .wiring import set_dag_search_paths
-    if dag_search_paths_str:
-        set_dag_search_paths([Path(p) for p in dag_search_paths_str])
+    try:
+        from .wiring import set_dag_search_paths
+        if dag_search_paths_str:
+            set_dag_search_paths([Path(p) for p in dag_search_paths_str])
 
-    from .registry import REGISTERED_OP as _reg
-    registry = dict(_reg)
+        from .registry import REGISTERED_OP as _reg
+        registry = dict(_reg)
+    except Exception as e:
+        logger.error(f"Segment worker {worker_id} failed to import: {e}")
+        ready_event.set()  # 即使失败也通知主进程，防止主进程无限等待
+        cancel_event.set()
+        return
+
+    # 通知主进程：import 完成，可以开始 dispatch
+    ready_event.set()
+    logger.debug(f"Segment worker {worker_id} ready")
 
     # 实例化段内 ops
     io_ops: list[BaseOp] = []
@@ -403,43 +419,56 @@ def _segment_worker_main(
 
         # 如果有 reduce op，构建本地队列进行流式归约
         local_reduce_input: Optional[RichContextQueue] = None
-        local_reduce_output: Optional[RichContextQueue] = None
         reduce_task = None
 
         if reduce_op_inst is not None:
             # 为 reduce op 构建本地队列
             local_reduce_input = RichContextQueue(maxsize=1)
-            local_reduce_output = RichContextQueue(maxsize=1)
 
-            # 布线：段内 map 链输出 → reduce 输入 'data'
-            for key in reduce_op_inst.INPUTS:
-                input_spec = reduce_op_inst.INPUTS[key]
-                if input_spec.get("type") == "sequence":
-                    if key not in segment_info.get("reduce_extra_inputs", {}):
-                        reduce_op_inst.inputs[key] = local_reduce_input
-                    else:
-                        # 段外额外输入：也通过 input_ipc 传递（Dispatcher 打包了额外输入）
-                        extra_q = RichContextQueue(maxsize=1)
-                        reduce_op_inst.inputs[key] = extra_q
+            reduce_extra_keys = set(
+                segment_info.get("reduce_extra_inputs", {}).keys())
 
-            # 布线：reduce 输出 → local_reduce_output
+            # 布线：reduce 输入队列
+            #   - 主序列输入（第一个不在 extra 中的 sequence）→ local_reduce_input
+            #   - 段外额外输入（如 weight）→ 独立队列
+            #   - 其他未布线的可选输入 → 标记 inactive
+            primary_input_assigned = False
+            extra_input_queues: dict[str, RichContextQueue] = {}
+
+            for key, input_spec in reduce_op_inst.INPUTS.items():
+                if input_spec.get("type") != "sequence":
+                    continue
+                if key in reduce_extra_keys:
+                    # 段外额外输入：独立队列，Dispatcher 打包了额外输入
+                    extra_q = RichContextQueue(maxsize=1)
+                    reduce_op_inst.inputs[key] = extra_q
+                    extra_input_queues[key] = extra_q
+                elif not primary_input_assigned:
+                    # 主序列输入（段内 map 链输出）
+                    reduce_op_inst.inputs[key] = local_reduce_input
+                    primary_input_assigned = True
+                else:
+                    # 其他未布线的可选输入 → 标记为非活跃
+                    reduce_op_inst.inputs[key].active = False
+
+            # 布线：reduce 输出 → 每个输出键独立队列
+            # 不能共用同一个队列，否则多输出 reduce op（如 MeanStackerOp 有
+            # result + statistics）在 _broadcast_outputs 中并发 put 时会死锁
+            local_reduce_outputs: dict[str, RichContextQueue] = {}
             for key in reduce_op_inst.OUTPUTS:
-                reduce_op_inst.outputs[key].append(local_reduce_output)
+                q = RichContextQueue(maxsize=1)
+                reduce_op_inst.outputs[key].append(q)
+                local_reduce_outputs[key] = q
 
             # 注入 configs
             for key, val in all_configs.get(reduce_name, {}).items():
                 if key in reduce_op_inst.config:
                     await reduce_op_inst.config[key].put(val)
 
-            # 标记未布线的可选输入
-            for key, spec in reduce_op_inst.INPUTS.items():
-                if not reduce_op_inst.inputs[key].active:
-                    continue
-                if key in segment_info.get("reduce_extra_inputs", {}):
-                    continue
-
-            # 设置 reduce 输入长度
+            # 设置 reduce 输入长度（主输入 + 额外输入）
             await local_reduce_input.set_length(frame_count)
+            for extra_q in extra_input_queues.values():
+                await extra_q.set_length(frame_count)
 
             # 启动 reduce op 协程
             reduce_task = asyncio.create_task(reduce_op_inst.execute())
@@ -494,7 +523,7 @@ def _segment_worker_main(
             processed_count += 1
 
         if reduce_op_inst is not None:
-            # 等待 reduce 完成
+            # 通知 reduce op 输入结束
             await local_reduce_input.put(BaseQueue._SENTINEL)
             # 额外输入也发 sentinel
             for extra_key in segment_info.get("reduce_extra_inputs", {}):
@@ -503,16 +532,21 @@ def _segment_worker_main(
                     if isinstance(q, RichContextQueue):
                         await q.put(BaseQueue._SENTINEL)
 
+            # 先收集 partial result，再 await reduce_task。
+            # 原因：reduce op 在 _async_execute 之后调用 _send_sentinel()
+            # 向输出队列 push SENTINEL。如果输出队列已满（result 未被消费），
+            # _send_sentinel 会阻塞，导致 reduce_task 永远不结束。
+            # 因此必须先消费 result 释放队列空间，再 await task。
+            partial = {}
+            for key, out_q in local_reduce_outputs.items():
+                try:
+                    partial[key] = await out_q.get()
+                except StreamExhausted:
+                    pass
+
             if reduce_task is not None:
                 await reduce_task
 
-            # 从 reduce 输出收集 partial result
-            partial = {}
-            for key in reduce_op_inst.OUTPUTS:
-                try:
-                    partial[key] = await local_reduce_output.get()
-                except StreamExhausted:
-                    pass
             await output_ipc.put(partial)
         else:
             pass  # Map 段的帧已逐帧输出
@@ -530,6 +564,10 @@ def _segment_worker_main(
         raise
     finally:
         loop.close()
+        # 等待主进程确认已读取 output SharedMemory，再退出。
+        # Windows 上进程退出会关闭所有 SharedMemory handle，如果是最后一个
+        # handle 则立即销毁 Named File Mapping，导致主进程 get() 失败。
+        done_event.wait(timeout=30)
 
 
 async def _execute_single_op(
@@ -687,7 +725,13 @@ class SegmentAdapter(BaseOp):
 
         # 启动 worker 进程
         processes: list[mp.Process] = []
+        ready_events: list[mp.Event] = []
+        done_events: list[mp.Event] = []
         for i in range(num_workers):
+            ready_evt = mp.Event()
+            done_evt = mp.Event()
+            ready_events.append(ready_evt)
+            done_events.append(done_evt)
             p = mp.Process(
                 target=_segment_worker_main,
                 args=(
@@ -699,6 +743,8 @@ class SegmentAdapter(BaseOp):
                     tracker_queue,
                     i,
                     search_paths_str,
+                    ready_evt,
+                    done_evt,
                 ),
                 daemon=True,
             )
@@ -706,10 +752,23 @@ class SegmentAdapter(BaseOp):
             p.start()
             logger.info(f"Segment worker {i} started (pid={p.pid})")
 
+        # 等待所有 worker import 完成（Windows spawn 模式下可能需要数秒）
+        for i, (evt, p) in enumerate(zip(ready_events, processes)):
+            ready = await asyncio.to_thread(evt.wait, 30)  # 30s 超时
+            if not ready or not p.is_alive():
+                msg = (f"Segment worker {i} failed to start "
+                       f"(alive={p.is_alive()}, ready={ready})")
+                logger.error(msg)
+                mp_cancel.set()
+                raise RuntimeError(msg)
+        logger.info(f"All {num_workers} workers ready")
+
         # 进度消费
         from ..component.progress import TrackerEventConsumer
         consumer = TrackerEventConsumer(self.tracker, tracker_queue)
         consumer_task = asyncio.create_task(consumer.run())
+
+        self._worker_processes = processes
 
         try:
             # 并发运行 dispatcher 和 collector
@@ -722,6 +781,10 @@ class SegmentAdapter(BaseOp):
             mp_cancel.set()
             raise
         finally:
+            # 通知 workers 可以退出（主进程已读完 output SharedMemory）。
+            # 必须在 join 之前 set，否则 workers 会卡在 done_event.wait()。
+            for evt in done_events:
+                evt.set()
             # 清理
             consumer.stop()
             await consumer_task
@@ -785,6 +848,15 @@ class SegmentAdapter(BaseOp):
         for i in range(total_frames):
             if cancel_event.is_set():
                 break
+
+            # 检查 worker 存活（防止 worker 崩溃后 dispatch 永久阻塞）
+            if hasattr(self, '_worker_processes'):
+                dead = [j for j, p in enumerate(self._worker_processes)
+                        if not p.is_alive()]
+                if dead:
+                    raise RuntimeError(
+                        f"Worker(s) {dead} died during dispatch "
+                        f"(frame {i}/{total_frames})")
 
             # 读取主输入
             frame_data = {main_input_key: await main_queue.get()}

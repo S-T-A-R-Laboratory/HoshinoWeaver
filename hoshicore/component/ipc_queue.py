@@ -128,6 +128,7 @@ class IPCQueue(BaseQueue):
 
         self._empty_sem = mp.Semaphore(maxsize)
         self._filled_sem = mp.Semaphore(0)
+        self._maxsize = maxsize
 
         # 长度信号
         self._length_val = mp.Value('l', -1)  # -1=未设置, -2=None(sentinel驱动)
@@ -143,9 +144,12 @@ class IPCQueue(BaseQueue):
         #
         # _pending_shm: 当前 _pack_item 正在构建的 slot 的 handle（临时）
         # _slot_shm:    已发送但尚未确认消费的 slot handle 列表（按发送顺序）
-        #               每次 _empty_sem.acquire() 成功时 pop 并关闭最旧的一批
+        # _put_count:   生产者已执行的 put 次数。前 maxsize 次 put 的
+        #               _empty_sem.acquire() 来自初始信号量计数（而非消费者释放），
+        #               不能关闭旧 slot 的 shm handle（消费者尚未读取）。
         self._pending_shm: dict[str, SharedMemory] = {}
         self._slot_shm: deque[list[SharedMemory]] = deque()
+        self._put_count: int = 0
 
     # ── put ──
 
@@ -153,11 +157,17 @@ class IPCQueue(BaseQueue):
         """将对象放入队列（跨进程安全）。"""
         await asyncio.to_thread(self._empty_sem.acquire)
 
-        # _empty_sem 由消费者在 _read_shm() 之后释放，
-        # 所以此时最旧的 slot 已被消费者 attach 完毕，可以安全关闭生产者端 handle。
-        if self._slot_shm:
+        # 仅当此次 acquire 对应消费者释放（而非初始信号量计数）时，
+        # 才安全关闭最旧 slot 的 SharedMemory handle。
+        # 前 maxsize 次 acquire 来自初始计数，消费者尚未读取任何数据。
+        # 第 maxsize+1 次 acquire 才是消费者第 1 次释放的信号量，
+        # 此时消费者已经读完了第 1 个 slot 的数据，可以安全关闭。
+        # 因此阈值必须是 > maxsize（严格大于），不能是 >=。
+        if self._put_count > self._maxsize and self._slot_shm:
             for shm in self._slot_shm.popleft():
                 shm.close()
+
+        self._put_count += 1
 
         before = set(self._pending_shm.keys())
         try:
@@ -175,8 +185,8 @@ class IPCQueue(BaseQueue):
                         for k in list(self._pending_shm.keys())
                         if k not in before]
 
-        self._filled_sem.release()
         await asyncio.to_thread(self._conn_a.send, msg)
+        self._filled_sem.release()
         self._slot_shm.append(slot_handles)
 
     def _pack_item(self, item: Any) -> tuple:
@@ -234,35 +244,40 @@ class IPCQueue(BaseQueue):
             raise CancellationError(
                 f"Upstream node '{source_node}' failed: {error_str}")
 
-        # 数据帧：释放 empty slot
-        self._empty_sem.release()
+        # 数据帧：先读取 SharedMemory 内容，再释放 empty slot。
+        # 顺序至关重要：_empty_sem.release() 通知生产者可以关闭旧 slot 的
+        # SharedMemory handle。在 Windows 上，关闭最后一个 handle 会立即
+        # 销毁 Named File Mapping。如果 release 在 read 之前，生产者可能
+        # 在消费者 attach 之前就关闭了 handle → FileNotFoundError。
+        try:
+            if tag == _TAG_ARRAY:
+                ref: SharedArrayRef = msg[1]
+                return self._read_shm(ref)
 
-        if tag == _TAG_ARRAY:
-            ref: SharedArrayRef = msg[1]
-            return self._read_shm(ref)
+            if tag == _TAG_SHM_OBJ:
+                _, cls_name, ref, meta = msg
+                arr = self._read_shm(ref)
+                cls = _SHM_REGISTRY.get(cls_name)
+                if cls is None:
+                    raise ValueError(
+                        f"ShmTransportable class '{cls_name}' not registered. "
+                        f"Available: {sorted(_SHM_REGISTRY.keys())}")
+                return cls.__shm_unpack__(arr, meta)
 
-        if tag == _TAG_SHM_OBJ:
-            _, cls_name, ref, meta = msg
-            arr = self._read_shm(ref)
-            cls = _SHM_REGISTRY.get(cls_name)
-            if cls is None:
-                raise ValueError(
-                    f"ShmTransportable class '{cls_name}' not registered. "
-                    f"Available: {sorted(_SHM_REGISTRY.keys())}")
-            return cls.__shm_unpack__(arr, meta)
+            if tag == _TAG_PICKLE:
+                return pickle.loads(msg[1])
 
-        if tag == _TAG_PICKLE:
-            return pickle.loads(msg[1])
+            if tag == _TAG_SHM_PICKLE:
+                shm_name, data_len = msg[1], msg[2]
+                shm = SharedMemory(name=shm_name, create=False)
+                data = bytes(shm.buf[:data_len])
+                shm.close()
+                shm.unlink()
+                return pickle.loads(data)
 
-        if tag == _TAG_SHM_PICKLE:
-            shm_name, data_len = msg[1], msg[2]
-            shm = SharedMemory(name=shm_name, create=False)
-            data = bytes(shm.buf[:data_len])
-            shm.close()
-            shm.unlink()
-            return pickle.loads(data)
-
-        raise ValueError(f"Unknown IPC message tag: {tag}")
+            raise ValueError(f"Unknown IPC message tag: {tag}")
+        finally:
+            self._empty_sem.release()
 
     # ── length 信号 ──
 
