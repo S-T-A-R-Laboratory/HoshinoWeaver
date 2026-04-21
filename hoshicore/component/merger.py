@@ -173,6 +173,21 @@ class SigmaClippingMerger(MeanMerger):
             new_img = new_img * weight
         return new_img
 
+    def result_as_partial(self) -> dict:
+        """导出 partial result 供跨进程 merge（多进程 sigma clip 迭代）。"""
+        return {"rejected_fgp": self.result}
+
+    @staticmethod
+    def merge_partial(partials: list[dict]) -> FastGaussianParam:
+        """合并 N 个 worker 的 rejected FGP。
+
+        FastGaussianParam 支持 __add__，直接累加即可。
+        """
+        merged = partials[0]["rejected_fgp"]
+        for p in partials[1:]:
+            merged = merged + p["rejected_fgp"]
+        return merged
+
 
 class HuberWeightedMerger(BaseMerger):
     """Huber 加权均值合并器（Phase 2 专用）。
@@ -234,3 +249,18 @@ class HuberWeightedMerger(BaseMerger):
         if self.result is None:
             return None
         return FloatImage(self.result.mu, dtype=self._source_dtype)
+
+    def result_as_partial(self) -> dict:
+        """导出 partial result 供跨进程 merge（多进程 Huber 迭代）。"""
+        return {"huber_param": self.result}
+
+    @staticmethod
+    def merge_partial(partials: list[dict]) -> HuberMeanParam:
+        """合并 N 个 worker 的 HuberMeanParam。
+
+        HuberMeanParam 支持 __add__，直接累加即可。
+        """
+        merged = partials[0]["huber_param"]
+        for p in partials[1:]:
+            merged = merged + p["huber_param"]
+        return merged

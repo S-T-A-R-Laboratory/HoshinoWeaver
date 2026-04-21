@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 帧缓冲：支持按索引随机读取的帧存储，用于 SigmaClipping 等多 pass 算法。
 
@@ -9,6 +11,7 @@
 import base64
 import os
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
 
@@ -16,6 +19,21 @@ import numpy as np
 from loguru import logger
 
 from .imgfio import load_img
+
+
+@dataclass
+class DiskBufferDescriptor:
+    """DiskFrameBuffer 的可 pickle 描述符，用于跨进程传递 buffer 元信息。
+
+    Worker 完成 Phase 1 后通过此描述符告知主进程 buffer 位置，
+    而不传递 DiskFrameBuffer 实例本身（内部持有文件路径不可直接 pickle）。
+
+    主进程可通过 DiskFrameBuffer.from_descriptor() 重建实例。
+    """
+    temp_path: str
+    prefix: str
+    count: int
+    paths: list[str] = field(default_factory=list)
 
 
 class BaseFrameBuffer:
@@ -114,6 +132,33 @@ class DiskFrameBuffer(BaseFrameBuffer):
         self._cleaned = True
         logger.debug(
             f"DiskFrameBuffer cleaned up (prefix={self.prefix}).")
+
+    def to_descriptor(self) -> DiskBufferDescriptor:
+        """导出可 pickle 的描述符，用于跨进程传递 buffer 元信息。
+
+        描述符包含所有 .npz 文件路径，接收方可通过 from_descriptor()
+        重建 DiskFrameBuffer 实例。
+
+        注意：导出后原实例仍然持有文件引用，调用方需确保
+        不会同时有两个实例执行 cleanup。
+        """
+        return DiskBufferDescriptor(
+            temp_path=str(self.temp_path),
+            prefix=self.prefix,
+            count=self._count,
+            paths=[str(p) for p in self._paths],
+        )
+
+    @classmethod
+    def from_descriptor(cls, desc: DiskBufferDescriptor) -> DiskFrameBuffer:
+        """从描述符重建 DiskFrameBuffer 实例（用于 MedianReduceOp 回退场景）。"""
+        buf = cls.__new__(cls)
+        buf.temp_path = Path(desc.temp_path)
+        buf.prefix = desc.prefix
+        buf._count = desc.count
+        buf._paths = [Path(p) for p in desc.paths]
+        buf._cleaned = False
+        return buf
 
     def __del__(self):
         """安全网：防止异常中断（如用户 Ctrl-C）导致临时文件泄漏。"""

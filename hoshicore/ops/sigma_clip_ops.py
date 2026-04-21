@@ -55,6 +55,7 @@ class DiskBufferWriterOp(BaseOp):
     """
 
     EXECUTOR = "cpu"
+    IS_DISK_BUFFER = True  # 段检测标记：识别为磁盘缓冲终端
     INPUTS: dict[str, dict[str, Any]] = {
         "data": {
             "type": "sequence",
@@ -174,6 +175,8 @@ class SigmaClipIteratorOp(BaseOp):
     """
 
     EXECUTOR = "cpu"
+    BUFFER_ITERATOR = True        # 段检测标记：消费 buffer 的迭代式 Reduce
+    ITERATOR_TYPE = "sigma_clip"  # 迭代类型标识（多阶段协议用）
     CONFIGS: dict[str, dict[str, Any]] = {
         "fgp_total": {
             "type": "image",
@@ -298,6 +301,8 @@ class HuberMeanIteratorOp(BaseOp):
     """
 
     EXECUTOR = "cpu"
+    BUFFER_ITERATOR = True        # 段检测标记：消费 buffer 的迭代式 Reduce
+    ITERATOR_TYPE = "huber_mean"  # 迭代类型标识（多阶段协议用）
     CONFIGS: dict[str, dict[str, Any]] = {
         "fgp_total": {
             "type": "image",
@@ -364,9 +369,13 @@ class MedianReduceOp(BaseOp):
     对每个块加载所有帧的对应行范围，沿帧轴取 median。
 
     输入 buffer_handle 来自 DiskBufferWriterOp。
+
+    注意：中位数不可分布式归约，多进程时需要回退到主进程单线程计算。
     """
 
     EXECUTOR = "cpu"
+    BUFFER_ITERATOR = True     # 段检测标记：消费 buffer
+    ITERATOR_TYPE = "median"   # 不可分布式，Collector 需特殊处理
     CONFIGS: dict[str, dict[str, Any]] = {
         "buffer_handle": {
             "type": "image",
