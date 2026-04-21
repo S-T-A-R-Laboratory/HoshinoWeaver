@@ -12,7 +12,7 @@ N 个 worker 进程，每个 worker 处理 1/N 帧并独立完成解码→处理
     │   ├── dispatch: 分发文件路径到 workers (~100 bytes/帧)
     │   ├── collect:  收集 partial results (仅 N 个)
     │   └── merge:    合并为最终结果
-    ├── 非段化 Ops（SubDag、不可分解 Reduce 等）
+    ├── 非段化 Ops（不可分解 Reduce 等）
     └── 结果收集
 
 使用方式：

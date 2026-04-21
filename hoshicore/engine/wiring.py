@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Optional, Sequence
 from loguru import logger
 
 from ..component.progress import DummyTracker, ProgressTracker
-from ..component.queue import BaseQueue, RichContextQueue, StreamExhausted
+from ..component.queue import BaseQueue, RichContextQueue
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
@@ -112,45 +112,6 @@ async def _feed_config(
         await queue.put(value)
 
 
-async def _bridge_queue(
-    name: str,
-    source: BaseQueue,
-    targets: list[BaseQueue],
-) -> None:
-    """将上游 RichContextQueue 的数据流式转发到所有目标队列。
-
-    与 _feed_sequence 不同，数据来源不是内存列表而是另一个队列，
-    这使得父 DAG 可以将自己的输入队列"桥接"到子 DAG 的内部队列，
-    实现跨 DAG 边界的流式传输（无需缓存整个序列）。
-
-    典型用途：SubDagOp 将父图的 inputs 队列转发到子图内部节点。
-
-    流程：
-        1. 等待 source 的 length 元信息就绪
-        2. 向所有 targets 广播 length
-        3. 逐项从 source 读取并推送到所有 targets（backpressure-safe）
-    """
-    length = await source.get_length()
-    logger.info(f"[Bridge] '{name}': {length} items → {len(targets)} queue(s)")
-    for queue in targets:
-        await queue.set_length(length)
-    if length is not None:
-        for _ in range(length):
-            item = await source.get()
-            await asyncio.gather(*(q.put(item) for q in targets))
-    else:
-        # sentinel 驱动：转发直到 StreamExhausted
-        while True:
-            try:
-                item = await source.get()
-            except StreamExhausted:
-                break
-            await asyncio.gather(*(q.put(item) for q in targets))
-        # 转发 sentinel 到所有 targets，使下游 Op 感知流结束
-        for q in targets:
-            await q.put(BaseQueue._SENTINEL)
-
-
 # ────────────────────────────────────────────────────────────────
 # 实例化 + 布线
 # ────────────────────────────────────────────────────────────────
@@ -169,13 +130,10 @@ def instantiate_and_wire(
         dag:
             validate_and_build_order() 的输出。
         global_inputs:
-            全局输入的实际数据 (name → Sequence | RichContextQueue)。
-            当值为 RichContextQueue 时使用 _bridge_queue 做流式转发（SubDagOp 场景），
-            否则使用 _feed_sequence 做批量推送。
+            全局输入的实际数据 (name → Sequence)。
         global_configs:
-            全局配置的实际值 (name → scalar | RichContextQueue)。
+            全局配置的实际值 (name → scalar)。
             未提供的配置项将自动从 YAML default 补齐。
-            当值为 RichContextQueue 时使用 _bridge_queue 转发。
         op_registry:
             op_name → Op class 的映射。None 时使用 REGISTERED_OP。
 
@@ -194,20 +152,9 @@ def instantiate_and_wire(
     effective_configs = _resolve_configs(dag.global_configs, global_configs)
 
     # ══════ 1) 实例化 Op ══════
-    # .yaml 后缀的 op 引用会惰性解析为 SubDagOp 子类并缓存到 registry
-    from ..ops.sub_dag import create_sub_dag_op
-
     instances: dict[str, BaseOp] = {}
     for node_name in dag.exec_order:
         op_name = nodes_spec[node_name]["op"]
-
-        if op_name not in registry and op_name.endswith(".yaml"):
-            # 惰性解析：.yaml 后缀 → 搜索路径解析 → 动态创建 SubDagOp 子类
-            resolved = _resolve_sub_dag_yaml(op_name)
-            sub_dag_cls = create_sub_dag_op(resolved, op_name=op_name)
-            registry[op_name] = sub_dag_cls
-            logger.info(f"Resolved sub-DAG '{op_name}' → {resolved}")
-
         if op_name not in registry:
             raise ValueError(
                 f"Op '{op_name}' (node '{node_name}') not found in registry. "
@@ -331,18 +278,10 @@ def instantiate_and_wire(
     feeders: list[Awaitable[None]] = []
     for name, targets in seq_targets.items():
         source = global_inputs[name]
-        if isinstance(source, RichContextQueue):
-            # 流式桥接：来自父 DAG 的队列（SubDagOp 场景）
-            feeders.append(_bridge_queue(name, source, targets))
-        else:
-            # 批量推送：来自内存列表（顶层 DAG 场景）
-            feeders.append(_feed_sequence(name, source, targets))
+        feeders.append(_feed_sequence(name, source, targets))
     for name, targets in cfg_targets.items():
         source = effective_configs[name]
-        if isinstance(source, RichContextQueue):
-            feeders.append(_bridge_queue(name, source, targets))
-        else:
-            feeders.append(_feed_config(name, source, targets))
+        feeders.append(_feed_config(name, source, targets))
     # 未布线 config 的默认值注入
     for label, default_val, queue in unwired_feeders:
         feeders.append(_feed_config(label, default_val, [queue]))
@@ -472,6 +411,7 @@ async def run_from_yaml(
     tracker: Optional[DummyTracker] = None,
     cancel_event: Optional[asyncio.Event] = None,
     num_workers: Optional[int] = None,
+    route_choices: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """
     便捷入口：从 YAML 文件加载、校验、并端到端执行 DAG。
@@ -484,16 +424,34 @@ async def run_from_yaml(
             global_configs={"fin": 0.1, "fout": 0.1, ...},
         )
 
+    Meta YAML 示例::
+
+        results = await run_from_yaml(
+            "hoshicore/dag/calibration_stack.meta.yaml",
+            global_inputs={...},
+            global_configs={...},
+            route_choices={"main_stacker": "sigma_clip"},
+        )
+
     Args:
         dag_search_paths: 子图 YAML 搜索路径列表。None 使用默认值
                           [hoshicore/dag/]。用户可追加自定义目录。
         tracker:          外部注入的进度追踪器。传入时优先使用，忽略 progress 参数。
         cancel_event:     外部取消事件。set() 后 Op 在下一个检查点退出。
+        route_choices:    Meta YAML 路由选择。若 spec 包含顶层 ``routes``
+                          或节点级 ``route`` 字段，传入路由选择进行编译期
+                          拓扑决策。None 或 {} 表示使用各路由的默认值。
     """
     from .build import _load_yaml, validate_and_build_order
     from .flatten import flatten_sub_dags
     from .multiprocess import run_dag_multiprocess
     spec = _load_yaml(yaml_path)
+
+    # Meta YAML 预处理：编译路由选择
+    if route_choices is not None or _spec_has_routes(spec):
+        from .meta import meta_resolve
+        spec = meta_resolve(spec, route_choices or {})
+
     spec = flatten_sub_dags(spec, dag_search_paths=dag_search_paths)
     dag = validate_and_build_order(spec)
     return await run_dag_multiprocess(dag,
@@ -510,6 +468,18 @@ async def run_from_yaml(
 # ────────────────────────────────────────────────────────────────
 # 内部工具
 # ────────────────────────────────────────────────────────────────
+
+
+def _spec_has_routes(spec: dict[str, Any]) -> bool:
+    """检测 spec 是否包含路由定义（需要 meta_resolve 预处理）。"""
+    if spec.get("routes"):
+        return True
+    nodes = spec.get("nodes")
+    if isinstance(nodes, dict):
+        for ns in nodes.values():
+            if isinstance(ns, dict) and "route_key" in ns:
+                return True
+    return False
 
 
 def _resolve_configs(
