@@ -46,7 +46,9 @@ class ExifReduceOp(BaseOp):
             for i in range(tot_num):
                 input_data = self._async_convert_inputs()
                 cur_exif: ExifData = await input_data['exifs']
-                if base_exif is None and cur_exif is not None:
+                if cur_exif is None:
+                    continue
+                if base_exif is None:
                     base_exif = cur_exif
 
                 time = cur_exif.get_exif(CommonExifTags.ExposureTime)

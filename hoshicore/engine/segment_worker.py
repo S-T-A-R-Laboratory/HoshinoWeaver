@@ -243,6 +243,7 @@ def _segment_worker_main(
             phase1_partial["__disk_buffer"] = local_buffer.to_descriptor()
 
         await output_ipc.put(phase1_partial)
+        logger.debug(f"Worker {worker_id}: Phase 1 partial sent, entering Phase 2 command loop")
 
         # ── Phase 2+: 命令驱动循环（迭代式 Reduce）──
         while True:

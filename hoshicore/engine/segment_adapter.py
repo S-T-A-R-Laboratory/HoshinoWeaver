@@ -392,6 +392,8 @@ class SegmentAdapter(BaseOp):
             for ipc in input_ipcs:
                 await ipc.put(BaseQueue._SENTINEL)
 
+        logger.debug(f"_dispatch completed (total_frames={total_frames})")
+
     async def _collect(
         self,
         input_ipcs: list[IPCQueue],
@@ -444,10 +446,14 @@ class SegmentAdapter(BaseOp):
         num_workers = len(output_ipcs)
 
         # ── Phase 1: 收集 N 个 worker 的 partial ──
+        logger.debug(f"_collect_multi_terminal: waiting for {num_workers} Phase 1 partials")
         partials: list[dict[str, Any]] = []
         for i, ipc in enumerate(output_ipcs):
             try:
+                logger.debug(f"_collect_multi_terminal: waiting for worker {i} partial")
                 partial = await ipc.get()
+                logger.debug(f"_collect_multi_terminal: got worker {i} partial "
+                             f"(keys={list(partial.keys())})")
                 partials.append(partial)
             except StreamExhausted:
                 logger.warning(f"Worker {i} sent no Phase 1 partial")
@@ -561,9 +567,14 @@ class SegmentAdapter(BaseOp):
         last_n = ref_fgp.n.copy()
         accepted = None
 
+        logger.debug(f"{iter_op_name}: entering sigma_clip iterations "
+                     f"(max_iter={max_iter}, rej_high={rej_high}, rej_low={rej_low})")
+
         for iteration in range(max_iter):
+            logger.debug(f"{iter_op_name}: iteration {iteration+1}/{max_iter} "
+                         f"- broadcasting ref_fgp to {num_workers} workers")
             # broadcast ref_fgp 给所有 worker
-            for ipc in input_ipcs:
+            for wi, ipc in enumerate(input_ipcs):
                 await ipc.put({
                     "action": "iterate",
                     "iter_type": "sigma_clip",

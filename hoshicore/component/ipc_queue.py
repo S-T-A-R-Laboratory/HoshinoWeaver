@@ -185,9 +185,21 @@ class IPCQueue(BaseQueue):
                         for k in list(self._pending_shm.keys())
                         if k not in before]
 
-        await asyncio.to_thread(self._conn_a.send, msg)
+        # 先释放 _filled_sem，再执行 socket send。
+        #
+        # mp.Pipe(duplex=True) 底层使用 socketpair，macOS 默认发送缓冲区仅 8KB。
+        # 当消息 > 8KB 时，_conn_a.send() 会阻塞，等待消费者 recv() 腾出空间。
+        # 但消费者在 get() 中先 acquire _filled_sem，再调用 recv()——
+        # 如果 _filled_sem.release() 在 send() 之后，消费者永远无法 recv()，
+        # 形成死锁：send 等 recv 腾空间，recv 等 _filled_sem。
+        #
+        # 先 release 使消费者可以并发 recv()，与 send() 配合完成传输。
+        # recv() 是阻塞的 socket read，即使在 release 和 send 之间有短暂窗口，
+        # recv 也只会阻塞到 send 开始写入数据——不会出错或读到错误数据。
+        # pipe 保证 FIFO 和消息边界完整性（Connection 协议使用长度前缀）。
         self._filled_sem.release()
         self._slot_shm.append(slot_handles)
+        await asyncio.to_thread(self._conn_a.send, msg)
 
     def _pack_item(self, item: Any) -> tuple:
         """将对象打包为 pipe 消息元组（同步，不做 I/O）。"""
