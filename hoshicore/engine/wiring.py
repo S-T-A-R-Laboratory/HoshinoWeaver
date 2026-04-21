@@ -82,23 +82,34 @@ def _resolve_sub_dag_yaml(op_name: str) -> Path:
 # ────────────────────────────────────────────────────────────────
 # Feeder 协程
 # ────────────────────────────────────────────────────────────────
-async def _feed_sequence(
+def _make_sequence_feeders(
     name: str,
     data: Sequence[Any],
     targets: list[BaseQueue],
-) -> None:
-    """将全局序列输入逐项推送到所有目标队列。
+) -> list[Awaitable[None]]:
+    """为全局序列输入的每个目标队列创建独立的 feeder 协程。
 
-    1. 向每个目标队列广播序列长度 (set_length)
-    2. 逐项并发推送到所有目标队列 (backpressure-safe)
+    每个目标队列有独立的 feeder，互不阻塞。
+    避免 asyncio.gather 跨队列推送时因单个慢队列阻塞所有其他队列，
+    导致被替换段中的依赖链路饥饿。
+
+    例如 mix_startrail 中 inputs.fnames 同时推送到：
+        - data_loader.src（SegmentAdapter 消费，受 worker IPC 背压）
+        - weight_generator.sequence（SegmentAdapter 需要其输出）
+        - exif_loader.fnames（独立链路）
+    若使用 asyncio.gather 统一推送，当 data_loader.src 满载时，
+    weight_generator 也无法获得输入 → SegmentAdapter 等待 weight → 停滞。
     """
     length = len(data)
     logger.info(f"[Feeder] Global input '{name}': "
                 f"{length} items → {len(targets)} queue(s)")
-    for queue in targets:
+
+    async def _feed_one(queue: BaseQueue) -> None:
         await queue.set_length(length)
-    for item in data:
-        await asyncio.gather(*(q.put(item) for q in targets))
+        for item in data:
+            await queue.put(item)
+
+    return [_feed_one(q) for q in targets]
 
 
 async def _feed_config(
@@ -278,7 +289,7 @@ def instantiate_and_wire(
     feeders: list[Awaitable[None]] = []
     for name, targets in seq_targets.items():
         source = global_inputs[name]
-        feeders.append(_feed_sequence(name, source, targets))
+        feeders.extend(_make_sequence_feeders(name, source, targets))
     for name, targets in cfg_targets.items():
         source = effective_configs[name]
         feeders.append(_feed_config(name, source, targets))
