@@ -24,6 +24,43 @@ configs:
   dark_master_path: { type: str, default: null }
   flat_master_path: { type: str, default: null }
 
+# ── 路由定义 ──
+#
+# 每个路由声明可选的实现方式及其默认值。
+# 节点通过 route_key 引用路由定义，meta_resolve 根据用户选择填入具体 op。
+routes:
+  bias_stacker:
+    options:
+      none: NoneOutputOp
+      master: LoadSingleImageOp
+      mean: MeanStackerOp
+      median: median_stack_core.yaml
+    default: none
+
+  dark_stacker:
+    options:
+      none: NoneOutputOp
+      master: LoadSingleImageOp
+      mean: MeanStackerOp
+      median: median_stack_core.yaml
+    default: none
+
+  flat_stacker:
+    options:
+      none: NoneOutputOp
+      master: LoadSingleImageOp
+      mean: MeanStackerOp
+      median: median_stack_core.yaml
+    default: none
+
+  main_stacker:
+    options:
+      mean: MeanStackerOp
+      median: median_stack_core.yaml
+      sigma_clip: sigma_clip.yaml
+      huber_mean: huber_mean.yaml
+    default: mean
+
 # ── 节点 ──
 #
 # 拓扑概览（所有可选路径展开）：
@@ -36,7 +73,7 @@ configs:
 #                                                                           ▼
 #                                                    main_stacker ──► image_saver
 #
-#   bias/dark/flat_stacker 是路由节点（route），可选：
+#   bias/dark/flat_stacker 是路由节点（route_key），可选：
 #     none   → NoneOutputOp（下游 passthrough）
 #     master → LoadSingleImageOp（从文件加载）
 #     mean   → MeanStackerOp（从序列求平均）
@@ -46,6 +83,7 @@ configs:
 #     mean       → MeanStackerOp
 #     median     → median_stack_core.yaml
 #     sigma_clip → sigma_clip.yaml
+#     huber_mean → huber_mean.yaml
 
 nodes:
   # ── Light 加载 ──
@@ -61,11 +99,7 @@ nodes:
 
   # ── Bias master ──
   bias_stacker:
-    route:
-      none: NoneOutputOp
-      master: LoadSingleImageOp
-      mean: MeanStackerOp
-      median: median_stack_core.yaml
+    route_key: bias_stacker
     route_inputs:
       mean:   { data: inputs.bias_fnames }
       median: { data: inputs.bias_fnames }
@@ -87,11 +121,7 @@ nodes:
 
   # ── Dark master ──
   dark_stacker:
-    route:
-      none: NoneOutputOp
-      master: LoadSingleImageOp
-      mean: MeanStackerOp
-      median: median_stack_core.yaml
+    route_key: dark_stacker
     route_inputs:
       mean:   { data: inputs.dark_fnames }
       median: { data: inputs.dark_fnames }
@@ -113,11 +143,7 @@ nodes:
 
   # ── Flat master ──
   flat_stacker:
-    route:
-      none: NoneOutputOp
-      master: LoadSingleImageOp
-      mean: MeanStackerOp
-      median: median_stack_core.yaml
+    route_key: flat_stacker
     route_inputs:
       mean:   { data: inputs.flat_fnames }
       median: { data: inputs.flat_fnames }
@@ -148,11 +174,7 @@ nodes:
 
   # ── 主堆栈 ──
   main_stacker:
-    route:
-      mean: MeanStackerOp
-      median: median_stack_core.yaml
-      sigma_clip: sigma_clip.yaml
-      huber_mean: huber_mean.yaml
+    route_key: main_stacker
     inputs:
       data: flat_divide.result
     route_configs:

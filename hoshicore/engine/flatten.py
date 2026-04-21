@@ -31,7 +31,7 @@ SubDAG 预展开：将 .yaml 引用的子图在编译期展平为顶层节点。
     - 子图的可选输入未被父图布线时标记为 __inactive__
     - 子图 configs 的默认值在父图未覆盖时省略该键，由 Op 自身 CONFIGS default 补齐
     - 递归展开：子图内部也可以引用 .yaml（当前无此场景但架构支持）
-    - 非 .yaml 的 SubDagOp 不展开，保持运行时展开行为
+    - 子图若为 Meta YAML（含 routes/route_key），展开前自动调用 meta_resolve
 """
 
 from __future__ import annotations
@@ -135,6 +135,23 @@ def _expand_one_sub_dag(
     resolved_path = _resolve_sub_dag_yaml(sub_yaml_name)
     sub_spec = _load_yaml(str(resolved_path))
     logger.debug(f"[flatten] expanding '{parent_name}' → {resolved_path}")
+
+    # ── 1.5) Meta sub-DAG 检测：如果子图包含路由定义，先解析 ──
+    sub_nodes_raw = sub_spec.get("nodes", {})
+    has_routes_def = bool(sub_spec.get("routes"))
+    has_route_nodes = any(
+        isinstance(ns, dict) and "route_key" in ns
+        for ns in sub_nodes_raw.values()
+    ) if isinstance(sub_nodes_raw, dict) else False
+
+    if has_routes_def or has_route_nodes:
+        parent_route_choices = _resolve_parent_routes(
+            parent_node_spec, parent_spec)
+        from .meta import meta_resolve
+        sub_spec = meta_resolve(sub_spec, parent_route_choices)
+        logger.debug(
+            f"[flatten] meta_resolve applied to sub-DAG '{parent_name}' "
+            f"with choices: {parent_route_choices}")
 
     sub_nodes: dict[str, dict] = sub_spec.get("nodes", {})
     sub_inputs_spec: dict[str, dict] = sub_spec.get("inputs", {})
@@ -359,3 +376,60 @@ def _try_rewrite_sub_dag_ref(
         return output_rewrite[output_name]
 
     return None
+
+
+def _resolve_parent_routes(
+    parent_node_spec: dict[str, Any],
+    parent_spec: dict[str, Any],
+) -> dict[str, str]:
+    """从父图节点 spec 中提取路由选择，供子 Meta sub-DAG 的 meta_resolve 使用。
+
+    父图引用 Meta sub-DAG 时可通过 ``routes`` 字段指定路由选择：
+
+        pipeline:
+          op: advanced_stacker.meta.yaml
+          routes:                              # 独立字段
+            stacker_mode: "sigma_clip"
+          inputs: { data: loader.result }
+
+    支持 ``routes.xxx`` 引用：将父图自身的已解析路由转发给子图：
+
+        pipeline:
+          op: sub.meta.yaml
+          routes:
+            inner_mode: routes.main_mode       # 引用父图 _resolved_routes
+
+    Args:
+        parent_node_spec: 父图中引用子 YAML 的节点 spec。
+        parent_spec: 整个父图 spec（含 ``_resolved_routes``）。
+
+    Returns:
+        {route_key: choice_string} 字典，传入子图的 meta_resolve。
+    """
+    raw_routes = parent_node_spec.get("routes", {})
+    if not isinstance(raw_routes, dict):
+        return {}
+
+    parent_resolved = parent_spec.get("_resolved_routes", {})
+    result: dict[str, str] = {}
+
+    for key, value in raw_routes.items():
+        if isinstance(value, str) and value.startswith("routes."):
+            # routes.xxx 引用：从父图的 _resolved_routes 中解析
+            ref_key = value[len("routes."):]
+            if ref_key in parent_resolved:
+                result[key] = parent_resolved[ref_key]
+            else:
+                raise ValueError(
+                    f"Route reference '{value}' cannot be resolved: "
+                    f"'{ref_key}' not found in parent's _resolved_routes. "
+                    f"Available: {list(parent_resolved.keys())}")
+        elif isinstance(value, str):
+            # 字面量选择
+            result[key] = value
+        else:
+            raise ValueError(
+                f"Invalid route value for key '{key}': {value!r}. "
+                f"Expected a string (choice or 'routes.xxx' reference).")
+
+    return result
