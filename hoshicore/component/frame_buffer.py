@@ -110,6 +110,7 @@ class DiskFrameBuffer(BaseFrameBuffer):
         data = np.load(self._paths[idx])
         frame = data['frame']
         weight = data['weight'] if 'weight' in data else None
+        data.close()  # 释放 NpzFile 持有的文件句柄和内部缓存
         # 标量权重还原
         if weight is not None and weight.ndim == 0:
             weight = float(weight)

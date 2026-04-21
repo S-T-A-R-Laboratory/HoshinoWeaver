@@ -230,14 +230,7 @@ class SegmentAdapter(BaseOp):
             "reduce_op": segment.reduce_op,
             "reduce_extra_inputs": segment.reduce_extra_inputs,
             "op_classes": segment.op_class_map,
-            "terminals": [
-                {
-                    "node_name": t.node_name,
-                    "terminal_type": t.terminal_type.value,
-                    "extra_inputs": t.extra_inputs,
-                }
-                for t in segment.terminals
-            ],
+            "terminals": self._build_terminal_infos(segment),
             "iterator_ops": segment.iterator_ops,
         }
 
@@ -314,6 +307,26 @@ class SegmentAdapter(BaseOp):
                     p.terminate()
             for ipc in input_ipcs + output_ipcs:
                 ipc.cleanup()
+
+    def _build_terminal_infos(self, segment: ParallelSegment) -> list[dict]:
+        """构建可 pickle 的终端信息列表，附加 DiskBuffer 元数据。"""
+        result = []
+        for t in segment.terminals:
+            t_info = {
+                "node_name": t.node_name,
+                "terminal_type": t.terminal_type.value,
+                "extra_inputs": t.extra_inputs,
+            }
+            if t.terminal_type == TerminalType.DISK_BUFFER:
+                inst = self._original_instances.get(t.node_name)
+                if inst is not None:
+                    fnames_q = inst.inputs.get("fnames")
+                    t_info["has_fnames"] = (
+                        fnames_q is not None
+                        and getattr(fnames_q, "active", False)
+                    )
+            result.append(t_info)
+        return result
 
     async def _dispatch(
         self,

@@ -172,9 +172,23 @@ def _segment_worker_main(
 
         # ── DiskBuffer 本地实例 ──
         local_buffer = None
+        use_replay = False
         if has_disk_buffer:
-            from ..component.frame_buffer import DiskFrameBuffer
-            local_buffer = DiskFrameBuffer()
+            db_info = disk_buffer_terminals[0]
+            db_node = db_info["node_name"]
+            db_configs = all_configs.get(db_node, {})
+            buffer_mode = db_configs.get("buffer_mode", "auto")
+            has_fnames = db_info.get("has_fnames", False)
+            use_replay = (buffer_mode == "replay"
+                          or (buffer_mode == "auto" and has_fnames))
+            if use_replay:
+                from ..component.frame_buffer import SourceReplayBuffer
+                local_buffer = SourceReplayBuffer()
+                logger.debug(f"Worker {worker_id}: using SourceReplayBuffer (mode={buffer_mode})")
+            else:
+                from ..component.frame_buffer import DiskFrameBuffer
+                local_buffer = DiskFrameBuffer()
+                logger.debug(f"Worker {worker_id}: using DiskFrameBuffer (mode={buffer_mode})")
 
         # ── Phase 1: 流式处理 ──
         processed_count = 0
@@ -213,9 +227,18 @@ def _segment_worker_main(
                     if extra_key in rl["extra_queues"]:
                         await rl["extra_queues"][extra_key].put(val)
 
-            # 喂入 DiskBuffer 终端（不含权重——权重属于 Reduce 终端）
+            # 喂入 DiskBuffer 终端
             if local_buffer is not None:
-                local_buffer.append(main_val)
+                if use_replay:
+                    # Replay 模式：存储源文件路径，Phase 2 时重新解码
+                    src_path = None
+                    for k, v in frame_input.items():
+                        if not k.startswith("__reduce_extra_"):
+                            src_path = v
+                            break
+                    local_buffer.append(src_path)
+                else:
+                    local_buffer.append(main_val)
 
             processed_count += 1
 
@@ -239,7 +262,7 @@ def _segment_worker_main(
             await rl["task"]
             phase1_partial[t_name] = partial
 
-        if local_buffer is not None:
+        if local_buffer is not None and hasattr(local_buffer, 'to_descriptor'):
             phase1_partial["__disk_buffer"] = local_buffer.to_descriptor()
 
         await output_ipc.put(phase1_partial)
@@ -270,6 +293,7 @@ def _segment_worker_main(
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         clip_merger.merge(raw, weight)
+                        del raw, weight
                     await output_ipc.put(clip_merger.result_as_partial())
 
                 elif iter_type == "huber_mean":
@@ -281,6 +305,7 @@ def _segment_worker_main(
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         huber_merger.merge(raw, weight)
+                        del raw, weight
                     await output_ipc.put(huber_merger.result_as_partial())
 
                 else:
