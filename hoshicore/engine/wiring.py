@@ -29,6 +29,7 @@ from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
 from .executor import DAGExecutor
+from .flatten import INACTIVE_MARKER
 from .registry import REGISTERED_OP
 
 # ────────────────────────────────────────────────────────────────
@@ -225,6 +226,17 @@ def instantiate_and_wire(
     for node_name in dag.exec_order:
         node_spec = nodes_spec[node_name]
         for loc, src in _iter_node_src_links(node_spec):
+            # SubDAG 展开产生的 __inactive__ 标记：跳过布线，标记队列非活跃
+            if src == INACTIVE_MARKER:
+                section, arg_name = loc.split(".", 1)
+                op_inst = instances[node_name]
+                if section == "inputs" and arg_name in op_inst.inputs:
+                    op_inst.inputs[arg_name].active = False
+                    logger.debug(
+                        f"Skipped inactive input '{node_name}.{arg_name}' "
+                        f"(from SubDAG flattening)")
+                continue
+
             parsed = _parse_link(src)
             section, arg_name = loc.split(".", 1)
 
@@ -479,8 +491,10 @@ async def run_from_yaml(
         cancel_event:     外部取消事件。set() 后 Op 在下一个检查点退出。
     """
     from .build import _load_yaml, validate_and_build_order
+    from .flatten import flatten_sub_dags
     from .multiprocess import run_dag_multiprocess
     spec = _load_yaml(yaml_path)
+    spec = flatten_sub_dags(spec, dag_search_paths=dag_search_paths)
     dag = validate_and_build_order(spec)
     return await run_dag_multiprocess(dag,
                                       global_inputs,
@@ -551,6 +565,8 @@ def _check_variable_source_conflicts(
         has_fixed_seq = False
 
         for loc, src in _iter_node_src_links(node_spec):
+            if src == INACTIVE_MARKER:
+                continue
             section, arg_name = loc.split(".", 1)
             if section != "inputs":
                 continue

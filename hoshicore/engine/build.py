@@ -56,7 +56,7 @@ def _parse_link(link: str) -> Tuple[str, ...]:
             raise DagSpecError(f"非法 link: `{link}`")
         return ("configs", name)
 
-    parts = link.split(".")
+    parts = link.rsplit(".", 1)
     if len(parts) != 2:
         raise DagSpecError(
             f"link 语法不符合要求（期望 inputs.* / configs.* / node.output），但得到：`{link}`"
@@ -271,6 +271,9 @@ def validate_and_build_order(
 
     for node_name, node_spec in nodes.items():
         for loc, src in _iter_node_src_links(node_spec):
+            # SubDAG 展开产生的 __inactive__ 标记：跳过校验
+            if src == "__inactive__":
+                continue
             src_kind = _parse_link(src)
             _validate_link_for_location(loc=f"nodes.{node_name}.{loc}",
                                         src_kind=src_kind)
