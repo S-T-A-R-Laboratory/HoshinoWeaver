@@ -135,8 +135,11 @@ async def run_dag_multiprocess(
     logger.info(f"DAG data-parallel execution starting "
                 f"({len(new_ops)} ops, {num_workers} workers)...")
 
+    # feeder 协程作为后台 task 运行：executor/collect 完成后自动取消。
+    # 避免 feeder 因目标队列已满、无人消费而永久阻塞在 put() 上。
+    feeder_tasks = [asyncio.ensure_future(f) for f in feeders]
     try:
-        await asyncio.gather(*feeders, executor.execute(), _collect_outputs())
+        await asyncio.gather(executor.execute(), _collect_outputs())
     except asyncio.CancelledError:
         logger.info("DAG cancelled by external request")
         raise
@@ -144,6 +147,10 @@ async def run_dag_multiprocess(
         logger.error(f"DAG data-parallel execution failed: {e}")
         raise
     finally:
+        for t in feeder_tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*feeder_tasks, return_exceptions=True)
         if tracker is not None:
             tracker.close_all()
 

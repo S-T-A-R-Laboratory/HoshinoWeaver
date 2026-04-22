@@ -36,6 +36,17 @@ class DiskBufferDescriptor:
     paths: list[str] = field(default_factory=list)
 
 
+@dataclass
+class SourceReplayDescriptor:
+    """SourceReplayBuffer 的可 pickle 描述符。
+
+    保存原始文件路径列表，主进程可通过 SourceReplayBuffer.from_descriptor()
+    重建实例。
+    """
+    paths: list[str] = field(default_factory=list)
+    count: int = 0
+
+
 class BaseFrameBuffer:
     """帧缓冲基类：定义多 pass 算法消费帧数据的统一协议。
 
@@ -221,6 +232,21 @@ class SourceReplayBuffer(BaseFrameBuffer):
 
     def __len__(self) -> int:
         return len(self._entries)
+
+    def to_descriptor(self) -> SourceReplayDescriptor:
+        """导出可 pickle 的描述符，用于跨进程传递。"""
+        return SourceReplayDescriptor(
+            paths=[entry[0] for entry in self._entries],
+            count=len(self._entries),
+        )
+
+    @classmethod
+    def from_descriptor(cls, desc: SourceReplayDescriptor) -> SourceReplayBuffer:
+        """从描述符重建 SourceReplayBuffer 实例。"""
+        buf = cls()
+        for path in desc.paths:
+            buf.append(path)
+        return buf
 
     def cleanup(self) -> None:
         """清理内部状态（无临时文件需要删除）。"""

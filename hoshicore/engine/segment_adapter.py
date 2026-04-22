@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-from ..component.ipc_queue import IPCQueue
+from ..component.ipc_queue import IPCQueue, _TAG_SENTINEL
 from ..component.progress import DummyTracker
 from ..component.queue import BaseQueue, RichContextQueue, StreamExhausted
 from ..ops.base import BaseOp
@@ -205,6 +205,17 @@ class SegmentAdapter(BaseOp):
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         """执行数据并行段。"""
+        import subprocess as _sp
+        def _rss_cur():
+            """Current RSS (MB) via ps (best-effort)."""
+            try:
+                r = _sp.run(["ps", "-o", "rss=", "-p", str(os.getpid())],
+                            capture_output=True, text=True, timeout=5)
+                return int(r.stdout.strip()) / 1024
+            except Exception:
+                return -1
+        logger.debug(f"[MEM] SegmentAdapter._async_execute start: RSS={_rss_cur():.0f} MB")
+
         segment = self.segment
         num_workers = self._num_workers
 
@@ -291,20 +302,40 @@ class SegmentAdapter(BaseOp):
                 self._collect(input_ipcs, output_ipcs, mp_cancel, node_configs),
             )
         except Exception as e:
-            logger.error(f"SegmentAdapter failed: {e}")
+            logger.exception(f"SegmentAdapter failed: {e}")
             mp_cancel.set()
             raise
         finally:
+            logger.debug("SegmentAdapter finally: setting done_events")
+            # 仅在异常路径强制解除 workers 阻塞：
+            # 正常路径 workers 已通过 "finish" 正常退出，无需注入。
+            # 异常路径 workers 可能阻塞在 input_ipc.get()，注入 SENTINEL 解除。
+            if mp_cancel.is_set():
+                for ipc in input_ipcs:
+                    try:
+                        ipc._conn_a.send((_TAG_SENTINEL, None))
+                        ipc._filled_sem.release()
+                    except Exception:
+                        pass
             for evt in done_events:
                 evt.set()
             consumer.stop()
             await consumer_task
-            for p in processes:
+            # 关闭 tracker_queue 的后台 feeder 线程，防止进程退出时挂起
+            try:
+                tracker_queue.close()
+                tracker_queue.cancel_join_thread()
+            except Exception:
+                pass
+            for i, p in enumerate(processes):
+                logger.debug(f"Joining worker {i} (pid={p.pid})...")
                 await asyncio.to_thread(p.join, 10)
                 if p.is_alive():
                     logger.warning(
                         f"Segment worker pid={p.pid} did not exit, terminating.")
                     p.terminate()
+                else:
+                    logger.debug(f"Worker {i} (pid={p.pid}) exited normally")
             for ipc in input_ipcs + output_ipcs:
                 ipc.cleanup()
 
@@ -401,9 +432,13 @@ class SegmentAdapter(BaseOp):
 
         # 仅在无多阶段(Phase 2+)时发送 SENTINEL 给 workers
         # 多终端段中有 iterator_ops 时，由 _collect_multi_terminal 发 finish 命令
-        if not (self.segment.terminals and self.segment.iterator_ops):
+        has_phase2 = bool(self.segment.terminals and self.segment.iterator_ops)
+        if not has_phase2:
+            logger.debug("_dispatch: sending SENTINEL to workers (no Phase 2)")
             for ipc in input_ipcs:
                 await ipc.put(BaseQueue._SENTINEL)
+        else:
+            logger.debug("_dispatch: NOT sending SENTINEL (Phase 2 will send finish)")
 
         logger.debug(f"_dispatch completed (total_frames={total_frames})")
 
@@ -452,21 +487,60 @@ class SegmentAdapter(BaseOp):
     ) -> None:
         """多终端段的 Phase 1 收集 + Phase 2 迭代编排。"""
         import numpy as np
+        import subprocess as _sp
         from ..component.tagged_image import FloatImage
         from ..component.merger import SigmaClippingMerger, HuberWeightedMerger
+
+        def _rss():
+            """Current RSS (MB)."""
+            try:
+                r = _sp.run(["ps", "-o", "rss=", "-p", str(os.getpid())],
+                            capture_output=True, text=True, timeout=5)
+                return int(r.stdout.strip()) / 1024
+            except Exception:
+                return -1
 
         segment = self.segment
         num_workers = len(output_ipcs)
 
         # ── Phase 1: 收集 N 个 worker 的 partial ──
-        logger.debug(f"_collect_multi_terminal: waiting for {num_workers} Phase 1 partials")
+        # 新协议：worker 先发送大对象（FGP/FloatImage 走 ShmTransportable），
+        # 最后发送 manifest dict 描述结构。
+        logger.debug(f"[MEM] Phase1 collect start: RSS={_rss():.0f} MB")
         partials: list[dict[str, Any]] = []
         for i, ipc in enumerate(output_ipcs):
             try:
-                logger.debug(f"_collect_multi_terminal: waiting for worker {i} partial")
-                partial = await ipc.get()
-                logger.debug(f"_collect_multi_terminal: got worker {i} partial "
-                             f"(keys={list(partial.keys())})")
+                # 接收所有 item 直到 manifest（最后一个 dict 类型的 item）
+                received_large = []
+                while True:
+                    item = await ipc.get()
+                    if isinstance(item, dict):
+                        # 这是 manifest
+                        manifest = item
+                        break
+                    else:
+                        received_large.append(item)
+
+                # 从 manifest 和 large_order 重组 partial dict
+                large_order = manifest.pop("__large_order", [])
+                partial = {}
+                large_idx = 0
+                for t_name, key in large_order:
+                    partial.setdefault(t_name, {})[key] = received_large[large_idx]
+                    large_idx += 1
+                # 合并 manifest 中的小对象和 __disk_buffer
+                for mk, mv in manifest.items():
+                    if mk.startswith("__keys_"):
+                        continue
+                    if mk == "__disk_buffer":
+                        partial["__disk_buffer"] = mv
+                    elif isinstance(mv, dict):
+                        partial.setdefault(mk, {}).update(mv)
+                    else:
+                        partial[mk] = mv
+
+                logger.debug(f"[MEM] Phase1 got worker {i} partial: RSS={_rss():.0f} MB "
+                            f"(keys={list(partial.keys())})")
                 partials.append(partial)
             except StreamExhausted:
                 logger.warning(f"Worker {i} sent no Phase 1 partial")
@@ -479,23 +553,35 @@ class SegmentAdapter(BaseOp):
         phase1_merged: dict[str, dict[str, Any]] = {}
 
         for t in segment.terminals:
-            if t.terminal_type == TerminalType.DECOMPOSABLE_REDUCE:
-                # 收集并 merge Reduce partials
-                reduce_partials = [p.get(t.node_name, {}) for p in partials]
-                reduce_cls_name = segment.op_class_map[t.node_name]
-                reduce_cls = REGISTERED_OP[reduce_cls_name]
-                final = reduce_cls.merge_partial(reduce_partials)
-                phase1_merged[t.node_name] = final
-                # 推送到该 Reduce 终端的下游队列（仅推送非段内消费的输出）
-                for key, value in final.items():
-                    output_key = f"{t.node_name}.{key}"
-                    if output_key in self.outputs:
-                        for q in self.outputs[output_key]:
-                            await q.put(value)
+            try:
+                if t.terminal_type == TerminalType.DECOMPOSABLE_REDUCE:
+                    # 收集并 merge Reduce partials
+                    reduce_partials = [p.get(t.node_name, {}) for p in partials]
+                    reduce_cls_name = segment.op_class_map[t.node_name]
+                    reduce_cls = REGISTERED_OP[reduce_cls_name]
+                    logger.debug(
+                        f"Phase1 merging terminal '{t.node_name}' "
+                        f"({reduce_cls_name}), "
+                        f"partial keys: {[list(rp.keys()) for rp in reduce_partials]}")
+                    final = reduce_cls.merge_partial(reduce_partials)
+                    phase1_merged[t.node_name] = final
+                    # 推送到该 Reduce 终端的下游队列（仅推送非段内消费的输出）
+                    for key, value in final.items():
+                        output_key = f"{t.node_name}.{key}"
+                        if output_key in self.outputs:
+                            for q in self.outputs[output_key]:
+                                await q.put(value)
 
-            elif t.terminal_type == TerminalType.DISK_BUFFER:
-                # buffer 描述符暂存在 worker 本地，不推送下游
-                pass
+                elif t.terminal_type == TerminalType.DISK_BUFFER:
+                    # buffer 描述符暂存在 worker 本地，不推送下游
+                    pass
+            except Exception:
+                logger.exception(
+                    f"Phase1 merge FAILED for terminal '{t.node_name}' "
+                    f"(type={t.terminal_type})")
+                raise
+
+        logger.debug(f"[MEM] Phase1 merge done: RSS={_rss():.0f} MB")
 
         # ── 解析内部配置（段内节点输出 → 迭代 Op 的 config）──
         for compound_key, (src_node, src_output) in self._internal_configs.items():
@@ -510,11 +596,20 @@ class SegmentAdapter(BaseOp):
                     f"Resolved internal config {compound_key} "
                     f"← {src_node}.{src_output}")
 
+        logger.debug(f"[MEM] Phase2 start (internal configs resolved): RSS={_rss():.0f} MB")
+
         # ── Phase 2: 分布式迭代 Reduce ──
         if not segment.iterator_ops:
             # 无迭代 → 通知 worker 退出
+            logger.debug("No iterator_ops, sending finish to all workers")
             for ipc in input_ipcs:
                 await ipc.put({"action": "finish"})
+            # 排空 workers 发送的最终 SENTINEL，防止 pipe 残留阻塞进程退出
+            for ipc in output_ipcs:
+                try:
+                    await ipc.get()
+                except StreamExhausted:
+                    pass
             return
 
         for iter_op_name in segment.iterator_ops:
@@ -543,8 +638,17 @@ class SegmentAdapter(BaseOp):
                     f"Unknown iterator type '{iter_type}' for {iter_op_name}")
 
         # 通知 workers 退出
-        for ipc in input_ipcs:
+        logger.debug("All iterators done, sending finish to all workers")
+        for wi, ipc in enumerate(input_ipcs):
+            logger.debug(f"Sending finish to worker {wi}")
             await ipc.put({"action": "finish"})
+            logger.debug(f"Finish sent to worker {wi}")
+        # 排空 workers 发送的最终 SENTINEL，防止 pipe 残留阻塞进程退出
+        for ipc in output_ipcs:
+            try:
+                await ipc.get()
+            except StreamExhausted:
+                pass
 
     async def _run_sigma_clip_iterations(
         self,
@@ -557,9 +661,19 @@ class SegmentAdapter(BaseOp):
     ) -> None:
         """分布式 Sigma Clip 迭代。"""
         import numpy as np
+        import subprocess as _sp
         from ..component.tagged_image import FloatImage
         from ..component.merger import SigmaClippingMerger
         from ..component.utils import FastGaussianParam
+
+        def _rss():
+            """Current RSS (MB)."""
+            try:
+                r = _sp.run(["ps", "-o", "rss=", "-p", str(os.getpid())],
+                            capture_output=True, text=True, timeout=5)
+                return int(r.stdout.strip()) / 1024
+            except Exception:
+                return -1
 
         num_workers = len(output_ipcs)
 
@@ -580,39 +694,52 @@ class SegmentAdapter(BaseOp):
         last_n = ref_fgp.n.copy()
         accepted = None
 
-        logger.debug(f"{iter_op_name}: entering sigma_clip iterations "
-                     f"(max_iter={max_iter}, rej_high={rej_high}, rej_low={rej_low})")
+        # 计算 FGP 大小用于诊断
+        _fgp_mb = (fgp_total.sum_mu.nbytes + fgp_total.square_sum.nbytes
+                   + fgp_total.n.nbytes) / 1024 / 1024
+        logger.debug(f"[MEM] sigma_clip start: RSS={_rss():.0f} MB, "
+                    f"fgp_total={_fgp_mb:.0f} MB "
+                    f"(sum_mu={fgp_total.sum_mu.dtype}, "
+                    f"sq={fgp_total.square_sum.dtype}, n={fgp_total.n.dtype})")
 
         for iteration in range(max_iter):
-            logger.debug(f"{iter_op_name}: iteration {iteration+1}/{max_iter} "
-                         f"- broadcasting ref_fgp to {num_workers} workers")
+            logger.debug(f"[MEM] iter {iteration+1} broadcast start: RSS={_rss():.0f} MB")
             # broadcast ref_fgp 给所有 worker
+            # FGP 作为独立 item 发送（走 ShmTransportable 协议），
+            # 避免嵌套在 dict 中导致整个 dict pickle 序列化时的内存放大
             for wi, ipc in enumerate(input_ipcs):
+                await ipc.put(ref_fgp)  # FGP → ShmTransportable → SharedMemory
                 await ipc.put({
                     "action": "iterate",
                     "iter_type": "sigma_clip",
-                    "ref": ref_fgp,
                     "params": {"rej_high": rej_high, "rej_low": rej_low},
                 })
+            logger.debug(f"[MEM] iter {iteration+1} broadcast done: RSS={_rss():.0f} MB")
 
-            # 收集 N 个 partial
+            # 收集 N 个 partial（workers 直接发送 FGP，非 dict 包装）
             clip_partials = []
             for i, ipc in enumerate(output_ipcs):
                 try:
                     partial = await ipc.get()
                     clip_partials.append(partial)
+                    logger.debug(f"[MEM] iter {iteration+1} got worker {i} clip partial: "
+                                f"RSS={_rss():.0f} MB")
                 except StreamExhausted:
                     logger.warning(f"Worker {i} sent no clip partial")
 
             if not clip_partials:
                 raise ValueError("No clip partials from workers")
 
-            # merge rejected FGPs
-            total_rejected = SigmaClippingMerger.merge_partial(clip_partials)
+            # merge rejected FGPs（直接接收 FGP 对象，非 dict）
+            total_rejected = clip_partials[0]
+            for p in clip_partials[1:]:
+                total_rejected = total_rejected + p
+            logger.debug(f"[MEM] iter {iteration+1} merge done: RSS={_rss():.0f} MB")
 
             # accepted = fgp_total - total_rejected
             accepted = fgp_total - total_rejected
             accepted.apply_zero_var(fgp_total)
+            logger.debug(f"[MEM] iter {iteration+1} sub+zerovar done: RSS={_rss():.0f} MB")
 
             # 收敛检查
             cur_n = accepted.n
@@ -665,11 +792,12 @@ class SegmentAdapter(BaseOp):
         huber_c = iter_configs.get("huber_c", 1.345)
 
         # broadcast 给所有 worker
+        # FGP 作为独立 item 发送，避免 dict pickle 内存放大
         for ipc in input_ipcs:
+            await ipc.put(fgp_total)  # FGP → ShmTransportable → SharedMemory
             await ipc.put({
                 "action": "iterate",
                 "iter_type": "huber_mean",
-                "ref": fgp_total,
                 "params": {"huber_c": huber_c},
             })
 
@@ -685,8 +813,10 @@ class SegmentAdapter(BaseOp):
         if not huber_partials:
             raise ValueError("No Huber partials from workers")
 
-        # merge
-        final_param = HuberWeightedMerger.merge_partial(huber_partials)
+        # merge（直接接收 HuberMeanParam 对象，非 dict）
+        final_param = huber_partials[0]
+        for p in huber_partials[1:]:
+            final_param = final_param + p
         result = FloatImage(final_param.mu, dtype=final_param.source_dtype)
 
         output_key = f"{iter_op_name}.result"
@@ -702,7 +832,10 @@ class SegmentAdapter(BaseOp):
         phase1_partials: list[dict],
     ) -> None:
         """Median 不可分布式归约——从 worker 的描述符重建 buffer，在主进程执行。"""
-        from ..component.frame_buffer import DiskFrameBuffer, DiskBufferDescriptor
+        from ..component.frame_buffer import (
+            DiskFrameBuffer, DiskBufferDescriptor,
+            SourceReplayBuffer, SourceReplayDescriptor,
+        )
         import numpy as np
         from ..component.tagged_image import FloatImage
 
@@ -718,7 +851,12 @@ class SegmentAdapter(BaseOp):
                 f"{iter_op_name}: no buffer descriptors from workers")
 
         # 重建 buffer 并拼接路径
-        all_buffers = [DiskFrameBuffer.from_descriptor(d) for d in all_descriptors]
+        all_buffers = []
+        for d in all_descriptors:
+            if isinstance(d, SourceReplayDescriptor):
+                all_buffers.append(SourceReplayBuffer.from_descriptor(d))
+            else:
+                all_buffers.append(DiskFrameBuffer.from_descriptor(d))
         total_frames = sum(len(b) for b in all_buffers)
 
         chunk_rows = iter_configs.get("chunk_rows", 32)
