@@ -103,6 +103,27 @@ _TAG_CANCEL = "cancel"
 _PIPE_SAFE_THRESHOLD = 32 * 1024  # 32 KB，留一半余量给 pipe 控制帧
 
 
+def _safe_close_shm(shm: SharedMemory, *, unlink: bool = False) -> None:
+    """关闭 SharedMemory handle，可选 unlink。
+
+    生产者正常流程中仅 close handle（消费者负责 unlink）。
+    仅在异常清理路径（cleanup()）中传入 unlink=True 以防止泄漏。
+
+    Args:
+        shm: SharedMemory 对象。
+        unlink: True 时额外执行 shm.unlink() 删除共享内存块。
+    """
+    try:
+        shm.close()
+    except OSError:
+        pass
+    if unlink:
+        try:
+            shm.unlink()
+        except (FileNotFoundError, OSError):
+            pass
+
+
 class IPCQueue(BaseQueue):
     """跨进程异步队列，继承 BaseQueue。
 
@@ -165,7 +186,7 @@ class IPCQueue(BaseQueue):
         # 因此阈值必须是 > maxsize（严格大于），不能是 >=。
         if self._put_count > self._maxsize and self._slot_shm:
             for shm in self._slot_shm.popleft():
-                shm.close()
+                _safe_close_shm(shm)
 
         self._put_count += 1
 
@@ -335,21 +356,13 @@ class IPCQueue(BaseQueue):
         """清理所有未释放的 SharedMemory 块和 Pipe 连接。"""
         # _pending_shm：pack 中途失败残留（正常情况为空）
         for shm in list(self._pending_shm.values()):
-            try:
-                shm.close()
-                shm.unlink()
-            except (FileNotFoundError, OSError):
-                pass
+            _safe_close_shm(shm, unlink=True)
         self._pending_shm.clear()
 
         # _slot_shm：已发送但尚未被下一次 put() 关闭的 handle
         while self._slot_shm:
             for shm in self._slot_shm.popleft():
-                try:
-                    shm.close()
-                    shm.unlink()
-                except (FileNotFoundError, OSError):
-                    pass
+                _safe_close_shm(shm, unlink=True)
 
         for conn in (self._conn_a, self._conn_b):
             try:

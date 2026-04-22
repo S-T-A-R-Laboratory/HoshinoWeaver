@@ -15,6 +15,8 @@ from easydict import EasyDict
 from loguru import logger
 from PIL.ExifTags import TAGS
 
+from .ipc_queue import register_shm_transportable
+
 DTYPE_UPSCALE_MAP = {
     np.dtype('uint8'): np.dtype('uint16'),
     np.dtype('uint16'): np.dtype('uint32'),
@@ -268,15 +270,19 @@ class GaussianParam(object):
         return GaussianParam(mu=new_mu, var=new_var, n=g1.n - g2.n, ddof=ddof)
 
 
+@register_shm_transportable
 class FastGaussianParam(object):
     """
-    GaussianParam, but faster. 
+    GaussianParam, but faster.
     通过INT量化+优化数据储存提速，仅在输出时换算为浮点数。
     Streaming mean and variance.
     Args:
         object (_type_): _description_
     TODO: 优化接口，和普通版本统一；进一步支持float类型
     （理论可以通过后置除法+提高数据范围提高精度）
+
+    实现 ShmTransportable 协议，支持跨进程 SharedMemory 高效传输，
+    避免 pickle 序列化 3 个大型 ndarray 时的内存放大问题。
     """
 
     def __init__(self,
@@ -449,7 +455,76 @@ class FastGaussianParam(object):
     def shape(self):
         return self.sum_mu.shape
 
+    # ── ShmTransportable 协议 ──
 
+    def __shm_pack__(self) -> tuple[np.ndarray, bytes]:
+        """将 3 个数组打包为一个连续 buffer + 元数据。
+
+        布局: [sum_mu bytes | square_sum bytes | n bytes]
+        元数据记录各段的 shape/dtype 和标量属性。
+        """
+        import pickle
+        parts = [
+            self.sum_mu.ravel().view(np.uint8),
+            self.square_sum.ravel().view(np.uint8),
+            self.n.ravel().view(np.uint8),
+        ]
+        buf = np.concatenate(parts)
+        meta = pickle.dumps({
+            "sum_mu_shape": self.sum_mu.shape,
+            "sum_mu_dtype": str(self.sum_mu.dtype),
+            "sum_mu_nbytes": self.sum_mu.nbytes,
+            "sq_shape": self.square_sum.shape,
+            "sq_dtype": str(self.square_sum.dtype),
+            "sq_nbytes": self.square_sum.nbytes,
+            "n_shape": self.n.shape,
+            "n_dtype": str(self.n.dtype),
+            "n_nbytes": self.n.nbytes,
+            "ddof": self.ddof,
+            "source_dtype": str(self.source_dtype),
+            "inplace_calc": self.inplace_calc,
+            "max_n": self.max_n,
+        })
+        return buf, meta
+
+    @classmethod
+    def __shm_unpack__(cls, array: np.ndarray, meta: bytes) -> FastGaussianParam:
+        """从 SharedMemory buffer + 元数据重建 FastGaussianParam。"""
+        import pickle
+        m = pickle.loads(meta)
+        off = 0
+        sum_mu_bytes = m["sum_mu_nbytes"]
+        sum_mu = np.frombuffer(
+            array[off:off + sum_mu_bytes].tobytes(),
+            dtype=np.dtype(m["sum_mu_dtype"]),
+        ).reshape(m["sum_mu_shape"]).copy()
+        off += sum_mu_bytes
+
+        sq_bytes = m["sq_nbytes"]
+        square_sum = np.frombuffer(
+            array[off:off + sq_bytes].tobytes(),
+            dtype=np.dtype(m["sq_dtype"]),
+        ).reshape(m["sq_shape"]).copy()
+        off += sq_bytes
+
+        n_bytes = m["n_nbytes"]
+        n = np.frombuffer(
+            array[off:off + n_bytes].tobytes(),
+            dtype=np.dtype(m["n_dtype"]),
+        ).reshape(m["n_shape"]).copy()
+
+        obj = cls.__new__(cls)
+        obj.sum_mu = sum_mu
+        obj.square_sum = square_sum
+        obj.n = n
+        obj.ddof = m["ddof"]
+        obj.source_dtype = np.dtype(m["source_dtype"])
+        obj.inplace_calc = m["inplace_calc"]
+        obj.max_n = m["max_n"]
+        return obj
+
+
+@register_shm_transportable
 class HuberMeanParam:
     """Huber 加权均值的流式累加器。
 
@@ -457,6 +532,7 @@ class HuberMeanParam:
     最终结果 μ = weighted_sum / weight_total。
 
     两者均为逐像素数组，支持 __add__ 用于分布式归约（merge_partial）。
+    实现 ShmTransportable 协议，支持跨进程 SharedMemory 高效传输。
 
     Args:
         weighted_sum: 加权像素和。
@@ -504,6 +580,50 @@ class HuberMeanParam:
     @property
     def shape(self):
         return self.weighted_sum.shape
+
+    # ── ShmTransportable 协议 ──
+
+    def __shm_pack__(self) -> tuple[np.ndarray, bytes]:
+        """将 2 个数组打包为一个连续 buffer + 元数据。"""
+        import pickle
+        parts = [
+            self.weighted_sum.ravel().view(np.uint8),
+            self.weight_total.ravel().view(np.uint8),
+        ]
+        buf = np.concatenate(parts)
+        meta = pickle.dumps({
+            "ws_shape": self.weighted_sum.shape,
+            "ws_dtype": str(self.weighted_sum.dtype),
+            "ws_nbytes": self.weighted_sum.nbytes,
+            "wt_shape": self.weight_total.shape,
+            "wt_dtype": str(self.weight_total.dtype),
+            "wt_nbytes": self.weight_total.nbytes,
+            "source_dtype": str(self.source_dtype) if self.source_dtype else None,
+        })
+        return buf, meta
+
+    @classmethod
+    def __shm_unpack__(cls, array: np.ndarray, meta: bytes) -> HuberMeanParam:
+        """从 SharedMemory buffer + 元数据重建。"""
+        import pickle
+        m = pickle.loads(meta)
+        off = 0
+        ws_bytes = m["ws_nbytes"]
+        weighted_sum = np.frombuffer(
+            array[off:off + ws_bytes].tobytes(),
+            dtype=np.dtype(m["ws_dtype"]),
+        ).reshape(m["ws_shape"]).copy()
+        off += ws_bytes
+
+        wt_bytes = m["wt_nbytes"]
+        weight_total = np.frombuffer(
+            array[off:off + wt_bytes].tobytes(),
+            dtype=np.dtype(m["wt_dtype"]),
+        ).reshape(m["wt_shape"]).copy()
+
+        source_dtype = np.dtype(m["source_dtype"]) if m["source_dtype"] else None
+        return cls(weighted_sum=weighted_sum, weight_total=weight_total,
+                   source_dtype=source_dtype)
 
 
 def get_scale_x(time: int, base: int = 256):
