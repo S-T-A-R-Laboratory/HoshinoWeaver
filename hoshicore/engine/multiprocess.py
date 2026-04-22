@@ -31,7 +31,7 @@ from loguru import logger
 from ..component.progress import DummyTracker, ProgressTracker
 from ..ops.base import BaseOp
 from .build import ValidatedDag
-from .data_parallel import apply_data_parallelism, _auto_worker_count
+from .segment_adapter import apply_data_parallelism, _auto_worker_count
 from .executor import DAGExecutor
 from .wiring import (
     instantiate_and_wire,

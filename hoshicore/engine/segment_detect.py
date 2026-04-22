@@ -72,16 +72,13 @@ class ParallelSegment:
     """一个可数据并行的完整段。"""
     io_ops: list[str]                          # 段头帧级 I/O ops（拓扑序）
     map_ops: list[str]                         # 段中 Map ops（拓扑序）
-    reduce_op: Optional[str]                   # 段尾可分解 Reduce op (Phase 1 兼容)
-    reduce_extra_inputs: dict[str, str]        # Reduce 额外序列输入: {input_key: "node.output"}
+    terminals: list[SegmentTerminal]           # 段尾终端（至少一个）
     frame_distribution: FrameDistribution
     op_class_map: dict[str, str]               # node_name → op_class_name
     all_configs_spec: dict[str, dict]          # node_name → Op.CONFIGS
     # 段的全局输入映射: {global_input_name: [node_name.input_key, ...]}
     global_input_feeds: dict[str, list[str]] = field(default_factory=dict)
-    # Phase 2 多终端
-    terminals: list[SegmentTerminal] = field(default_factory=list)
-    # Phase 2 迭代式 Reduce ops（消费 DiskBuffer 的 BUFFER_ITERATOR ops）
+    # 迭代式 Reduce ops（消费 DiskBuffer 的 BUFFER_ITERATOR ops）
     iterator_ops: list[str] = field(default_factory=list)
 
 
@@ -167,8 +164,6 @@ def detect_parallel_segments(
         if segment is not None:
             for n in segment.io_ops + segment.map_ops:
                 used_nodes.add(n)
-            if segment.reduce_op:
-                used_nodes.add(segment.reduce_op)
             for t in segment.terminals:
                 used_nodes.add(t.node_name)
             for it_op in segment.iterator_ops:
@@ -188,7 +183,6 @@ def _try_build_segment(
     """从一个 I/O op 起始，尝试构建一条可并行段。
 
     段结构：io_ops → map_ops → terminal(s)
-    终端可以是单个 Reduce（Phase 1 兼容）或多终端（Phase 2）。
 
     Returns:
         ParallelSegment or None（无法形成有效段时）
@@ -196,8 +190,6 @@ def _try_build_segment(
     nodes_spec = dag.nodes
     io_ops = [io_start]
     map_ops: list[str] = []
-    reduce_op: Optional[str] = None
-    reduce_extra_inputs: dict[str, str] = {}
     segment_nodes: set[str] = {io_start}
     terminals: list[SegmentTerminal] = []
     iterator_ops: list[str] = []
@@ -220,21 +212,21 @@ def _try_build_segment(
             # 无序列消费者 → 段终止
             break
         elif len(seq_consumers) == 1:
-            # ── 单消费者：Phase 1 逻辑 ──
-            next_name, next_section, next_arg = seq_consumers[0]
+            # ── 单消费者 ──
+            next_name, _, _ = seq_consumers[0]
             next_op = instances[next_name]
 
             # 检查下一个 Op 的所有序列输入是否都来自段内
+            extra_inputs: dict[str, str] = {}
             if not _all_seq_inputs_from_segment(
-                    next_name, dag, instances, segment_nodes, reduce_extra_inputs):
+                    next_name, dag, instances, segment_nodes):
                 if _is_decomposable_reduce(next_op):
-                    reduce_op = next_name
                     _collect_reduce_extra_inputs(
-                        next_name, dag, instances, segment_nodes, reduce_extra_inputs)
+                        next_name, dag, instances, segment_nodes, extra_inputs)
                     terminals = [SegmentTerminal(
                         node_name=next_name,
                         terminal_type=TerminalType.DECOMPOSABLE_REDUCE,
-                        extra_inputs=dict(reduce_extra_inputs),
+                        extra_inputs=extra_inputs,
                     )]
                     break
                 else:
@@ -245,22 +237,19 @@ def _try_build_segment(
                 segment_nodes.add(next_name)
                 current = next_name
             elif _is_decomposable_reduce(next_op):
-                reduce_op = next_name
                 _collect_reduce_extra_inputs(
-                    next_name, dag, instances, segment_nodes, reduce_extra_inputs)
+                    next_name, dag, instances, segment_nodes, extra_inputs)
                 terminals = [SegmentTerminal(
                     node_name=next_name,
                     terminal_type=TerminalType.DECOMPOSABLE_REDUCE,
-                    extra_inputs=dict(reduce_extra_inputs),
+                    extra_inputs=extra_inputs,
                 )]
                 break
             elif _is_disk_buffer(next_op):
-                # 单消费者为 DiskBuffer → 构建单终端段
                 terminals = [SegmentTerminal(
                     node_name=next_name,
                     terminal_type=TerminalType.DISK_BUFFER,
                 )]
-                # 扫描 DiskBuffer 的下游 iterator ops
                 _scan_iterator_ops(
                     next_name, forward, instances, iterator_ops)
                 break
@@ -271,11 +260,10 @@ def _try_build_segment(
             else:
                 break
         else:
-            # ── 分支点：多消费者 → Phase 2 多终端段 ──
+            # ── 分支点：多消费者 → 多终端段 ──
             branch_terminals = []
-            all_reduce_extra: dict[str, str] = {}
 
-            for consumer_name, section, arg in seq_consumers:
+            for consumer_name, _, _ in seq_consumers:
                 consumer_op = instances[consumer_name]
                 if _is_decomposable_reduce(consumer_op):
                     extra = {}
@@ -286,36 +274,27 @@ def _try_build_segment(
                         terminal_type=TerminalType.DECOMPOSABLE_REDUCE,
                         extra_inputs=extra,
                     ))
-                    all_reduce_extra.update(extra)
                 elif _is_disk_buffer(consumer_op):
                     branch_terminals.append(SegmentTerminal(
                         node_name=consumer_name,
                         terminal_type=TerminalType.DISK_BUFFER,
                     ))
                 else:
-                    # 该分支不可段化 → 整个分支点无法处理
                     branch_terminals = None
                     break
 
             if branch_terminals is not None and len(branch_terminals) > 0:
                 terminals = branch_terminals
-                reduce_extra_inputs = all_reduce_extra
-                # 为兼容 Phase 1 字段：取第一个 Reduce 终端
-                for t in terminals:
-                    if t.terminal_type == TerminalType.DECOMPOSABLE_REDUCE:
-                        reduce_op = t.node_name
-                        break
-                # 扫描所有 DiskBuffer 终端的下游 iterator ops
                 for t in terminals:
                     if t.terminal_type == TerminalType.DISK_BUFFER:
                         _scan_iterator_ops(
                             t.node_name, forward, instances, iterator_ops)
                 break
             else:
-                break  # 回退：无法段化
+                break
 
     # 验证：至少有一个有意义的 ops 组合
-    if not map_ops and not reduce_op and not terminals:
+    if not map_ops and not terminals:
         return None
 
     # 构建 op_class_map + configs_spec
@@ -333,18 +312,16 @@ def _try_build_segment(
 
     frame_dist = FrameDistribution.ROUND_ROBIN
     global_input_feeds = _collect_global_input_feeds(
-        all_segment_ops, dag, instances)
+        all_segment_ops, dag)
 
     segment = ParallelSegment(
         io_ops=io_ops,
         map_ops=map_ops,
-        reduce_op=reduce_op,
-        reduce_extra_inputs=reduce_extra_inputs,
+        terminals=terminals,
         frame_distribution=frame_dist,
         op_class_map=op_class_map,
         all_configs_spec=all_configs_spec,
         global_input_feeds=global_input_feeds,
-        terminals=terminals,
         iterator_ops=iterator_ops,
     )
 
@@ -380,7 +357,6 @@ def _all_seq_inputs_from_segment(
     dag: ValidatedDag,
     instances: dict[str, BaseOp],
     segment_nodes: set[str],
-    exclude_extra: dict,
 ) -> bool:
     """检查节点的所有序列输入是否全部来自段内或全局输入。"""
     node_spec = dag.nodes[node_name]
@@ -429,7 +405,6 @@ def _collect_reduce_extra_inputs(
 def _collect_global_input_feeds(
     segment_ops: list[str],
     dag: ValidatedDag,
-    instances: dict[str, BaseOp],
 ) -> dict[str, list[str]]:
     """收集段内 ops 引用的全局输入。"""
     feeds: dict[str, list[str]] = {}

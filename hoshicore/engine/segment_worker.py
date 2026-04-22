@@ -81,8 +81,8 @@ def _segment_worker_main(
         op = registry[cls_name](name=f"{n}_w{worker_id}")
         map_ops.append(op)
 
-    # ── 多终端实例化 ──
-    terminals_info: list[dict] = segment_info.get("terminals", [])
+    # ── 终端实例化 ──
+    terminals_info: list[dict] = segment_info["terminals"]
     reduce_terminals: list[dict] = []
     disk_buffer_terminals: list[dict] = []
 
@@ -97,16 +97,6 @@ def _segment_worker_main(
             reduce_terminals.append(t_info)
         elif t_type == "disk_buffer":
             disk_buffer_terminals.append(t_info)
-
-    # Phase 1 兼容：单终端 Reduce（无 terminals 字段时）
-    reduce_name_phase1 = segment_info.get("reduce_op")
-    if not terminals_info and reduce_name_phase1:
-        cls_name = segment_info["op_classes"][reduce_name_phase1]
-        op_inst = registry[cls_name](name=f"{reduce_name_phase1}_w{worker_id}")
-        reduce_op_instances[reduce_name_phase1] = op_inst
-        reduce_terminals = [{"node_name": reduce_name_phase1,
-                             "terminal_type": "decomposable_reduce",
-                             "extra_inputs": segment_info.get("reduce_extra_inputs", {})}]
 
     # 注入 tracker
     proxy_tracker = ProxyTracker(tracker_queue)
@@ -244,17 +234,9 @@ def _segment_worker_main(
             processed_count += 1
 
         # ── 收集 Phase 1 partial results ──
-        import subprocess as _sp
-        def _w_rss():
-            """Current RSS (MB) for this worker (best-effort)."""
-            try:
-                r = _sp.run(["ps", "-o", "rss=", "-p", str(os.getpid())],
-                            capture_output=True, text=True, timeout=5)
-                return int(r.stdout.strip()) / 1024
-            except Exception:
-                return -1
-        logger.debug(f"[MEM] Worker {worker_id}: Phase 1 stream done, "
-                    f"processed={processed_count}, RSS={_w_rss():.0f} MB")
+        from .segment_adapter import _process_rss_mb
+        logger.trace(f"[MEM] Worker {worker_id}: Phase 1 stream done, "
+                    f"processed={processed_count}, RSS={_process_rss_mb():.0f} MB")
         phase1_partial: dict[str, Any] = {}
 
         for t_info in reduce_terminals:
@@ -302,8 +284,8 @@ def _segment_worker_main(
         manifest["__large_order"] = large_order
         await output_ipc.put(manifest)
 
-        logger.debug(f"[MEM] Worker {worker_id}: Phase 1 partial sent, "
-                    f"RSS={_w_rss():.0f} MB, entering Phase 2")
+        logger.trace(f"[MEM] Worker {worker_id}: Phase 1 partial sent, "
+                    f"RSS={_process_rss_mb():.0f} MB, entering Phase 2")
 
         # ── Phase 2+: 命令驱动循环（迭代式 Reduce）──
         # 协议：每次迭代接收 2 个 item：
@@ -347,8 +329,8 @@ def _segment_worker_main(
                 iter_count += 1
                 iter_type = cmd["iter_type"]
                 params = cmd.get("params", {})
-                logger.debug(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                            f"cmd received, RSS={_w_rss():.0f} MB")
+                logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
+                            f"cmd received, RSS={_process_rss_mb():.0f} MB")
 
                 if iter_type == "sigma_clip":
                     from ..component.merger import SigmaClippingMerger
@@ -357,19 +339,19 @@ def _segment_worker_main(
                         rej_high=params.get("rej_high", 3.0),
                         rej_low=params.get("rej_low", 3.0),
                     )
-                    logger.debug(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"merger created, RSS={_w_rss():.0f} MB, "
+                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
+                                f"merger created, RSS={_process_rss_mb():.0f} MB, "
                                 f"buffer_len={len(local_buffer)}")
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         clip_merger.merge(raw, weight)
                         del raw, weight
-                    logger.debug(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"merge loop done, RSS={_w_rss():.0f} MB")
+                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
+                                f"merge loop done, RSS={_process_rss_mb():.0f} MB")
                     # 直接发送 FGP（走 ShmTransportable），避免嵌套 dict 的 pickle 放大
                     await output_ipc.put(clip_merger.result)
-                    logger.debug(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"partial sent, RSS={_w_rss():.0f} MB")
+                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
+                                f"partial sent, RSS={_process_rss_mb():.0f} MB")
 
                 elif iter_type == "huber_mean":
                     from ..component.merger import HuberWeightedMerger
@@ -377,19 +359,19 @@ def _segment_worker_main(
                         ref_stats=ref_data,
                         huber_c=params.get("huber_c", 1.345),
                     )
-                    logger.debug(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"huber merger created, RSS={_w_rss():.0f} MB, "
+                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
+                                f"huber merger created, RSS={_process_rss_mb():.0f} MB, "
                                 f"buffer_len={len(local_buffer)}")
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         huber_merger.merge(raw, weight)
                         del raw, weight
-                    logger.debug(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"huber merge done, RSS={_w_rss():.0f} MB")
+                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
+                                f"huber merge done, RSS={_process_rss_mb():.0f} MB")
                     # 直接发送 HuberMeanParam（走 ShmTransportable）
                     await output_ipc.put(huber_merger.result)
-                    logger.debug(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"huber partial sent, RSS={_w_rss():.0f} MB")
+                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
+                                f"huber partial sent, RSS={_process_rss_mb():.0f} MB")
 
                 else:
                     logger.warning(
