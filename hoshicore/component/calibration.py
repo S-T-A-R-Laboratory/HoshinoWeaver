@@ -11,8 +11,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from .tagged_image import align_dtype_pair
-from .utils import DTYPE_MAX_VALUE
+from .data_container import DTYPE_MAX_VALUE, align_dtype_pair
 
 # 整数减法的最小安全有符号 dtype 映射
 _SIGNED_DTYPE = {

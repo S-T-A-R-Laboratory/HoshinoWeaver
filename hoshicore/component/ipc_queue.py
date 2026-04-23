@@ -4,7 +4,7 @@
 设计目标：
     - 继承 BaseQueue，接口与 RichContextQueue 完全一致
     - np.ndarray 通过 SharedMemory 零拷贝传输（跨平台：Windows/Linux/macOS）
-    - 实现 ShmTransportable 协议的对象（如 FloatImage）走 shm + pickle 混合
+    - 继承 ShmTransportable 的对象（如 FloatImage）走 shm + pickle 混合
     - 其他小对象走 pickle via Pipe
     - sentinel / cancellation 信号通过控制帧传递
 
@@ -21,7 +21,8 @@ import pickle
 from collections import deque
 from dataclasses import dataclass
 from multiprocessing.shared_memory import SharedMemory
-from typing import Any, Optional, Protocol, runtime_checkable
+from abc import ABC, abstractmethod
+from typing import Any, Optional
 
 import numpy as np
 
@@ -49,42 +50,41 @@ class SharedArrayRef:
 # ────────────────────────────────────────────────────────────────
 
 
-@runtime_checkable
-class ShmTransportable(Protocol):
-    """声明对象支持 SharedMemory 高效传输。
+class ShmTransportable(ABC):
+    """声明对象支持 SharedMemory 高效传输的抽象基类。
 
-    轻量包装类（如 FloatImage）实现此协议后，IPCQueue 会：
-    1. 调用 __shm_pack__ 提取主数组和辅助元数据
-    2. 主数组走 SharedMemory，元数据走 pickle
-    3. 消费端通过 __shm_unpack__ 重建对象
+    子类实现三个方法后，IPCQueue 自动走高效路径：
+    1. shm_nbytes() → 预计算所需 shm 字节数
+    2. shm_pack_into(buf) → 将数据直写入 shm buffer，返回元数据
+    3. shm_unpack_from(buf, meta) → 从 shm buffer + 元数据重建对象
+
+    子类定义时自动注册到 _SHM_REGISTRY（通过 __init_subclass__）。
     """
 
-    def __shm_pack__(self) -> tuple[np.ndarray, bytes]:
-        """返回 (主数组, 辅助元数据的 pickle 字节)"""
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if not getattr(cls, '__abstractmethods__', None):
+            _SHM_REGISTRY[cls.__qualname__] = cls
+
+    @abstractmethod
+    def shm_nbytes(self) -> int:
+        """返回 shm 传输所需的总字节数。"""
+        ...
+
+    @abstractmethod
+    def shm_pack_into(self, buf) -> bytes:
+        """将数据直写入 shm buffer，返回辅助元数据（pickle 字节）。"""
         ...
 
     @classmethod
-    def __shm_unpack__(cls, array: np.ndarray, meta: bytes) -> Any:
-        """从 shm 数组和元数据重建对象"""
+    @abstractmethod
+    def shm_unpack_from(cls, buf, meta: bytes) -> Any:
+        """从 shm buffer 和元数据重建对象。"""
         ...
 
 
 # ShmTransportable 类注册表（class qualname → class）
 _SHM_REGISTRY: dict[str, type] = {}
-
-
-def register_shm_transportable(cls: type) -> type:
-    """注册一个 ShmTransportable 类到全局注册表。
-
-    用法::
-
-        @register_shm_transportable
-        @dataclass(slots=True)
-        class FloatImage:
-            ...
-    """
-    _SHM_REGISTRY[cls.__qualname__] = cls
-    return cls
 
 
 # ────────────────────────────────────────────────────────────────
@@ -235,9 +235,12 @@ class IPCQueue(BaseQueue):
             return (_TAG_ARRAY, ref)
 
         if isinstance(item, ShmTransportable):
-            arr, meta = item.__shm_pack__()
-            if arr.nbytes > self._shm_threshold:
-                ref = self._write_shm(arr)
+            nbytes = item.shm_nbytes()
+            if nbytes > self._shm_threshold:
+                shm = SharedMemory(create=True, size=max(nbytes, 1))
+                self._pending_shm[shm.name] = shm
+                meta = item.shm_pack_into(shm.buf)
+                ref = SharedArrayRef(shm.name, (nbytes,), 'uint8')
                 return (_TAG_SHM_OBJ, type(item).__qualname__, ref, meta)
             # 小 ShmTransportable 走 pickle
             data = pickle.dumps(item)
@@ -289,13 +292,16 @@ class IPCQueue(BaseQueue):
 
             if tag == _TAG_SHM_OBJ:
                 _, cls_name, ref, meta = msg
-                arr = self._read_shm(ref)
                 cls = _SHM_REGISTRY.get(cls_name)
                 if cls is None:
                     raise ValueError(
                         f"ShmTransportable class '{cls_name}' not registered. "
                         f"Available: {sorted(_SHM_REGISTRY.keys())}")
-                return cls.__shm_unpack__(arr, meta)
+                shm = SharedMemory(name=ref.shm_name, create=False)
+                result = cls.shm_unpack_from(shm.buf, meta)
+                shm.close()
+                shm.unlink()
+                return result
 
             if tag == _TAG_PICKLE:
                 return pickle.loads(msg[1])

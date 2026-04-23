@@ -172,12 +172,13 @@ class BaseQueue:
 
 **SharedMemory 生命周期：** producer 创建 → 发送描述符 → consumer 读取 + unlink → `cleanup()` 安全网兜底。
 
-**ShmTransportable 协议：** 轻量包装类实现此协议即可获得 SharedMemory 传输优化：
+**ShmTransportable 基类：** 轻量包装类继承此 ABC 即可获得 SharedMemory 传输优化：
 ```python
-class ShmTransportable(Protocol):
-    def __shm_pack__(self) -> tuple[np.ndarray, bytes]: ...
+class ShmTransportable(ABC):
+    def shm_nbytes(self) -> int: ...
+    def shm_pack_into(self, buf) -> bytes: ...
     @classmethod
-    def __shm_unpack__(cls, array: np.ndarray, meta: bytes) -> Self: ...
+    def shm_unpack_from(cls, buf, meta: bytes) -> Self: ...
 ```
 
 ## 实现示例

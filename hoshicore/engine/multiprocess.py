@@ -32,12 +32,30 @@ from ..component.progress import DummyTracker, ProgressTracker
 from ..ops.base import BaseOp
 from .build import ValidatedDag
 from .segment_adapter import apply_data_parallelism, _auto_worker_count
+from .segment_detect import detect_parallel_segments
 from .executor import DAGExecutor
+from .registry import REGISTERED_OP
 from .wiring import (
     instantiate_and_wire,
     run_dag,
     set_dag_search_paths,
 )
+
+
+def _has_parallel_segments(
+    dag: ValidatedDag,
+    op_registry: Optional[dict[str, type[BaseOp]]] = None,
+) -> bool:
+    """轻量段检测：仅实例化 Op（不布线），判断是否存在可并行段。"""
+    registry = op_registry or REGISTERED_OP
+    instances: dict[str, BaseOp] = {}
+    for node_name in dag.exec_order:
+        op_name = dag.nodes[node_name]["op"]
+        if op_name not in registry:
+            return False
+        instances[node_name] = registry[op_name](name=node_name)
+    segments = detect_parallel_segments(dag, instances)
+    return len(segments) > 0
 
 
 async def run_dag_multiprocess(
@@ -53,12 +71,12 @@ async def run_dag_multiprocess(
 ) -> dict[str, Any]:
     """数据并行执行 DAG。
 
-    1. 标准布线：实例化 Op、连接队列、创建 feeder
-    2. 段检测：识别可数据并行的管段
+    1. 轻量段检测：仅实例化 Op 判断是否可并行
+    2. 标准布线：实例化 Op、连接队列、创建 feeder
     3. 段替换：用 SegmentAdapter 替代段内所有 ops
     4. 执行：SegmentAdapter 内部管理 worker 进程
 
-    如果未检测到可并行段，自动回退到单进程模式。
+    如果 num_workers <= 1 或未检测到可并行段，直接回退到单进程模式。
 
     Args:
         dag: 已验证的 DAG。
@@ -77,9 +95,14 @@ async def run_dag_multiprocess(
     if num_workers is None:
         num_workers = _auto_worker_count()
 
-    if num_workers <= 1:
-        logger.info("Data parallelism disabled (num_workers <= 1), "
-                     "falling back to single-process.")
+    # 前置检查：num_workers 不足或无可并行段 → 直接单进程
+    if num_workers <= 1 or not _has_parallel_segments(dag, op_registry):
+        if num_workers <= 1:
+            logger.info("Data parallelism disabled (num_workers <= 1), "
+                        "falling back to single-process.")
+        else:
+            logger.info("No parallel segments detected, "
+                        "falling back to single-process.")
         return await run_dag(
             dag, global_inputs, global_configs, op_registry,
             progress=progress, dag_search_paths=dag_search_paths,
@@ -94,20 +117,8 @@ async def run_dag_multiprocess(
 
     instances = {op.name: op for op in ops}
 
-    # ── 2) 段检测 + 替换 ──
+    # ── 2) 段替换 ──
     new_ops = apply_data_parallelism(dag, ops, instances, num_workers)
-
-    if len(new_ops) == len(ops):
-        # 无段替换，回退到单进程
-        logger.info("No parallel segments detected, single-process fallback.")
-        # 关闭旧 feeders（避免 coroutine 泄漏），重新走 run_dag
-        for f in feeders:
-            if hasattr(f, 'close'):
-                f.close()
-        return await run_dag(
-            dag, global_inputs, global_configs, op_registry,
-            progress=progress, dag_search_paths=dag_search_paths,
-            tracker=tracker, cancel_event=cancel_event)
 
     # ── 3) 注入进度追踪器 ──
     if tracker is None and progress:

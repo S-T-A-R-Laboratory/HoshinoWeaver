@@ -1,11 +1,12 @@
+import asyncio
+
 from typing import Any
 from loguru import logger
-
-import numpy as np
 
 from .base import BaseOp
 from ..component.dataloader import BaseLoader, ImgFileListLoader, ArrayLoader
 from ..engine.registry import register_op
+
 
 @register_op()
 class ImgDataLoaderOp(BaseOp):
@@ -56,7 +57,8 @@ class ImgDataLoaderOp(BaseOp):
         loader = loader_class(src=self.inputs['src'],
                               length=self.length,
                               config=configs)
-        self.tracker.create_bar(self.name, self.length or 0,
+        self.tracker.create_bar(self.name,
+                                self.length or 0,
                                 desc=f"{self.name} [Load]")
         try:
             index = 0
@@ -72,7 +74,7 @@ class ImgDataLoaderOp(BaseOp):
         finally:
             self.tracker.close_bar(self.name)
 
-    def build_loader_class(self, loader_type: str):
+    def build_loader_class(self, loader_type: str) -> BaseLoader:
         mapping = {
             "img_file_list": ImgFileListLoader,
             "img_array": ArrayLoader
@@ -80,3 +82,15 @@ class ImgDataLoaderOp(BaseOp):
         if loader_type not in mapping:
             raise ValueError(f"Unsupported loader type: {loader_type}")
         return mapping[loader_type]
+
+    async def execute_single_frame(self, src_val: Any,
+                                   configs: dict[str, Any]) -> dict[str, Any]:
+        """Worker 用单帧加载接口：根据 loader_type 加载单个数据项。
+
+        此方法封装了 loader 分派逻辑，供 segment_worker 调用，
+        避免 worker 硬编码 loader 内部实现。
+        """
+        loader_type = configs.get("loader_type", "img_file_list")
+        loader_cls = self.build_loader_class(loader_type)
+        result = await asyncio.to_thread(loader_cls.load, None, src_val)
+        return {"result": result}

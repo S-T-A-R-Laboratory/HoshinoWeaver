@@ -21,8 +21,15 @@ from loguru import logger
 
 import psutil
 
+import numpy as np
+
+from ..component.data_container import FloatImage
+from ..component.frame_buffer import (
+    DiskFrameBuffer,
+    SourceReplayBuffer, SourceReplayDescriptor,
+)
 from ..component.ipc_queue import IPCQueue, _TAG_SENTINEL
-from ..component.progress import DummyTracker
+from ..component.progress import DummyTracker, TrackerEventConsumer
 from ..component.queue import BaseQueue, StreamExhausted
 from ..ops.base import BaseOp
 from .build import ValidatedDag
@@ -35,6 +42,7 @@ from .segment_detect import (
     detect_parallel_segments,
 )
 from .segment_worker import _segment_worker_main
+from .wiring import DEFAULT_DAG_SEARCH_PATHS
 
 
 def _process_rss_mb() -> float:
@@ -221,7 +229,6 @@ class SegmentAdapter(BaseOp):
 
         mp_cancel = mp.Event()
         tracker_queue = mp.Queue()
-        from .wiring import DEFAULT_DAG_SEARCH_PATHS
         search_paths_str = [str(p) for p in DEFAULT_DAG_SEARCH_PATHS]
 
         # 启动 worker 进程
@@ -264,7 +271,6 @@ class SegmentAdapter(BaseOp):
                 raise RuntimeError(msg)
         logger.info(f"All {num_workers} workers ready")
 
-        from ..component.progress import TrackerEventConsumer
         consumer = TrackerEventConsumer(self.tracker, tracker_queue)
         consumer_task = asyncio.create_task(consumer.run())
 
@@ -526,6 +532,14 @@ class SegmentAdapter(BaseOp):
                     f"Resolved internal config {compound_key} "
                     f"← {src_node}.{src_output}")
 
+        # 释放 Phase 1 收集的大对象：Reduce partial 已 merge 并推送下游，
+        # 仅保留 __disk_buffer 描述符（median fallback 需要）。
+        for p in partials:
+            for k in list(p.keys()):
+                if k != "__disk_buffer":
+                    del p[k]
+        phase1_merged.clear()
+
         logger.trace(f"[MEM] Phase2 start (internal configs resolved): RSS={_process_rss_mb():.0f} MB")
 
         # ── Phase 2: 分布式迭代 Reduce ──
@@ -585,9 +599,6 @@ class SegmentAdapter(BaseOp):
         iter_configs: dict[str, Any],
     ) -> None:
         """分布式 Sigma Clip 迭代。"""
-        import numpy as np
-        from ..component.tagged_image import FloatImage
-
         # 获取全局 FGP（从 Phase 1 的 MeanStacker 终端输出）
         # sigma_clip_iter 的 fgp_total config 来自 mean_stacker.statistics
         fgp_total = iter_configs.get("fgp_total")
@@ -645,10 +656,12 @@ class SegmentAdapter(BaseOp):
             total_rejected = clip_partials[0]
             for p in clip_partials[1:]:
                 total_rejected = total_rejected + p
+            del clip_partials
             logger.trace(f"[MEM] iter {iteration+1} merge done: RSS={_process_rss_mb():.0f} MB")
 
             # accepted = fgp_total - total_rejected
             accepted = fgp_total - total_rejected
+            del total_rejected
             accepted.apply_zero_var(fgp_total)
             logger.trace(f"[MEM] iter {iteration+1} sub+zerovar done: RSS={_process_rss_mb():.0f} MB")
 
@@ -688,7 +701,6 @@ class SegmentAdapter(BaseOp):
         iter_configs: dict[str, Any],
     ) -> None:
         """分布式 Huber Mean 单 pass。"""
-        from ..component.tagged_image import FloatImage
 
         fgp_total = iter_configs.get("fgp_total")
         if fgp_total is None:
@@ -723,7 +735,9 @@ class SegmentAdapter(BaseOp):
         final_param = huber_partials[0]
         for p in huber_partials[1:]:
             final_param = final_param + p
+        del huber_partials
         result = FloatImage(final_param.mu, dtype=final_param.source_dtype)
+        del final_param
 
         output_key = f"{iter_op_name}.result"
         if output_key in self.outputs:
@@ -737,12 +751,6 @@ class SegmentAdapter(BaseOp):
         phase1_partials: list[dict],
     ) -> None:
         """Median 不可分布式归约——从 worker 的描述符重建 buffer，在主进程执行。"""
-        from ..component.frame_buffer import (
-            DiskFrameBuffer,
-            SourceReplayBuffer, SourceReplayDescriptor,
-        )
-        import numpy as np
-        from ..component.tagged_image import FloatImage
 
         # 从所有 worker 的 partial 中提取 buffer 描述符
         all_descriptors = []
