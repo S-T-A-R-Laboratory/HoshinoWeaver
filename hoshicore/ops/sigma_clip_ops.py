@@ -33,8 +33,7 @@ from loguru import logger
 from ..component.frame_buffer import DiskFrameBuffer, SourceReplayBuffer
 from ..component.merger import (MeanMerger, SigmaClippingMerger,
                                 HuberWeightedMerger)
-from ..component.tagged_image import FloatImage
-from ..component.utils import FastGaussianParam
+from ..component.data_container import FloatImage, FastGaussianParam
 from ..engine.registry import register_op
 from ..component.queue import StreamExhausted
 from .base import BaseOp

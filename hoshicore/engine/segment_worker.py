@@ -17,7 +17,12 @@ from typing import Any
 
 from loguru import logger
 
-from ..component.ipc_queue import IPCQueue
+from ..component.data_container import FastGaussianParam, HuberMeanParam
+from ..component.frame_buffer import (
+    DiskFrameBuffer, SourceReplayBuffer,
+)
+from ..component.ipc_queue import IPCQueue, ShmTransportable, _safe_close_shm
+from ..component.merger import HuberWeightedMerger, SigmaClippingMerger
 from ..component.progress import ProxyTracker
 from ..component.queue import BaseQueue, RichContextQueue, StreamExhausted
 from ..ops.base import BaseOp, ParallelBaseOp
@@ -173,11 +178,9 @@ def _segment_worker_main(
             use_replay = (buffer_mode == "replay"
                           or (buffer_mode == "auto" and has_fnames))
             if use_replay:
-                from ..component.frame_buffer import SourceReplayBuffer
                 local_buffer = SourceReplayBuffer()
                 logger.debug(f"Worker {worker_id}: using SourceReplayBuffer (mode={buffer_mode})")
             else:
-                from ..component.frame_buffer import DiskFrameBuffer
                 local_buffer = DiskFrameBuffer()
                 logger.debug(f"Worker {worker_id}: using DiskFrameBuffer (mode={buffer_mode})")
 
@@ -259,11 +262,8 @@ def _segment_worker_main(
         if local_buffer is not None and hasattr(local_buffer, 'to_descriptor'):
             phase1_partial["__disk_buffer"] = local_buffer.to_descriptor()
 
-        # 分离大对象发送：先发送每个大对象（FGP/FloatImage 走 ShmTransportable），
+        # 分离大对象发送：先发送每个大对象（ShmTransportable 子类走 shm），
         # 最后发送轻量 manifest 描述结构。避免整个 dict pickle 的内存放大。
-        from ..component.utils import FastGaussianParam as _FGP
-        from ..component.tagged_image import FloatImage as _FI
-        from ..component.ipc_queue import ShmTransportable as _ShmT
         large_order = []  # (terminal_name, key) 顺序记录
         manifest = {}
         for t_name, partial_dict in phase1_partial.items():
@@ -272,7 +272,7 @@ def _segment_worker_main(
                 continue
             keys_order = []
             for key, val in partial_dict.items():
-                if isinstance(val, (_ShmT, _FGP, _FI)):
+                if isinstance(val, ShmTransportable):
                     await output_ipc.put(val)
                     large_order.append((t_name, key))
                     keys_order.append(key)
@@ -284,6 +284,12 @@ def _segment_worker_main(
         manifest["__large_order"] = large_order
         await output_ipc.put(manifest)
 
+        # 释放 Phase 1 积累的内存：Reduce Op 实例（内含 Merger result）、
+        # 本地队列、以及 partial 引用。Phase 2 仅需 local_buffer。
+        phase1_partial.clear()
+        reduce_local.clear()
+        reduce_op_instances.clear()
+
         logger.trace(f"[MEM] Worker {worker_id}: Phase 1 partial sent, "
                     f"RSS={_process_rss_mb():.0f} MB, entering Phase 2")
 
@@ -292,7 +298,6 @@ def _segment_worker_main(
         #   1. ref_data (FGP/HuberMeanParam via ShmTransportable)
         #   2. cmd dict (小对象，含 action/iter_type/params)
         # finish 命令只发 1 个 dict。
-        from ..component.utils import FastGaussianParam, HuberMeanParam
         iter_count = 0
         logger.debug(f"Worker {worker_id}: entering Phase 2 loop")
         while True:
@@ -333,19 +338,18 @@ def _segment_worker_main(
                             f"cmd received, RSS={_process_rss_mb():.0f} MB")
 
                 if iter_type == "sigma_clip":
-                    from ..component.merger import SigmaClippingMerger
                     clip_merger = SigmaClippingMerger(
                         ref_img=ref_data,
                         rej_high=params.get("rej_high", 3.0),
                         rej_low=params.get("rej_low", 3.0),
                     )
+                    del ref_data  # rej_high/low_img 已计算，释放完整 FGP
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"merger created, RSS={_process_rss_mb():.0f} MB, "
                                 f"buffer_len={len(local_buffer)}")
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         clip_merger.merge(raw, weight)
-                        del raw, weight
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"merge loop done, RSS={_process_rss_mb():.0f} MB")
                     # 直接发送 FGP（走 ShmTransportable），避免嵌套 dict 的 pickle 放大
@@ -354,18 +358,17 @@ def _segment_worker_main(
                                 f"partial sent, RSS={_process_rss_mb():.0f} MB")
 
                 elif iter_type == "huber_mean":
-                    from ..component.merger import HuberWeightedMerger
                     huber_merger = HuberWeightedMerger(
                         ref_stats=ref_data,
                         huber_c=params.get("huber_c", 1.345),
                     )
+                    del ref_data  # _ref_mean/_ref_std 已计算，释放完整 FGP
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"huber merger created, RSS={_process_rss_mb():.0f} MB, "
                                 f"buffer_len={len(local_buffer)}")
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         huber_merger.merge(raw, weight)
-                        del raw, weight
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"huber merge done, RSS={_process_rss_mb():.0f} MB")
                     # 直接发送 HuberMeanParam（走 ShmTransportable）
@@ -411,7 +414,6 @@ def _segment_worker_main(
         # 此时主进程已读取了所有 SharedMemory 数据。
         # 在 Windows 上，过早关闭 handle 会导致 Named File Mapping 被销毁，
         # 主进程 attach 时报 FileNotFoundError。
-        from ..component.ipc_queue import _safe_close_shm
         while output_ipc._slot_shm:
             for shm in output_ipc._slot_shm.popleft():
                 _safe_close_shm(shm)
@@ -431,30 +433,17 @@ async def _execute_single_op(
     """在 worker 内执行单个 Op 的单帧处理。
 
     对于 ParallelBaseOp: 调用 _async_execute_single
-    对于 ImgDataLoaderOp 等 I/O op: 模拟单帧执行
+    对于有 execute_single_frame 的 I/O op: 调用其单帧接口
     """
     if isinstance(op, ParallelBaseOp):
         async def _make_awaitable(v):
             return v
         data = {k: _make_awaitable(v) for k, v in inputs.items()}
         return await op._async_execute_single(data, configs)
+    elif hasattr(op, "execute_single_frame"):
+        src_val = inputs.get("src")
+        if src_val is None:
+            src_val = next(iter(inputs.values()))
+        return await op.execute_single_frame(src_val, configs)
     else:
-        from ..ops.dataloader import ImgDataLoaderOp
-        from ..component.dataloader import ImgFileListLoader, ArrayLoader
-
-        if isinstance(op, ImgDataLoaderOp):
-            loader_type = configs.get("loader_type", "img_file_list")
-            src_val = inputs.get("src")
-            if src_val is None:
-                src_val = next(iter(inputs.values()))
-            loader_configs = configs.get("configs", {})
-            if loader_type == "img_file_list":
-                result = await asyncio.to_thread(
-                    ImgFileListLoader.load, None, src_val)
-            elif loader_type == "img_array":
-                result = loader_configs.get("data", {}).get(src_val)
-            else:
-                result = src_val
-            return {"result": result}
-        else:
-            return inputs  # fallback: 透传
+        return inputs  # fallback: 透传

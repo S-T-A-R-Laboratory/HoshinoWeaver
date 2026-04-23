@@ -16,8 +16,7 @@ from loguru import logger
 
 from .exifdata import ExifData, encode_exif_data
 from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SAME_SUFFIX_MAPPING,
-                    get_scale_x, is_support_format,
-                    time_cost_warpper)
+                    is_support_format, time_cost_warpper)
 
 
 def load_img(file_path: str) -> Optional[np.ndarray]:

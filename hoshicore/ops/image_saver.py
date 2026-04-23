@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Mapping, Union
 import numpy as np
 from loguru import logger
 
-from hoshicore.component.tagged_image import FloatImage, rescale_array
+from hoshicore.component.data_container import FloatImage, rescale_array
 
 from ..component.imgfio import save_img
 from ..engine.registry import register_op

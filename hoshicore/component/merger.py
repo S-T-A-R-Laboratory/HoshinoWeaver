@@ -8,9 +8,9 @@ from typing import Optional, Union, Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from .tagged_image import DTYPE_LEVEL, _SCALE_BASE, FloatImage
-from .utils import (DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP,
-                     FastGaussianParam, HuberMeanParam)
+from .data_container import (DTYPE_LEVEL, DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP,
+                              _SCALE_BASE, FloatImage,
+                              FastGaussianParam, HuberMeanParam)
 
 
 class BaseMerger(metaclass=ABCMeta):
@@ -153,7 +153,6 @@ class SigmaClippingMerger(MeanMerger):
     def __init__(self, ref_img: FastGaussianParam, rej_high: float,
                  rej_low: float, **kwargs) -> None:
         # TODO: 迭代加速（对已收敛的区域取mask）？
-        self.ref_img = ref_img
         ref_mu = ref_img.mu
         ref_std = np.sqrt(ref_img.var)
         rej_dtype = ref_img.source_dtype
@@ -214,7 +213,6 @@ class HuberWeightedMerger(BaseMerger):
     def __init__(self, ref_stats: FastGaussianParam,
                  huber_c: float = 1.345, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.ref_stats = ref_stats
         self.huber_c = huber_c
         self._ref_mean = ref_stats.mu.astype(np.float32)
         self._ref_std = np.sqrt(

@@ -11,7 +11,7 @@ from loguru import logger
 
 from ..component.queue import StreamExhausted
 from ..engine.registry import register_op
-from ..component.tagged_image import FloatImage
+from ..component.data_container import FloatImage
 from .base import BaseOp
 
 
