@@ -124,6 +124,41 @@ def _safe_close_shm(shm: SharedMemory, *, unlink: bool = False) -> None:
             pass
 
 
+# ────────────────────────────────────────────────────────────────
+# Broadcast helpers（不属于 IPCQueue，用于 1-to-N 共享单块 shm）
+# ────────────────────────────────────────────────────────────────
+
+
+def broadcast_pack(item: ShmTransportable) -> tuple[SharedMemory, str, bytes]:
+    """将 ShmTransportable 打包到单个 SharedMemory 块，供多个消费者只读 attach。
+
+    返回 (shm_handle, cls_qualname, meta_bytes)。
+    调用方负责在所有消费者读完后 shm.close() + shm.unlink()。
+    """
+    nbytes = item.shm_nbytes()
+    shm = SharedMemory(create=True, size=max(nbytes, 1))
+    meta = item.shm_pack_into(shm.buf)
+    return shm, type(item).__qualname__, meta
+
+
+def broadcast_unpack(shm_name: str, cls_name: str, meta: bytes) -> Any:
+    """从 broadcast SharedMemory 读取对象（close 但不 unlink）。
+
+    由消费者调用。unlink 由生产者在所有消费者读完后执行。
+    """
+    cls = _SHM_REGISTRY.get(cls_name)
+    if cls is None:
+        raise ValueError(
+            f"ShmTransportable class '{cls_name}' not registered. "
+            f"Available: {sorted(_SHM_REGISTRY.keys())}")
+    shm = SharedMemory(name=shm_name, create=False)
+    try:
+        result = cls.shm_unpack_from(shm.buf, meta)
+    finally:
+        shm.close()
+    return result
+
+
 class IPCQueue(BaseQueue):
     """跨进程异步队列，继承 BaseQueue。
 
