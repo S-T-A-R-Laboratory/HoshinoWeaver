@@ -2,6 +2,9 @@ from hoshicore.engine.wiring import run_from_yaml
 import asyncio
 import argparse
 import os
+import sys
+
+from loguru import logger
 from hoshicore.component.utils import is_support_format
 
 parser = argparse.ArgumentParser(
@@ -9,8 +12,23 @@ parser = argparse.ArgumentParser(
 parser.add_argument("dir",
                     type=str,
                     help="Directory containing the input images.")
+log_group = parser.add_mutually_exclusive_group()
+log_group.add_argument("--debug", action="store_true",
+                       help="Enable DEBUG level logging.")
+log_group.add_argument("--trace", action="store_true",
+                       help="Enable TRACE level logging (includes [MEM] diagnostics).")
 
 args = parser.parse_args()
+
+# 配置日志级别：默认 INFO，--debug → DEBUG，--trace → TRACE
+logger.remove()
+if args.trace:
+    logger.add(sys.stderr, level="TRACE")
+elif args.debug:
+    logger.add(sys.stderr, level="DEBUG")
+else:
+    logger.add(sys.stderr, level="INFO")
+
 dir_name = args.dir
 
 # get filename list in the directory
