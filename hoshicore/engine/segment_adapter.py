@@ -28,7 +28,9 @@ from ..component.frame_buffer import (
     DiskFrameBuffer,
     SourceReplayBuffer, SourceReplayDescriptor,
 )
-from ..component.ipc_queue import IPCQueue, _TAG_SENTINEL
+from ..component.ipc_queue import (
+    IPCQueue, _TAG_SENTINEL, _safe_close_shm, broadcast_pack,
+)
 from ..component.progress import DummyTracker, TrackerEventConsumer
 from ..component.queue import BaseQueue, StreamExhausted
 from ..ops.base import BaseOp
@@ -626,28 +628,32 @@ class SegmentAdapter(BaseOp):
 
         for iteration in range(max_iter):
             logger.trace(f"[MEM] iter {iteration+1} broadcast start: RSS={_process_rss_mb():.0f} MB")
-            # broadcast ref_fgp 给所有 worker
-            # FGP 作为独立 item 发送（走 ShmTransportable 协议），
-            # 避免嵌套在 dict 中导致整个 dict pickle 序列化时的内存放大
-            for wi, ipc in enumerate(input_ipcs):
-                await ipc.put(ref_fgp)  # FGP → ShmTransportable → SharedMemory
-                await ipc.put({
-                    "action": "iterate",
-                    "iter_type": "sigma_clip",
-                    "params": {"rej_high": rej_high, "rej_low": rej_low},
-                })
-            logger.trace(f"[MEM] iter {iteration+1} broadcast done: RSS={_process_rss_mb():.0f} MB")
+            # broadcast ref_fgp：单次 pack → 单块 shm，所有 worker 只读 attach
+            bc_shm, bc_cls, bc_meta = broadcast_pack(ref_fgp)
+            try:
+                for ipc in input_ipcs:
+                    await ipc.put({
+                        "action": "iterate",
+                        "iter_type": "sigma_clip",
+                        "params": {"rej_high": rej_high, "rej_low": rej_low},
+                        "broadcast_shm": bc_shm.name,
+                        "broadcast_cls": bc_cls,
+                        "broadcast_meta": bc_meta,
+                    })
+                logger.trace(f"[MEM] iter {iteration+1} broadcast done: RSS={_process_rss_mb():.0f} MB")
 
-            # 收集 N 个 partial（workers 直接发送 FGP，非 dict 包装）
-            clip_partials = []
-            for i, ipc in enumerate(output_ipcs):
-                try:
-                    partial = await ipc.get()
-                    clip_partials.append(partial)
-                    logger.trace(f"[MEM] iter {iteration+1} got worker {i} clip partial: "
-                                f"RSS={_process_rss_mb():.0f} MB")
-                except StreamExhausted:
-                    logger.warning(f"Worker {i} sent no clip partial")
+                # 收集 N 个 partial（workers 直接发送 FGP，非 dict 包装）
+                clip_partials = []
+                for i, ipc in enumerate(output_ipcs):
+                    try:
+                        partial = await ipc.get()
+                        clip_partials.append(partial)
+                        logger.trace(f"[MEM] iter {iteration+1} got worker {i} clip partial: "
+                                    f"RSS={_process_rss_mb():.0f} MB")
+                    except StreamExhausted:
+                        logger.warning(f"Worker {i} sent no clip partial")
+            finally:
+                _safe_close_shm(bc_shm, unlink=True)
 
             if not clip_partials:
                 raise ValueError("No clip partials from workers")
@@ -709,24 +715,29 @@ class SegmentAdapter(BaseOp):
 
         huber_c = iter_configs.get("huber_c", 1.345)
 
-        # broadcast 给所有 worker
-        # FGP 作为独立 item 发送，避免 dict pickle 内存放大
-        for ipc in input_ipcs:
-            await ipc.put(fgp_total)  # FGP → ShmTransportable → SharedMemory
-            await ipc.put({
-                "action": "iterate",
-                "iter_type": "huber_mean",
-                "params": {"huber_c": huber_c},
-            })
+        # broadcast 给所有 worker：单次 pack → 单块 shm
+        bc_shm, bc_cls, bc_meta = broadcast_pack(fgp_total)
+        try:
+            for ipc in input_ipcs:
+                await ipc.put({
+                    "action": "iterate",
+                    "iter_type": "huber_mean",
+                    "params": {"huber_c": huber_c},
+                    "broadcast_shm": bc_shm.name,
+                    "broadcast_cls": bc_cls,
+                    "broadcast_meta": bc_meta,
+                })
 
-        # 收集 N 个 partial
-        huber_partials = []
-        for i, ipc in enumerate(output_ipcs):
-            try:
-                partial = await ipc.get()
-                huber_partials.append(partial)
-            except StreamExhausted:
-                logger.warning(f"Worker {i} sent no Huber partial")
+            # 收集 N 个 partial
+            huber_partials = []
+            for i, ipc in enumerate(output_ipcs):
+                try:
+                    partial = await ipc.get()
+                    huber_partials.append(partial)
+                except StreamExhausted:
+                    logger.warning(f"Worker {i} sent no Huber partial")
+        finally:
+            _safe_close_shm(bc_shm, unlink=True)
 
         if not huber_partials:
             raise ValueError("No Huber partials from workers")

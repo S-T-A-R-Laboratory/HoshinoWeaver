@@ -21,7 +21,9 @@ from ..component.data_container import FastGaussianParam, HuberMeanParam
 from ..component.frame_buffer import (
     DiskFrameBuffer, SourceReplayBuffer,
 )
-from ..component.ipc_queue import IPCQueue, ShmTransportable, _safe_close_shm
+from ..component.ipc_queue import (
+    IPCQueue, ShmTransportable, _safe_close_shm, broadcast_unpack,
+)
 from ..component.merger import HuberWeightedMerger, SigmaClippingMerger
 from ..component.progress import ProxyTracker
 from ..component.queue import BaseQueue, RichContextQueue, StreamExhausted
@@ -294,10 +296,8 @@ def _segment_worker_main(
                     f"RSS={_process_rss_mb():.0f} MB, entering Phase 2")
 
         # ── Phase 2+: 命令驱动循环（迭代式 Reduce）──
-        # 协议：每次迭代接收 2 个 item：
-        #   1. ref_data (FGP/HuberMeanParam via ShmTransportable)
-        #   2. cmd dict (小对象，含 action/iter_type/params)
-        # finish 命令只发 1 个 dict。
+        # 协议：每次迭代接收 1 个 cmd dict，内含 broadcast shm 引用。
+        # finish 命令只发 1 个 dict（无 broadcast 字段）。
         iter_count = 0
         logger.debug(f"Worker {worker_id}: entering Phase 2 loop")
         while True:
@@ -305,35 +305,30 @@ def _segment_worker_main(
                 logger.debug(f"Worker {worker_id}: cancel detected in Phase 2 loop")
                 break
             try:
-                logger.debug(f"Worker {worker_id}: waiting for Phase 2 item...")
-                item = await input_ipc.get()
-                logger.debug(f"Worker {worker_id}: got Phase 2 item type={type(item).__name__}")
+                logger.debug(f"Worker {worker_id}: waiting for Phase 2 cmd...")
+                cmd = await input_ipc.get()
             except StreamExhausted:
                 logger.debug(f"Worker {worker_id}: Phase 2 stream exhausted")
                 break
 
-            # 判断是直接命令还是 FGP 前置数据
-            if isinstance(item, dict):
-                cmd = item
-                ref_data = None
-            elif isinstance(item, (FastGaussianParam, HuberMeanParam)):
-                ref_data = item
-                try:
-                    cmd = await input_ipc.get()
-                except StreamExhausted:
-                    break
-            else:
-                logger.warning(f"Worker {worker_id}: unexpected item type {type(item)}")
+            if not isinstance(cmd, dict):
+                logger.warning(f"Worker {worker_id}: unexpected Phase 2 item "
+                              f"type={type(cmd).__name__}")
                 continue
 
-            if isinstance(cmd, dict) and cmd.get("action") == "finish":
+            if cmd.get("action") == "finish":
                 logger.debug(f"Worker {worker_id}: received 'finish' command")
                 break
 
-            if isinstance(cmd, dict) and cmd.get("action") == "iterate":
+            if cmd.get("action") == "iterate":
                 iter_count += 1
                 iter_type = cmd["iter_type"]
                 params = cmd.get("params", {})
+
+                # 从 broadcast shm 解包 ref_data（close 但不 unlink）
+                ref_data = broadcast_unpack(
+                    cmd["broadcast_shm"], cmd["broadcast_cls"],
+                    cmd["broadcast_meta"])
                 logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                             f"cmd received, RSS={_process_rss_mb():.0f} MB")
 
@@ -343,7 +338,7 @@ def _segment_worker_main(
                         rej_high=params.get("rej_high", 3.0),
                         rej_low=params.get("rej_low", 3.0),
                     )
-                    del ref_data  # rej_high/low_img 已计算，释放完整 FGP
+                    del ref_data
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"merger created, RSS={_process_rss_mb():.0f} MB, "
                                 f"buffer_len={len(local_buffer)}")
@@ -352,7 +347,6 @@ def _segment_worker_main(
                         clip_merger.merge(raw, weight)
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"merge loop done, RSS={_process_rss_mb():.0f} MB")
-                    # 直接发送 FGP（走 ShmTransportable），避免嵌套 dict 的 pickle 放大
                     await output_ipc.put(clip_merger.result)
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"partial sent, RSS={_process_rss_mb():.0f} MB")
@@ -362,7 +356,7 @@ def _segment_worker_main(
                         ref_stats=ref_data,
                         huber_c=params.get("huber_c", 1.345),
                     )
-                    del ref_data  # _ref_mean/_ref_std 已计算，释放完整 FGP
+                    del ref_data
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"huber merger created, RSS={_process_rss_mb():.0f} MB, "
                                 f"buffer_len={len(local_buffer)}")
@@ -371,7 +365,6 @@ def _segment_worker_main(
                         huber_merger.merge(raw, weight)
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"huber merge done, RSS={_process_rss_mb():.0f} MB")
-                    # 直接发送 HuberMeanParam（走 ShmTransportable）
                     await output_ipc.put(huber_merger.result)
                     logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
                                 f"huber partial sent, RSS={_process_rss_mb():.0f} MB")
