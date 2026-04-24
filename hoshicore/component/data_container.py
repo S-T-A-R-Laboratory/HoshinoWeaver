@@ -175,7 +175,7 @@ class FloatImage(ShmTransportable):
         })
 
     @classmethod
-    def shm_unpack_from(cls, buf, meta: bytes) -> FloatImage:
+    def shm_unpack_from(cls, buf, meta: bytes, shm_handle=None) -> FloatImage:
         m = pickle.loads(meta)
         raw = np.ndarray(np.prod(m["arr_shape"]) *
                          np.dtype(m["arr_dtype"]).itemsize,
@@ -183,6 +183,9 @@ class FloatImage(ShmTransportable):
                          buffer=buf)
         data = raw.view(np.dtype(m["arr_dtype"])).reshape(
             m["arr_shape"]).copy()
+        if shm_handle is not None:
+            shm_handle.close()
+            shm_handle.unlink()
         return cls(data=data, dtype=np.dtype(m["dtype"]))
 
 
@@ -416,20 +419,35 @@ class FastGaussianParam(ShmTransportable):
         return obj
 
     @classmethod
-    def shm_unpack_from(cls, buf, meta: bytes) -> FastGaussianParam:
+    def shm_unpack_from(cls, buf, meta: bytes,
+                        shm_handle=None) -> FastGaussianParam:
         m = pickle.loads(meta)
         off = 0
-        raw = np.ndarray(m["sum_mu_nbytes"], np.uint8, buffer=buf, offset=off)
-        sum_mu = raw.view(np.dtype(m["sum_mu_dtype"])).reshape(
-            m["sum_mu_shape"]).copy()
+        sum_mu = np.ndarray(m["sum_mu_shape"], np.dtype(m["sum_mu_dtype"]),
+                            buffer=buf, offset=off)
         off += m["sum_mu_nbytes"]
-        raw = np.ndarray(m["sq_nbytes"], np.uint8, buffer=buf, offset=off)
-        square_sum = raw.view(np.dtype(m["sq_dtype"])).reshape(
-            m["sq_shape"]).copy()
+        square_sum = np.ndarray(m["sq_shape"], np.dtype(m["sq_dtype"]),
+                                buffer=buf, offset=off)
         off += m["sq_nbytes"]
-        raw = np.ndarray(m["n_nbytes"], np.uint8, buffer=buf, offset=off)
-        n = raw.view(np.dtype(m["n_dtype"])).reshape(m["n_shape"]).copy()
-        return cls._shm_rebuild(m, sum_mu, square_sum, n)
+        n = np.ndarray(m["n_shape"], np.dtype(m["n_dtype"]),
+                       buffer=buf, offset=off)
+        obj = cls._shm_rebuild(m, sum_mu, square_sum, n)
+        obj._shm_owner = shm_handle  # 持有 handle，防止 shm 被提前销毁
+        return obj
+
+    def _force_copy_from_shm(self) -> None:
+        """broadcast 场景：将 shm view 数组 copy 为独立内存。"""
+        logger.trace("Force copy FastGaussianParam arrays from shared memory.")
+        self.sum_mu = self.sum_mu.copy()
+        self.square_sum = self.square_sum.copy()
+        self.n = self.n.copy()
+
+    def __del__(self):
+        shm = getattr(self, '_shm_owner', None)
+        if shm is not None:
+            self._shm_owner = None
+            from .ipc_queue import _safe_close_shm
+            _safe_close_shm(shm, unlink=True)
 
 
 class HuberMeanParam(ShmTransportable):
@@ -512,14 +530,27 @@ class HuberMeanParam(ShmTransportable):
                    source_dtype=source_dtype)
 
     @classmethod
-    def shm_unpack_from(cls, buf, meta: bytes) -> HuberMeanParam:
+    def shm_unpack_from(cls, buf, meta: bytes,
+                        shm_handle=None) -> HuberMeanParam:
         m = pickle.loads(meta)
         off = 0
-        raw = np.ndarray(m["ws_nbytes"], np.uint8, buffer=buf, offset=off)
-        weighted_sum = raw.view(np.dtype(m["ws_dtype"])).reshape(
-            m["ws_shape"]).copy()
+        weighted_sum = np.ndarray(m["ws_shape"], np.dtype(m["ws_dtype"]),
+                                  buffer=buf, offset=off)
         off += m["ws_nbytes"]
-        raw = np.ndarray(m["wt_nbytes"], np.uint8, buffer=buf, offset=off)
-        weight_total = raw.view(np.dtype(m["wt_dtype"])).reshape(
-            m["wt_shape"]).copy()
-        return cls._shm_rebuild(m, weighted_sum, weight_total)
+        weight_total = np.ndarray(m["wt_shape"], np.dtype(m["wt_dtype"]),
+                                  buffer=buf, offset=off)
+        obj = cls._shm_rebuild(m, weighted_sum, weight_total)
+        obj._shm_owner = shm_handle
+        return obj
+
+    def _force_copy_from_shm(self) -> None:
+        """broadcast 场景：将 shm view 数组 copy 为独立内存。"""
+        self.weighted_sum = self.weighted_sum.copy()
+        self.weight_total = self.weight_total.copy()
+
+    def __del__(self):
+        shm = getattr(self, '_shm_owner', None)
+        if shm is not None:
+            self._shm_owner = None
+            from .ipc_queue import _safe_close_shm
+            _safe_close_shm(shm, unlink=True)

@@ -14,8 +14,11 @@ Op 内部无需任何 if 守卫，直接调用 self.tracker.update() 即可。
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 from typing import Optional
 
+import psutil
+from loguru import logger
 from tqdm import tqdm
 
 
@@ -161,6 +164,11 @@ class ProxyTracker(DummyTracker):
     def close_all(self) -> None:
         self._q.put(("close_all",))
 
+    def report_mem(self, tag: str) -> None:
+        """上报当前进程 RSS（MB）到主进程日志。"""
+        rss = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        self._q.put(("__mem__", os.getpid(), tag, rss))
+
 
 class TrackerEventConsumer:
     """主进程端的 tracker 事件消费者。
@@ -196,6 +204,10 @@ class TrackerEventConsumer:
             method_name = msg[0]
             if method_name == "__stop__":
                 break
+            if method_name == "__mem__":
+                _, pid, tag, rss = msg
+                logger.debug(f"[MEM][worker pid={pid}] {tag}: RSS={rss:.0f} MB")
+                continue
             args = msg[1:]
             fn = getattr(self._tracker, method_name, None)
             if fn is not None:
