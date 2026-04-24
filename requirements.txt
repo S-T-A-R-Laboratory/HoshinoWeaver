@@ -1,5 +1,6 @@
 easydict>=1.11
 loguru>=0.7.2
+numba>=0.58
 numpy<2.0
 opencv_python>=4.9.0.80
 pyexiv2==2.12.0
