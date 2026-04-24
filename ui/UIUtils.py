@@ -880,14 +880,18 @@ class SlotHandler(QMainWindow):
             "int_weight": self.window._int_weight,
         }
 
+        route_choices = None
+
         if mode == 'max':
             yaml_path = "./hoshicore/dag/fifo_startrail.yaml"
             global_configs["fin"] = self.window._fade_in / 100
             global_configs["fout"] = self.window._fade_out / 100
         elif mode == 'mean':
-            yaml_path = "./hoshicore/dag/mean_only.yaml"
+            yaml_path = "./hoshicore/dag/stack.meta.yaml"
+            route_choices = {"stacker": "mean"}
         elif mode == 'sigmaclip-mean':
-            yaml_path = "./hoshicore/dag/sigma_clipping_mean.yaml"
+            yaml_path = "./hoshicore/dag/stack.meta.yaml"
+            route_choices = {"stacker": "sigma_clip"}
             global_configs["rej_high"] = self.window._rej_high
             global_configs["rej_low"] = self.window._rej_low
             global_configs["max_iter"] = self.window._max_iter
@@ -906,7 +910,8 @@ class SlotHandler(QMainWindow):
             await run_from_yaml(
                 yaml_path, global_inputs, global_configs,
                 tracker=qt_tracker, progress=False,
-                cancel_event=self.window._cancel_event)
+                cancel_event=self.window._cancel_event,
+                route_choices=route_choices)
 
             # 执行成功
             self.view_file(self.window._output_file_path)

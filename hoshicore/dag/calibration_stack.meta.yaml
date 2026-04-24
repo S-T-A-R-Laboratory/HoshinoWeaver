@@ -1,5 +1,5 @@
 description: "通用校准 + 堆栈流水线（Meta YAML）"
-version: "1"
+version: "2"
 
 # ── 全局输入 ──
 inputs:
@@ -10,24 +10,17 @@ inputs:
 
 # ── 全局配置 ──
 configs:
-  loader_type: { type: str, default: "img_file_list" }
-  loader_configs: { type: dict, default: {} }
-  int_weight: { type: bool, default: true }
-  rej_high: { type: float, default: 3.0 }
-  rej_low: { type: float, default: 3.0 }
-  max_iter: { type: int, default: 5 }
-  huber_c: { type: float, default: 1.345 }
-  exif_reduce_type: { type: str, default: "sum" }
-  output_filename: { type: str, default: "result.tif" }
-  output_dtype: { type: str, default: "uint8" }
-  bias_master_path: { type: str, default: null }
-  dark_master_path: { type: str, default: null }
-  flat_master_path: { type: str, default: null }
+  loader_type:      { type: str,  default: "img_file_list" }
+  loader_configs:   { type: dict, default: {} }
+  int_weight:       { type: bool, default: true }
+  exif_reduce_type: { type: str,  default: "sum" }
+  output_filename:  { type: str,  default: "result.tif" }
+  output_dtype:     { type: str,  default: "uint8" }
+  bias_master_path: { type: str,  default: null }
+  dark_master_path: { type: str,  default: null }
+  flat_master_path: { type: str,  default: null }
 
 # ── 路由定义 ──
-#
-# 每个路由声明可选的实现方式及其默认值。
-# 节点通过 route_key 引用路由定义，meta_resolve 根据用户选择填入具体 op。
 routes:
   bias_stacker:
     options:
@@ -60,6 +53,15 @@ routes:
       sigma_clip: sigma_clip.yaml
       huber_mean: huber_mean.yaml
     default: mean
+
+# ── 路由专属配置 ──
+route_configs:
+  sigma_clip:
+    rej_high: { type: float, default: 3.0 }
+    rej_low:  { type: float, default: 3.0 }
+    max_iter: { type: int,   default: 5 }
+  huber_mean:
+    huber_c: { type: float, default: 1.345 }
 
 # ── 节点 ──
 #
