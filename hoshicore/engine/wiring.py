@@ -458,10 +458,10 @@ async def run_from_yaml(
     from .multiprocess import run_dag_multiprocess
     spec = _load_yaml(yaml_path)
 
-    # Meta YAML 预处理：编译路由选择
-    if route_choices is not None or _spec_has_routes(spec):
+    # Meta YAML 预处理：编译路由选择 + 节点开关
+    if route_choices is not None or _spec_needs_meta_resolve(spec):
         from .meta import meta_resolve
-        spec = meta_resolve(spec, route_choices or {})
+        spec = meta_resolve(spec, route_choices or {}, global_configs)
 
     spec = flatten_sub_dags(spec, dag_search_paths=dag_search_paths)
     dag = validate_and_build_order(spec)
@@ -481,14 +481,14 @@ async def run_from_yaml(
 # ────────────────────────────────────────────────────────────────
 
 
-def _spec_has_routes(spec: dict[str, Any]) -> bool:
-    """检测 spec 是否包含路由定义（需要 meta_resolve 预处理）。"""
-    if spec.get("routes"):
+def _spec_needs_meta_resolve(spec: dict[str, Any]) -> bool:
+    """检测 spec 是否需要 meta_resolve 预处理（路由/开关/route_configs）。"""
+    if spec.get("routes") or spec.get("route_configs"):
         return True
     nodes = spec.get("nodes")
     if isinstance(nodes, dict):
         for ns in nodes.values():
-            if isinstance(ns, dict) and "route_key" in ns:
+            if isinstance(ns, dict) and ("route_key" in ns or "enabled" in ns):
                 return True
     return False
 

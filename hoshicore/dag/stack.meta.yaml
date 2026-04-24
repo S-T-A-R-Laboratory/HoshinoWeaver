@@ -1,0 +1,102 @@
+description: "通用叠加算法"
+version: "2"
+
+# ── 全局输入 ──
+inputs:
+  fnames: { type: sequence, required: true }
+
+# ── 路由定义 ──
+routes:
+  stacker:
+    options:
+      mean:       MeanStackerOp
+      sigma_clip: sigma_clip.yaml
+      median:     median_stack_core.yaml
+      huber_mean: huber_mean.yaml
+    default: mean
+
+# ── 全局配置 ──
+configs:
+  int_weight:       { type: bool, default: true }
+  exif_reduce_type: { type: str,  default: "sum" }
+  output_filename:  { type: str,  default: "result.tif" }
+  output_dtype:     { type: str,  default: "uint8" }
+  loader_type:      { type: str,  default: "img_file_list" }
+  loader_configs:   { type: dict, default: {} }
+
+# ── 路由专属配置 ──
+route_configs:
+  sigma_clip:
+    rej_high: { type: float, default: 3.0 }
+    rej_low:  { type: float, default: 3.0 }
+    max_iter: { type: int,   default: 5 }
+  median:
+    chunk_rows: { type: int, default: 32 }
+  huber_mean:
+    huber_c: { type: float, default: 1.345 }
+
+# ── 节点 ──
+#
+#  inputs.fnames ──┬──► data_loader ──► stacker ──────────┐
+#                  │                                      ├──► image_saver
+#                  └──► exif_loader ──► exif_reducer ─────┘
+
+nodes:
+  data_loader:
+    op: ImgDataLoaderOp
+    inputs:
+      src: inputs.fnames
+    configs:
+      loader_type: configs.loader_type
+      configs: configs.loader_configs
+    outputs:
+      result: { type: sequence }
+
+  stacker:
+    route_key: stacker
+    inputs:
+      data: data_loader.result
+    route_configs:
+      mean:
+        int_weight: configs.int_weight
+      sigma_clip:
+        int_weight: configs.int_weight
+        rej_high: configs.rej_high
+        rej_low: configs.rej_low
+        max_iter: configs.max_iter
+      huber_mean:
+        int_weight: configs.int_weight
+        huber_c: configs.huber_c
+      median: {}
+    outputs:
+      result: { type: image }
+
+  exif_loader:
+    op: ExifReadOp
+    inputs:
+      fnames: inputs.fnames
+    outputs:
+      result: { type: sequence }
+
+  exif_reducer:
+    op: ExifReduceOp
+    inputs:
+      exifs: exif_loader.result
+    configs:
+      merge_method: configs.exif_reduce_type
+    outputs:
+      result: { type: object }
+
+  image_saver:
+    op: ImageSaveOp
+    configs:
+      image: stacker.result
+      exif: exif_reducer.result
+      output_filename: configs.output_filename
+      output_dtype: configs.output_dtype
+    outputs:
+      return_code: { type: int }
+
+# ── 全局输出 ──
+outputs:
+  result: image_saver.return_code
