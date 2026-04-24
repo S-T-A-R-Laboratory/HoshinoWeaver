@@ -115,6 +115,7 @@ def _segment_worker_main(
     async def _loop():
         frame_count = await input_ipc.get_length()
         has_disk_buffer = len(disk_buffer_terminals) > 0
+        proxy_tracker.report_mem(f"w{worker_id} start (frame_count={frame_count})")
 
         # ── 为每个 Reduce 终端构建本地队列 + 启动协程 ──
         reduce_local: dict[str, dict] = {}
@@ -242,6 +243,7 @@ def _segment_worker_main(
         from .segment_adapter import _process_rss_mb
         logger.trace(f"[MEM] Worker {worker_id}: Phase 1 stream done, "
                     f"processed={processed_count}, RSS={_process_rss_mb():.0f} MB")
+        proxy_tracker.report_mem(f"w{worker_id} Phase1 stream done (processed={processed_count})")
         phase1_partial: dict[str, Any] = {}
 
         for t_info in reduce_terminals:
@@ -294,6 +296,7 @@ def _segment_worker_main(
 
         logger.trace(f"[MEM] Worker {worker_id}: Phase 1 partial sent, "
                     f"RSS={_process_rss_mb():.0f} MB, entering Phase 2")
+        proxy_tracker.report_mem(f"w{worker_id} Phase1 partial sent")
 
         # ── Phase 2+: 命令驱动循环（迭代式 Reduce）──
         # 协议：每次迭代接收 1 个 cmd dict，内含 broadcast shm 引用。
@@ -329,8 +332,8 @@ def _segment_worker_main(
                 ref_data = broadcast_unpack(
                     cmd["broadcast_shm"], cmd["broadcast_cls"],
                     cmd["broadcast_meta"])
-                logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                            f"cmd received, RSS={_process_rss_mb():.0f} MB")
+                proxy_tracker.report_mem(
+                    f"w{worker_id} iter{iter_count} {iter_type} cmd received")
 
                 if iter_type == "sigma_clip":
                     clip_merger = SigmaClippingMerger(
@@ -339,17 +342,15 @@ def _segment_worker_main(
                         rej_low=params.get("rej_low", 3.0),
                     )
                     del ref_data
-                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"merger created, RSS={_process_rss_mb():.0f} MB, "
-                                f"buffer_len={len(local_buffer)}")
+                    proxy_tracker.report_mem(
+                        f"w{worker_id} iter{iter_count} sigma_clip merger created")
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         clip_merger.merge(raw, weight)
-                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"merge loop done, RSS={_process_rss_mb():.0f} MB")
                     await output_ipc.put(clip_merger.result)
-                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"partial sent, RSS={_process_rss_mb():.0f} MB")
+                    del clip_merger
+                    proxy_tracker.report_mem(
+                        f"w{worker_id} iter{iter_count} sigma_clip partial sent")
 
                 elif iter_type == "huber_mean":
                     huber_merger = HuberWeightedMerger(
@@ -357,17 +358,15 @@ def _segment_worker_main(
                         huber_c=params.get("huber_c", 1.345),
                     )
                     del ref_data
-                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"huber merger created, RSS={_process_rss_mb():.0f} MB, "
-                                f"buffer_len={len(local_buffer)}")
+                    proxy_tracker.report_mem(
+                        f"w{worker_id} iter{iter_count} huber merger created")
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         huber_merger.merge(raw, weight)
-                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"huber merge done, RSS={_process_rss_mb():.0f} MB")
                     await output_ipc.put(huber_merger.result)
-                    logger.trace(f"[MEM] Worker {worker_id}: iter {iter_count} "
-                                f"huber partial sent, RSS={_process_rss_mb():.0f} MB")
+                    del huber_merger
+                    proxy_tracker.report_mem(
+                        f"w{worker_id} iter{iter_count} huber partial sent")
 
                 else:
                     logger.warning(
@@ -376,6 +375,7 @@ def _segment_worker_main(
         # Phase 结束：清理 buffer
         if local_buffer is not None:
             local_buffer.cleanup()
+        proxy_tracker.report_mem(f"w{worker_id} done (buffer cleaned)")
 
         logger.debug(f"Worker {worker_id}: sending final SENTINEL")
         await output_ipc.put(BaseQueue._SENTINEL)

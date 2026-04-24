@@ -19,7 +19,8 @@ configs:
   minus_only: { type: bool, default: true }
   loader_configs: { type: dict, default: {} }
   output_filename: { type: str, default: "result.tif" }
-  output_dtype: { type: str, default: "uint8" }
+  output_dtype: { type: str, default: "uint16" }
+  buffer_mode: {type: str, default: "auto"}
 
 # ── 节点 ──
 #
@@ -91,11 +92,13 @@ nodes:
     op: sigma_clip.yaml
     inputs:
       data: data_loader.result
+      fnames: inputs.fnames
     configs:
       int_weight: configs.int_weight
       rej_high: configs.rej_high
       rej_low: configs.rej_low
       max_iter: configs.max_iter
+      buffer_mode: configs.buffer_mode
     outputs:
       result: { type: image }
       statistics: { type: image }

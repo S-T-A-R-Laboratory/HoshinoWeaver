@@ -56,7 +56,12 @@ class ShmTransportable(ABC):
     子类实现三个方法后，IPCQueue 自动走高效路径：
     1. shm_nbytes() → 预计算所需 shm 字节数
     2. shm_pack_into(buf) → 将数据直写入 shm buffer，返回元数据
-    3. shm_unpack_from(buf, meta) → 从 shm buffer + 元数据重建对象
+    3. shm_unpack_from(buf, meta, shm_handle) → 从 shm buffer + 元数据重建对象
+
+    shm_handle 不为 None 时，对象持有 handle 并以 view 方式引用 shm 数据，
+    由 __del__ 负责 close/unlink（零拷贝路径）。
+    shm_handle 为 None 时（broadcast 场景），子类应在 shm close 前完成 copy，
+    或实现 _force_copy_from_shm() 供 broadcast_unpack 调用。
 
     子类定义时自动注册到 _SHM_REGISTRY（通过 __init_subclass__）。
     """
@@ -78,9 +83,20 @@ class ShmTransportable(ABC):
 
     @classmethod
     @abstractmethod
-    def shm_unpack_from(cls, buf, meta: bytes) -> Any:
-        """从 shm buffer 和元数据重建对象。"""
+    def shm_unpack_from(cls, buf, meta: bytes, shm_handle=None) -> Any:
+        """从 shm buffer 和元数据重建对象。
+
+        shm_handle 不为 None 时以 view 方式引用 buf，对象持有 handle。
+        shm_handle 为 None 时（broadcast）需在 buf 失效前完成 copy。
+        """
         ...
+
+    def _force_copy_from_shm(self) -> None:
+        """broadcast 场景：shm close 前将所有 view 数组 copy 为独立内存。
+
+        默认实现为空（子类若不使用 view 则无需覆盖）。
+        """
+        pass
 
 
 # ShmTransportable 类注册表（class qualname → class）
@@ -145,6 +161,7 @@ def broadcast_unpack(shm_name: str, cls_name: str, meta: bytes) -> Any:
     """从 broadcast SharedMemory 读取对象（close 但不 unlink）。
 
     由消费者调用。unlink 由生产者在所有消费者读完后执行。
+    broadcast 场景下对象不持有 shm handle，数据在 close 前已 copy。
     """
     cls = _SHM_REGISTRY.get(cls_name)
     if cls is None:
@@ -153,7 +170,12 @@ def broadcast_unpack(shm_name: str, cls_name: str, meta: bytes) -> Any:
             f"Available: {sorted(_SHM_REGISTRY.keys())}")
     shm = SharedMemory(name=shm_name, create=False)
     try:
-        result = cls.shm_unpack_from(shm.buf, meta)
+        # 不传 shm_handle：broadcast 消费者不负责 unlink，
+        # shm_unpack_from 内部需在 shm 关闭前完成数据 copy。
+        result = cls.shm_unpack_from(shm.buf, meta, shm_handle=None)
+        # view 模式下 shm 关闭会使 buf 失效，必须在此强制 copy
+        if hasattr(result, '_shm_owner') and result._shm_owner is None:
+            result._force_copy_from_shm()
     finally:
         shm.close()
     return result
@@ -333,9 +355,8 @@ class IPCQueue(BaseQueue):
                         f"ShmTransportable class '{cls_name}' not registered. "
                         f"Available: {sorted(_SHM_REGISTRY.keys())}")
                 shm = SharedMemory(name=ref.shm_name, create=False)
-                result = cls.shm_unpack_from(shm.buf, meta)
-                shm.close()
-                shm.unlink()
+                result = cls.shm_unpack_from(shm.buf, meta, shm_handle=shm)
+                # shm handle 转移给 result 持有，由其 __del__ 负责 close/unlink
                 return result
 
             if tag == _TAG_PICKLE:

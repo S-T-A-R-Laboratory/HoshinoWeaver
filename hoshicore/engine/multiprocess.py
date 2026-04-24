@@ -112,8 +112,9 @@ async def run_dag_multiprocess(
         set_dag_search_paths(dag_search_paths)
 
     # ── 1) 标准布线 ──
-    ops, feeders, output_queues = instantiate_and_wire(
-        dag, global_inputs, global_configs, op_registry)
+    ops, feeders, output_queues = instantiate_and_wire(dag, global_inputs,
+                                                       global_configs,
+                                                       op_registry)
 
     instances = {op.name: op for op in ops}
 
@@ -138,8 +139,10 @@ async def run_dag_multiprocess(
     results: dict[str, Any] = {}
 
     async def _collect_outputs():
+
         async def _get_one(name, queue):
             results[name] = await queue.get()
+
         await asyncio.gather(
             *[_get_one(n, q) for n, q in output_queues.items()])
 
