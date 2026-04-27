@@ -17,32 +17,22 @@ import multiprocessing as mp
 import os
 from typing import Any, Optional
 
+import numpy as np
+import psutil
 from loguru import logger
 
-import psutil
-
-import numpy as np
-
 from ..component.data_container import FloatImage
-from ..component.frame_buffer import (
-    DiskFrameBuffer,
-    SourceReplayBuffer, SourceReplayDescriptor,
-)
-from ..component.ipc_queue import (
-    IPCQueue, _TAG_SENTINEL, _safe_close_shm, broadcast_pack,
-)
+from ..component.frame_buffer import (DiskFrameBuffer, SourceReplayBuffer,
+                                      SourceReplayDescriptor)
+from ..component.ipc_queue import (_TAG_SENTINEL, IPCQueue, _safe_close_shm,
+                                   broadcast_pack)
 from ..component.progress import DummyTracker, TrackerEventConsumer
 from ..component.queue import BaseQueue, StreamExhausted
 from ..ops.base import BaseOp
 from .build import ValidatedDag
 from .registry import REGISTERED_OP
-from .segment_detect import (
-    ParallelSegment,
-    TerminalType,
-    FrameDistribution,
-    _compute_block_ranges,
-    detect_parallel_segments,
-)
+from .segment_detect import (FrameDistribution, ParallelSegment, TerminalType,
+                             _compute_block_ranges, detect_parallel_segments)
 from .segment_worker import _segment_worker_main
 from .wiring import DEFAULT_DAG_SEARCH_PATHS
 

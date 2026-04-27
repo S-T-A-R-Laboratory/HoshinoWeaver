@@ -4,13 +4,13 @@ import cv2
 import numpy as np
 from loguru import logger
 
+from ..component.data_container import FastGaussianParam, align_dtype_pair
 from ..component.frame_buffer import DiskFrameBuffer
 from ..component.merger import (MaxMerger, MeanMerger, MinMerger,
                                 SigmaClippingMerger)
 from ..component.noise_equalization import equalize_noise
-from ..component.data_container import (FastGaussianParam, align_dtype_pair)
-from ..engine.registry import register_op
 from ..component.queue import StreamExhausted
+from ..engine.registry import register_op
 from .base import BaseOp
 
 

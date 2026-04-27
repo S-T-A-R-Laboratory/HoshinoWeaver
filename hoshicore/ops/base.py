@@ -1,9 +1,13 @@
-from typing import Any, Optional, Sequence, Awaitable, Mapping
 import asyncio
 import itertools
+from typing import Any, Awaitable, Mapping, Optional, Sequence
+
 from loguru import logger
+
 from ..component.progress import DummyTracker
-from ..component.queue import BaseQueue, RichContextQueue, FileCacheQueue, CancellationError, CancellationToken, StreamExhausted
+from ..component.queue import (BaseQueue, CancellationError, CancellationToken,
+                               FileCacheQueue, RichContextQueue,
+                               StreamExhausted)
 from ..component.utils import time_cost_warpper
 
 

@@ -7,8 +7,8 @@ from loguru import logger
 
 from ..component.calibration import (calibration_divide, calibration_subtract,
                                      crop_roi, natural_sort_key, resize_image)
+from ..component.data_container import DTYPE_MAX_VALUE, FloatImage
 from ..component.imgfio import load_img
-from ..component.data_container import (DTYPE_MAX_VALUE, FloatImage)
 from ..engine.registry import register_op
 from .base import BaseOp, ParallelBaseOp
 

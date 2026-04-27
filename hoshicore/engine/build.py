@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional, Set, Tuple, cast, TypeAlias
+from typing import Any, Iterable, Optional, Set, Tuple, TypeAlias, cast
 
 import networkx as nx
 import yaml

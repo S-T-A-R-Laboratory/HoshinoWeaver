@@ -1,11 +1,11 @@
 import asyncio
-
 from typing import Any
+
 from loguru import logger
 
-from .base import BaseOp
-from ..component.dataloader import BaseLoader, ImgFileListLoader, ArrayLoader
+from ..component.dataloader import ArrayLoader, BaseLoader, ImgFileListLoader
 from ..engine.registry import register_op
+from .base import BaseOp
 
 
 @register_op()
