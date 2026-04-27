@@ -49,10 +49,11 @@ configs:
 
 # ─── 路由专属配置 ───
 route_configs:
-  <option_key>:
-    <config_name>:
-      type: bool | int | float | str
-      default: <value>
+  <route_key>:
+    <option_key>:
+      <config_name>:
+        type: bool | int | float | str
+        default: <value>
 
 # ─── 节点 ───
 nodes:
@@ -85,34 +86,74 @@ outputs:
 
 ### 2.1 `route_configs` 语义与 merge 规则
 
-顶层 `route_configs` 按 **route option key** 分组声明参数。
+顶层 `route_configs` 按 **route_key → option_key** 两级分组声明参数。
+
+```yaml
+route_configs:
+  <route_key>:
+    <option_key>:
+      <param>: { type: ..., default: ... }
+```
 
 `meta_resolve()` 处理流程：
 
 ```
 1. 确定每个 route_key 的选中 option
-2. 收集所有选中 option 对应的 route_configs 条目
-3. 检查与全局 configs 无 key 冲突
-4. merge 到全局 configs 命名空间
-5. 删除 route_configs section
+2. 收集选中 option 对应的 route_configs 条目
+3. merge 到 configs 的嵌套命名空间：configs.<route_key>.<option_key>.<param>
+4. 对路由节点执行 auto-wire（见下文）
+5. 删除顶层 route_configs section
 ```
 
-merge 后，节点的 `route_configs` 布线通过 `configs.<name>` 引用，
-与后续的 `flatten_sub_dags()` 和 `wiring` 完全兼容。
+**命名空间规则**：
+- 引用路径为三段式 dotted path：`configs.{route_key}.{option_key}.{param}`
+- route_key + option_key + param 三级组合保证全局唯一，不存在冲突可能
+- 与全局 configs（单段 `configs.{name}`）天然隔离，无需额外冲突检测
 
-**冲突规则**：
-- `route_configs` 中的 key **不得与**全局 `configs` 中的 key 重名
-- `meta_resolve()` 发现重名时抛出 `MetaResolveError`
+**Auto-wire 规则**：
+
+节点的 `route_configs` section 中，选中 option 下**未显式布线**的 slot，
+自动从 `configs.{route_key}.{option_key}.{slot}` 取值。
+显式布线的 slot 优先于 auto-wire（用于跨 namespace 引用等场景）。
+
+```yaml
+route_configs:
+  stacker:
+    sigma_clip:
+      rej_high: { type: float, default: 3.0 }
+      rej_low:  { type: float, default: 3.0 }
+
+nodes:
+  stacker:
+    route_key: stacker
+    route_configs:
+      sigma_clip:
+        int_weight: configs.int_weight       # 显式：跨 namespace，优先
+        # rej_high, rej_low — 自动从 configs.stacker.sigma_clip.* 注入
+```
+
+这意味着节点的 `route_configs` 只需要写**非默认布线**。
+对于 route_configs 中声明的专属参数，省略即可。
 
 ### 2.2 多 route_key 场景
 
 一个 meta YAML 可有多个 route_key（如 calibration_stack 有 4 个）。
 
-当不同 route_key 选中的 option 共享 `route_configs` 条目时（如两个 route 都选中 `median`），
-它们共享同一组参数（语义上一般正确——同一个 `chunk_rows` 值）。
+不同 route_key 可选择相同的 option（如 `bias_stacker` 和 `main_stacker` 都选 `median`），
+各自的参数完全独立：
 
-若需要差异化，使用带前缀的 option key（如 `bias_median` / `main_median`），
-对应不同的 `route_configs` 条目。
+```yaml
+route_configs:
+  bias_stacker:
+    median:
+      chunk_rows: { type: int, default: 64 }
+  main_stacker:
+    median:
+      chunk_rows: { type: int, default: 32 }
+```
+
+引用时分别为 `configs.bias_stacker.median.chunk_rows` 和
+`configs.main_stacker.median.chunk_rows`，互不干扰。
 
 ### 2.3 节点开关（`enabled` / `bypass`）
 
@@ -184,7 +225,7 @@ nodes:
 执行顺序：`meta_resolve()` → `flatten_sub_dags()`。
 
 由于 merge 在 flatten 之前完成，SubDAG 的 `configs.xxx` 引用能正确解析到
-已 merge 的全局 configs 命名空间。
+已 merge 的全局 configs 命名空间（包括嵌套的 `configs.<route_key>.<option_key>.<param>` 路径）。
 
 对于 Meta SubDAG（子图本身也是 meta），父图通过节点的 `routes` 字段透传选择：
 
@@ -236,6 +277,9 @@ configs:
     options: [<value>, ...]               # select 专属
 
 # ─── 路由专属配置面板 ───
+# 注意：ui.yaml 的 route_configs 按 option_key 分组（非 route_key），
+# 因为 UI 在路由选项卡内渲染参数，route_key 上下文由选项卡自身提供。
+# 同名 option 跨不同 route 共享同一份 UI overlay。
 route_configs:
   <option_key>:
     <config_name>:
@@ -311,13 +355,14 @@ route 的默认 widget 为 `tabs`。
 
 仅修改 `meta.py` 的 `meta_resolve()`：
 
-1. 解析顶层 `route_configs`
-2. 将选中 option 对应的参数 merge 到 `configs`
-3. 冲突检测
-4. 删除 `route_configs` section
+1. 解析顶层 `route_configs`（二级结构：`route_key → option_key → params`）
+2. 将选中 option 对应的参数 merge 到 `configs.<route_key>.<option_key>` 嵌套命名空间
+3. 删除顶层 `route_configs` section
+
+由于三级路径天然唯一，不再需要扁平 merge 的冲突检测。
 
 节点的 `route_key` / `route_inputs` / `route_configs` 布线逻辑**不变**。
-`flatten.py`、`wiring.py`、`build.py` **不变**。
+`flatten.py`、`wiring.py`、`build.py` **不变**（wiring 的 dotted path 解析需支持多级嵌套）。
 
 ---
 
@@ -350,14 +395,15 @@ configs:
   loader_configs:   { type: dict, default: {} }
 
 route_configs:
-  sigma_clip:
-    rej_high: { type: float, default: 3.0 }
-    rej_low:  { type: float, default: 3.0 }
-    max_iter: { type: int,   default: 5 }
-  median:
-    chunk_rows: { type: int, default: 32 }
-  huber_mean:
-    huber_c: { type: float, default: 1.345 }
+  stacker:
+    sigma_clip:
+      rej_high: { type: float, default: 3.0 }
+      rej_low:  { type: float, default: 3.0 }
+      max_iter: { type: int,   default: 5 }
+    median:
+      chunk_rows: { type: int, default: 32 }
+    huber_mean:
+      huber_c: { type: float, default: 1.345 }
 
 nodes:
   data_loader:
@@ -379,12 +425,10 @@ nodes:
         int_weight: configs.int_weight
       sigma_clip:
         int_weight: configs.int_weight
-        rej_high: configs.rej_high
-        rej_low: configs.rej_low
-        max_iter: configs.max_iter
+        # rej_high, rej_low, max_iter — auto-wired
       huber_mean:
         int_weight: configs.int_weight
-        huber_c: configs.huber_c
+        # huber_c — auto-wired
       median: {}
     outputs:
       result: { type: image }
@@ -534,13 +578,14 @@ configs:
   loader_configs:   { type: dict,  default: {} }
 
 route_configs:
-  mix:
-    rej_high:   { type: float, default: 3.0 }
-    rej_low:    { type: float, default: 3.0 }
-    max_iter:   { type: int,   default: 5 }
-    mask:       { type: str,   default: null }
-    minus_only: { type: bool,  default: true }
-    buffer_mode: { type: str,  default: "auto" }
+  mode:
+    mix:
+      rej_high:    { type: float, default: 3.0 }
+      rej_low:     { type: float, default: 3.0 }
+      max_iter:    { type: int,   default: 5 }
+      mask:        { type: str,   default: null }
+      minus_only:  { type: bool,  default: true }
+      buffer_mode: { type: str,   default: "auto" }
 
 nodes:
   data_loader:
@@ -580,10 +625,7 @@ nodes:
       mix:
         op: sigma_clip.yaml
         int_weight: configs.int_weight
-        rej_high: configs.rej_high
-        rej_low: configs.rej_low
-        max_iter: configs.max_iter
-        buffer_mode: configs.buffer_mode
+        # rej_high, rej_low, max_iter, buffer_mode — auto-wired
     # TODO: fifo 时此节点需要整体跳过 — 需要条件节点机制
 
   # ... 后续节点省略，此处标注设计问题
@@ -638,17 +680,19 @@ def build_panel(meta: dict, ui: dict | None) -> Panel:
         panel.configs[key].setdefault("widget", infer_widget(spec["type"]))
         panel.configs[key].setdefault("label", key)
 
-    # 4. route_configs
-    for option_key, group in meta.get("route_configs", {}).items():
-        for key, spec in group.items():
-            panel.route_configs[option_key][key] = {
-                "type": spec["type"],
-                "default": spec["default"],
-                **(ui.get("route_configs", {}).get(option_key, {}).get(key, {})),
-            }
-            entry = panel.route_configs[option_key][key]
-            entry.setdefault("widget", infer_widget(spec["type"]))
-            entry.setdefault("label", key)
+    # 4. route_configs (route_key → option_key → params)
+    for route_key, options in meta.get("route_configs", {}).items():
+        for option_key, group in options.items():
+            for key, spec in group.items():
+                panel.route_configs[route_key][option_key][key] = {
+                    "type": spec["type"],
+                    "default": spec["default"],
+                    **(ui.get("route_configs", {})
+                       .get(option_key, {}).get(key, {})),
+                }
+                entry = panel.route_configs[route_key][option_key][key]
+                entry.setdefault("widget", infer_widget(spec["type"]))
+                entry.setdefault("label", key)
 
     # 5. layout
     panel.layout = ui.get("layout", {})

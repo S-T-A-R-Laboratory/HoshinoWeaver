@@ -501,20 +501,42 @@ def _resolve_configs(
     合并用户提供的配置与 YAML 声明的默认值。
 
     优先级：用户显式提供 > YAML default > 缺失（由后续校验捕获）。
+
+    嵌套 route_configs（如 ``configs.stacker.sigma_clip.rej_high``）
+    由 meta_resolve 生成的嵌套 dict 结构表示。本函数递归展平为
+    dotted key，使下游 feeder 可用同一个 flat dict 查找。
     """
     resolved: dict[str, Any] = {}
-    for name, spec in dag_config_specs.items():
-        if name in user_configs:
-            resolved[name] = user_configs[name]
-        elif "default" in spec:
-            resolved[name] = spec["default"]
-            logger.debug(f"Config '{name}' not provided, "
-                         f"using default: {spec['default']}")
+    _flatten_config_specs(dag_config_specs, user_configs, "", resolved)
     # 保留用户传入的额外配置（YAML 未声明但代码中可能需要）
     for name, value in user_configs.items():
         if name not in resolved:
             resolved[name] = value
     return resolved
+
+
+def _flatten_config_specs(
+    specs: dict[str, Any],
+    user_configs: dict[str, Any],
+    prefix: str,
+    resolved: dict[str, Any],
+) -> None:
+    """递归展平 config specs 到 dotted key。
+
+    普通 config spec（含 ``type`` 或 ``default``）直接解析为值；
+    嵌套 dict（route_configs 生成）递归展平。
+    """
+    for name, spec in specs.items():
+        full_key = f"{prefix}{name}" if prefix else name
+        if isinstance(spec, dict) and "type" not in spec and "default" not in spec:
+            _flatten_config_specs(spec, user_configs, f"{full_key}.", resolved)
+        else:
+            if full_key in user_configs:
+                resolved[full_key] = user_configs[full_key]
+            elif isinstance(spec, dict) and "default" in spec:
+                resolved[full_key] = spec["default"]
+                logger.debug(f"Config '{full_key}' not provided, "
+                             f"using default: {spec['default']}")
 
 
 def _check_variable_source_conflicts(

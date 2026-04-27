@@ -56,12 +56,13 @@ routes:
 
 # ── 路由专属配置 ──
 route_configs:
-  sigma_clip:
-    rej_high: { type: float, default: 3.0 }
-    rej_low:  { type: float, default: 3.0 }
-    max_iter: { type: int,   default: 5 }
-  huber_mean:
-    huber_c: { type: float, default: 1.345 }
+  main_stacker:
+    sigma_clip:
+      rej_high: { type: float, default: 3.0 }
+      rej_low:  { type: float, default: 3.0 }
+      max_iter: { type: int,   default: 5 }
+    huber_mean:
+      huber_c: { type: float, default: 1.345 }
 
 # ── 节点 ──
 #
@@ -184,12 +185,8 @@ nodes:
         int_weight: configs.int_weight
       sigma_clip:
         int_weight: configs.int_weight
-        rej_high: configs.rej_high
-        rej_low: configs.rej_low
-        max_iter: configs.max_iter
       huber_mean:
         int_weight: configs.int_weight
-        huber_c: configs.huber_c
     outputs:
       result: { type: image }
 
