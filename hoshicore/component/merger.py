@@ -9,14 +9,16 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .data_container import (DTYPE_LEVEL, DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP,
-                              _SCALE_BASE, FloatImage,
-                              FastGaussianParam, HuberMeanParam)
+                             _SCALE_BASE, FloatImage, FastGaussianParam,
+                             HuberMeanParam)
 from .numba_kernels import (fgp_mean_merge, fgp_weighted_mean_merge,
                             sigma_clip_fused_merge)
 
 
-def _accum_dtypes(source_dtype: np.dtype, int_weight: bool = False,
-                  ) -> tuple[np.dtype, np.dtype, np.dtype]:
+def _accum_dtypes(
+    source_dtype: np.dtype,
+    int_weight: bool = False,
+) -> tuple[np.dtype, np.dtype, np.dtype]:
     """根据源图像 dtype 确定 FGP 累加器的 dtype。
 
     Returns:
@@ -26,8 +28,10 @@ def _accum_dtypes(source_dtype: np.dtype, int_weight: bool = False,
     if int_weight and dt in DTYPE_UPSCALE_MAP:
         dt = np.dtype(DTYPE_UPSCALE_MAP[dt])
 
-    sum_dt = np.dtype(DTYPE_UPSCALE_MAP[dt]) if dt in DTYPE_UPSCALE_MAP else np.dtype("float64")
-    sq_dt = np.dtype(DTYPE_UPSCALE_MAP[sum_dt]) if sum_dt in DTYPE_UPSCALE_MAP else np.dtype("float64")
+    sum_dt = np.dtype(DTYPE_UPSCALE_MAP[dt]
+                      ) if dt in DTYPE_UPSCALE_MAP else np.dtype("float64")
+    sq_dt = np.dtype(DTYPE_UPSCALE_MAP[sum_dt]
+                     ) if sum_dt in DTYPE_UPSCALE_MAP else np.dtype("float64")
 
     n_dt = np.dtype("uint32") if int_weight else np.dtype("uint16")
     return sum_dt, sq_dt, n_dt
@@ -149,8 +153,6 @@ class MeanMerger(BaseMerger):
         self._sum_mu: Optional[np.ndarray] = None
         self._square_sum: Optional[np.ndarray] = None
         self._n: Optional[np.ndarray] = None
-        self._frame_count: int = 0
-        self._ndim_orig: int = 0
 
     def merge(self,
               new_img: np.ndarray,
@@ -162,49 +164,33 @@ class MeanMerger(BaseMerger):
         if self.int_weight and weight is not None and self._source_dtype is not None:
             raw, weight = self._apply_int_weight(raw, weight)
 
-        self._ndim_orig = raw.ndim
-        if raw.ndim == 2:
-            raw = raw[:, :, np.newaxis]
-
         if self._sum_mu is None:
-            sum_dt, sq_dt, n_dt = _accum_dtypes(self._source_dtype, self.int_weight)
+            sum_dt, sq_dt, n_dt = _accum_dtypes(self._source_dtype,
+                                                self.int_weight)
             self._sum_mu = np.zeros(raw.shape, dtype=sum_dt)
             self._square_sum = np.zeros(raw.shape, dtype=sq_dt)
             self._n = np.zeros(raw.shape, dtype=n_dt)
 
         if weight is not None and isinstance(weight, (int, np.integer)):
-            fgp_weighted_mean_merge(raw, weight,
-                                    self._sum_mu, self._square_sum, self._n)
+            fgp_weighted_mean_merge(raw, weight, self._sum_mu,
+                                    self._square_sum, self._n)
         else:
             if weight is not None:
                 raw = (raw * weight).astype(raw.dtype)
             fgp_mean_merge(raw, self._sum_mu, self._square_sum, self._n)
 
-        self._frame_count += 1
-
-    def _build_fgp(self) -> FastGaussianParam:
-        sum_mu = self._sum_mu
-        sq = self._square_sum
-        n = self._n
-        if self._ndim_orig == 2:
-            sum_mu = sum_mu[:, :, 0]
-            sq = sq[:, :, 0]
-            n = n[:, :, 0]
-        fgp = FastGaussianParam.__new__(FastGaussianParam)
-        fgp.sum_mu = sum_mu
-        fgp.square_sum = sq
-        fgp.n = n
-        fgp.ddof = 1
-        fgp.source_dtype = self._source_dtype
-        fgp.inplace_calc = True
-        fgp.max_n = int(np.max(n))
-        return fgp
-
     @property
     def result(self):
         if self._sum_mu is None:
             return None
-        return self._build_fgp()
+        return FastGaussianParam(
+            sum_mu=self._sum_mu,
+            square_sum=self._square_sum,
+            n=self._n,
+            ddof=1,
+            source_dtype=self._source_dtype,
+            inplace_calc=True,
+        )
 
     @result.setter
     def result(self, value):
@@ -213,10 +199,9 @@ class MeanMerger(BaseMerger):
             self._square_sum = None
             self._n = None
         elif isinstance(value, FastGaussianParam):
-            self._sum_mu = value.sum_mu if value.sum_mu.ndim == 3 else value.sum_mu[:, :, np.newaxis]
-            self._square_sum = value.square_sum if value.square_sum.ndim == 3 else value.square_sum[:, :, np.newaxis]
-            self._n = value.n if value.n.ndim == 3 else value.n[:, :, np.newaxis]
-            self._ndim_orig = value.sum_mu.ndim
+            self._sum_mu = value.sum_mu
+            self._square_sum = value.square_sum
+            self._n = value.n
 
     def _merge(self, base_img, new_img: FastGaussianParam):
         return base_img + new_img
@@ -240,10 +225,9 @@ class MeanMerger(BaseMerger):
         self._sum_mu = None
         self._square_sum = None
         self._n = None
-        self._frame_count = 0
 
 
-class SigmaClippingMerger(BaseMerger):
+class SigmaClippingMerger(MeanMerger):
     """带有N*Sigma拒绝平均值叠加Merger。
 
     使用 Numba fused kernel 将 clip 判断 + rejected FGP 累加
@@ -268,7 +252,6 @@ class SigmaClippingMerger(BaseMerger):
         self._sum_mu: Optional[np.ndarray] = None
         self._square_sum: Optional[np.ndarray] = None
         self._n: Optional[np.ndarray] = None
-        self._ndim_orig: int = 0
 
     def merge(self,
               new_img: np.ndarray,
@@ -277,16 +260,7 @@ class SigmaClippingMerger(BaseMerger):
         if self._source_dtype is None:
             self._source_dtype = raw.dtype
 
-        self._ndim_orig = raw.ndim
         img = raw
-        if img.ndim == 2:
-            img = img[:, :, np.newaxis]
-
-        rej_h = self.rej_high_img
-        rej_l = self.rej_low_img
-        if rej_h.ndim == 2:
-            rej_h = rej_h[:, :, np.newaxis]
-            rej_l = rej_l[:, :, np.newaxis]
 
         if self._sum_mu is None:
             sum_dt, sq_dt, _ = _accum_dtypes(self._source_dtype, False)
@@ -295,72 +269,8 @@ class SigmaClippingMerger(BaseMerger):
             self._square_sum = np.zeros(img.shape, dtype=sq_dt)
             self._n = np.zeros(img.shape, dtype=n_dt)
 
-        sigma_clip_fused_merge(img, rej_h, rej_l,
+        sigma_clip_fused_merge(img, self.rej_high_img, self.rej_low_img,
                                self._sum_mu, self._square_sum, self._n)
-
-    def _build_fgp(self) -> FastGaussianParam:
-        sum_mu = self._sum_mu
-        sq = self._square_sum
-        n = self._n
-        if self._ndim_orig == 2:
-            sum_mu = sum_mu[:, :, 0]
-            sq = sq[:, :, 0]
-            n = n[:, :, 0]
-        fgp = FastGaussianParam.__new__(FastGaussianParam)
-        fgp.sum_mu = sum_mu
-        fgp.square_sum = sq
-        fgp.n = n
-        fgp.ddof = 1
-        fgp.source_dtype = self._source_dtype
-        fgp.inplace_calc = True
-        fgp.max_n = int(np.max(n)) if n.size > 0 else 0
-        return fgp
-
-    @property
-    def result(self):
-        if self._sum_mu is None:
-            return None
-        return self._build_fgp()
-
-    @result.setter
-    def result(self, value):
-        if value is None:
-            self._sum_mu = None
-            self._square_sum = None
-            self._n = None
-        elif isinstance(value, FastGaussianParam):
-            self._sum_mu = value.sum_mu if value.sum_mu.ndim == 3 else value.sum_mu[:, :, np.newaxis]
-            self._square_sum = value.square_sum if value.square_sum.ndim == 3 else value.square_sum[:, :, np.newaxis]
-            self._n = value.n if value.n.ndim == 3 else value.n[:, :, np.newaxis]
-            self._ndim_orig = value.sum_mu.ndim
-
-    def _merge(self, base_img, new_img):
-        return base_img + new_img
-
-    @property
-    def merged_image(self) -> Union[FloatImage, None]:
-        r = self.result
-        if r is None:
-            return None
-        return FloatImage(r.mu, dtype=self._source_dtype)
-
-    def result_as_partial(self) -> dict:
-        """导出 partial result 供跨进程 merge（多进程 sigma clip 迭代）。"""
-        return {"rejected_fgp": self.result}
-
-    @staticmethod
-    def merge_partial(partials: list[dict]) -> FastGaussianParam:
-        """合并 N 个 worker 的 rejected FGP。"""
-        merged = partials[0]["rejected_fgp"]
-        for p in partials[1:]:
-            merged = merged + p["rejected_fgp"]
-        return merged
-
-    def clear(self):
-        super().clear()
-        self._sum_mu = None
-        self._square_sum = None
-        self._n = None
 
 
 class HuberWeightedMerger(BaseMerger):
@@ -385,13 +295,15 @@ class HuberWeightedMerger(BaseMerger):
         huber_c: Huber 常数。默认 1.345（正态分布下 95% 渐近效率）。
     """
 
-    def __init__(self, ref_stats: FastGaussianParam,
-                 huber_c: float = 1.345, **kwargs) -> None:
+    def __init__(self,
+                 ref_stats: FastGaussianParam,
+                 huber_c: float = 1.345,
+                 **kwargs) -> None:
         super().__init__(**kwargs)
         self.huber_c = huber_c
         self._ref_mean = ref_stats.mu.astype(np.float32)
-        self._ref_std = np.sqrt(
-            np.maximum(ref_stats.var, 0)).astype(np.float32)
+        self._ref_std = np.sqrt(np.maximum(ref_stats.var,
+                                           0)).astype(np.float32)
 
     def _pre_process(self, img: np.ndarray, weight=None) -> HuberMeanParam:
         """计算 Huber 权重，构造单帧的 HuberMeanParam。"""
@@ -412,28 +324,3 @@ class HuberWeightedMerger(BaseMerger):
             weight_total=w_total,
             source_dtype=img.dtype,
         )
-
-    def _merge(self, base_img: HuberMeanParam,
-               new_img: HuberMeanParam) -> HuberMeanParam:
-        return base_img + new_img
-
-    @property
-    def merged_image(self) -> Optional[FloatImage]:
-        if self.result is None:
-            return None
-        return FloatImage(self.result.mu, dtype=self._source_dtype)
-
-    def result_as_partial(self) -> dict:
-        """导出 partial result 供跨进程 merge（多进程 Huber 迭代）。"""
-        return {"huber_param": self.result}
-
-    @staticmethod
-    def merge_partial(partials: list[dict]) -> HuberMeanParam:
-        """合并 N 个 worker 的 HuberMeanParam。
-
-        HuberMeanParam 支持 __add__，直接累加即可。
-        """
-        merged = partials[0]["huber_param"]
-        for p in partials[1:]:
-            merged = merged + p["huber_param"]
-        return merged

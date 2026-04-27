@@ -241,7 +241,7 @@ class FastGaussianParam(ShmTransportable):
 
     def __init__(self,
                  sum_mu: np.ndarray,
-                 square_num: Optional[np.ndarray] = None,
+                 square_sum: Optional[np.ndarray] = None,
                  n: Optional[np.ndarray] = None,
                  ddof: int = 1,
                  dtype_n: np.dtype = np.dtype("uint16"),
@@ -249,8 +249,8 @@ class FastGaussianParam(ShmTransportable):
                  inplace_calc: bool = True):
         self.sum_mu = sum_mu
         self.source_dtype = source_dtype if source_dtype is not None else sum_mu.dtype
-        if square_num is not None:
-            self.square_sum = square_num
+        if square_sum is not None:
+            self.square_sum = square_sum
         else:
             sq_dtype = self.get_upscale_dtype_as(self.sum_mu)
             self.square_sum = np.square(sum_mu, dtype=sq_dtype)
@@ -322,7 +322,7 @@ class FastGaussianParam(ShmTransportable):
             return self
 
         return FastGaussianParam(sum_mu=g1.sum_mu + g2.sum_mu,
-                                 square_num=g1.square_sum + g2.square_sum,
+                                 square_sum=g1.square_sum + g2.square_sum,
                                  n=g1.n + g2.n,
                                  ddof=g1.ddof,
                                  source_dtype=g1.source_dtype)
@@ -341,7 +341,7 @@ class FastGaussianParam(ShmTransportable):
             return self
 
         return FastGaussianParam(sum_mu=g1.sum_mu - g2.sum_mu,
-                                 square_num=g1.square_sum - g2.square_sum,
+                                 square_sum=g1.square_sum - g2.square_sum,
                                  n=g1.n - g2.n,
                                  ddof=g1.ddof,
                                  source_dtype=g1.source_dtype)
@@ -355,7 +355,7 @@ class FastGaussianParam(ShmTransportable):
                 self.max_n = int(self.max_n * weight)
                 return self
             return FastGaussianParam(sum_mu=self.sum_mu * weight,
-                                     square_num=self.square_sum * weight,
+                                     square_sum=self.square_sum * weight,
                                      n=self.n * weight,
                                      ddof=self.ddof,
                                      source_dtype=self.source_dtype)
