@@ -106,21 +106,17 @@ def meta_resolve(
 
         node_spec["op"] = options[choice]
 
-        _apply_route_extras(node_spec, choice)
+        _apply_route_extras(node_spec, route_key, choice, top_route_configs)
         resolved_routes[route_key] = choice
 
-    # ── 2. merge 选中 option 对应的 route_configs 到全局 configs ──
+    # ── 2. merge 选中 option 对应的 route_configs 到嵌套 configs ──
     if top_route_configs:
         spec_configs: dict[str, Any] = spec.setdefault("configs", {})
-        selected_options = set(resolved_routes.values())
-        for option_key in selected_options:
-            extra = top_route_configs.get(option_key, {})
-            for k, v in extra.items():
-                if k in spec_configs:
-                    raise MetaResolveError(
-                        f"route_configs.{option_key}.{k} conflicts with "
-                        f"global configs.{k}")
-                spec_configs[k] = v
+        for route_key, choice in resolved_routes.items():
+            route_group = top_route_configs.get(route_key, {})
+            option_params = route_group.get(choice, {})
+            if option_params:
+                spec_configs.setdefault(route_key, {})[choice] = option_params
 
     # ── 3. 处理节点 enabled/bypass ──
     _resolve_enabled_nodes(spec, global_configs or {})
@@ -265,11 +261,20 @@ def _find_bypass_pair(
         f"declare 'bypass: <input_key>' explicitly")
 
 
-def _apply_route_extras(node_spec: dict[str, Any], choice: str) -> None:
+def _apply_route_extras(
+    node_spec: dict[str, Any],
+    route_key: str,
+    choice: str,
+    top_route_configs: dict[str, dict[str, Any]],
+) -> None:
     """合并 route 专属的 inputs 和 configs 到节点 spec 中。
 
     从 node_spec 中 pop ``route_inputs`` 和 ``route_configs``，
     将选中 choice 对应的条目合并到节点的 inputs/configs section。
+
+    Auto-wire：顶层 ``route_configs[route_key][choice]`` 中声明但
+    节点 ``route_configs[choice]`` 中未显式布线的参数，
+    自动生成 ``configs.<route_key>.<choice>.<param>`` 引用。
     """
     route_inp: dict[str, dict[str, Any]] = node_spec.pop("route_inputs", {})
     route_cfg: dict[str, dict[str, Any]] = node_spec.pop("route_configs", {})
@@ -280,6 +285,13 @@ def _apply_route_extras(node_spec: dict[str, Any], choice: str) -> None:
         node_inputs.update(extra_inputs)
 
     extra_configs = route_cfg.get(choice, {})
+
+    # auto-wire: 补全未显式布线的 route_configs 参数
+    declared_params = top_route_configs.get(route_key, {}).get(choice, {})
+    for param in declared_params:
+        if param not in extra_configs:
+            extra_configs[param] = f"configs.{route_key}.{choice}.{param}"
+
     if extra_configs:
         node_configs = node_spec.setdefault("configs", {})
         node_configs.update(extra_configs)

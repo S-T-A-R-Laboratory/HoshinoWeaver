@@ -35,6 +35,25 @@ def _require_type(obj: Any, typ: type, field: str) -> None:
             f"字段 `{field}` 期望类型 {typ.__name__}，但得到 {type(obj).__name__}。")
 
 
+def _flatten_configs_for_validation(
+    configs: dict[str, Any],
+    prefix: str = "",
+) -> dict[str, Any]:
+    """将 meta_resolve 产生的嵌套 route_configs 展平为 dotted key。
+
+    普通 config spec（含 ``type``）保持原样；
+    不含 ``type`` 的嵌套 dict 递归展开。
+    """
+    flat: dict[str, Any] = {}
+    for name, entry in configs.items():
+        full_key = f"{prefix}{name}" if prefix else name
+        if isinstance(entry, dict) and "type" not in entry and "default" not in entry:
+            flat.update(_flatten_configs_for_validation(entry, f"{full_key}."))
+        else:
+            flat[full_key] = entry
+    return flat
+
+
 def _parse_link(link: str) -> Tuple[str, ...]:
     """
     返回 link 的解析结果：
@@ -182,7 +201,8 @@ def validate_and_build_order(
         global_inputs_types[name] = t
 
     global_configs_types: dict[str, str] = {}
-    for name, entry in global_configs.items():
+    flat_configs = _flatten_configs_for_validation(global_configs)
+    for name, entry in flat_configs.items():
         if not isinstance(entry, dict):
             raise DagSpecError(f"`configs.{name}` 必须是对象（包含 type 等）。")
         t = entry.get("type")
@@ -249,11 +269,10 @@ def validate_and_build_order(
                 )
         elif src_kind[0] == "configs":
             config_name = src_kind[1]
-            if config_name not in global_configs:
+            if config_name not in flat_configs:
                 raise DagSpecError(
                     f"{loc} 引用了全局配置 `configs.{config_name}`，但它未在顶层 configs 定义。"
                 )
-            # 节点 configs 一般期望标量/对象来源；不强制，但至少不建议 sequence。
             if global_configs_types.get(
                     config_name) == "sequence" and loc.startswith("configs."):
                 raise DagSpecError(
