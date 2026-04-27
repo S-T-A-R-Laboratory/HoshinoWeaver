@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 from loguru import logger
 from numpy.typing import NDArray
+from scipy.stats import norm as _norm
 
 
 def _ransac_ratio(x: NDArray,
@@ -162,3 +163,65 @@ def equalize_noise(max_img: NDArray,
     corrected = np.clip(corrected, a_min=0, a_max=max_value)
 
     return corrected
+
+
+def compute_adaptive_n_sigma(n_frames: int,
+                             target_fpr: float = 0.01) -> float:
+    """根据帧数计算自适应 sigma 阈值。
+
+    选取 n_sigma 使得：在 n_frames 帧中，单个背景像素至少一帧
+    误超阈值的概率不超过 target_fpr。
+
+    Args:
+        n_frames: 总帧数。
+        target_fpr: 目标每像素误检率（默认 0.01）。
+
+    Returns:
+        自适应 n_sigma，下界 3.0。
+    """
+    return max(3.0, float(_norm.ppf(1.0 - target_fpr / n_frames)))
+
+
+def threshold_max_merge(
+    frame: NDArray,
+    mean_img: NDArray,
+    std_img: NDArray,
+    result: NDArray,
+    n_sigma: float,
+    weight: float | None = None,
+    morph_kernel: NDArray | None = None,
+) -> None:
+    """单帧 threshold-max 归约（就地更新 result）。
+
+    保留 frame 中显著高于背景（mean + n_sigma * std）的像素，
+    用其（可选加权后的）值与 result 取最大值。
+    背景区域始终保持 mean_img 的值。
+
+    Args:
+        frame: 当前帧图像 (H, W, C) float64。
+        mean_img: sigma-clipped 均值图像。
+        std_img: sigma-clipped 标准差图像。
+        result: 累积结果图像（就地更新）。
+        n_sigma: 阈值倍率。
+        weight: 可选渐入渐出权重（标量）。
+        morph_kernel: 形态学开运算核，用于清除孤立噪点。None 则跳过。
+    """
+    mask = frame > (mean_img + n_sigma * std_img)
+
+    if morph_kernel is not None:
+        if mask.ndim == 3:
+            for c in range(mask.shape[2]):
+                mask[:, :, c] = cv2.morphologyEx(
+                    mask[:, :, c].view(np.uint8),
+                    cv2.MORPH_OPEN, morph_kernel).view(bool)
+        else:
+            mask = cv2.morphologyEx(
+                mask.view(np.uint8),
+                cv2.MORPH_OPEN, morph_kernel).view(bool)
+
+    if weight is not None:
+        signal = frame * weight
+    else:
+        signal = frame
+
+    np.maximum(result, np.where(mask, signal, mean_img), out=result)

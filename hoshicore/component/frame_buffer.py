@@ -50,8 +50,19 @@ class SourceReplayDescriptor:
 class BaseFrameBuffer:
     """帧缓冲基类：定义多 pass 算法消费帧数据的统一协议。
 
-    子类须实现 append / __getitem__ / cleanup。
+    支持引用计数：多个消费者可通过 acquire() 共享同一个 buffer，
+    每个消费者完成后调用 cleanup() 释放引用，最后一个释放时
+    触发 _do_cleanup() 执行真正的资源回收。
+
+    子类须实现 append / __getitem__ / _do_cleanup。
     """
+
+    def __init__(self):
+        self._ref_count = 0
+
+    def acquire(self):
+        """增加引用计数。每个下游消费者对应一次 acquire。"""
+        self._ref_count += 1
 
     def append(self, *args, **kwargs) -> None:
         raise NotImplementedError
@@ -63,6 +74,12 @@ class BaseFrameBuffer:
         raise NotImplementedError
 
     def cleanup(self) -> None:
+        """释放一个引用。引用归零时执行 _do_cleanup()。"""
+        self._ref_count -= 1
+        if self._ref_count <= 0:
+            self._do_cleanup()
+
+    def _do_cleanup(self) -> None:
         raise NotImplementedError
 
 
@@ -79,6 +96,7 @@ class DiskFrameBuffer(BaseFrameBuffer):
     """
 
     def __init__(self, temp_path: Optional[Union[str, Path]] = None):
+        super().__init__()
         self.temp_path = Path(temp_path) if temp_path else Path(
             tempfile.gettempdir())
         os.makedirs(self.temp_path, exist_ok=True)
@@ -130,7 +148,7 @@ class DiskFrameBuffer(BaseFrameBuffer):
     def __len__(self) -> int:
         return self._count
 
-    def cleanup(self) -> None:
+    def _do_cleanup(self) -> None:
         """删除所有临时缓冲文件。"""
         if self._cleaned:
             return
@@ -163,8 +181,13 @@ class DiskFrameBuffer(BaseFrameBuffer):
 
     @classmethod
     def from_descriptor(cls, desc: DiskBufferDescriptor) -> DiskFrameBuffer:
-        """从描述符重建 DiskFrameBuffer 实例（用于 MedianReduceOp 回退场景）。"""
+        """从描述符重建 DiskFrameBuffer 实例（用于 MedianReduceOp 回退场景）。
+
+        重建的实例是独立的所有者（ref_count=1），与原始 worker
+        端的实例无关（worker 端的 buffer 已在 worker 退出时清理）。
+        """
         buf = cls.__new__(cls)
+        BaseFrameBuffer.__init__(buf)
         buf.temp_path = Path(desc.temp_path)
         buf.prefix = desc.prefix
         buf._count = desc.count
@@ -175,7 +198,7 @@ class DiskFrameBuffer(BaseFrameBuffer):
     def __del__(self):
         """安全网：防止异常中断（如用户 Ctrl-C）导致临时文件泄漏。"""
         if not self._cleaned and self._paths:
-            self.cleanup()
+            self._do_cleanup()
 
 
 class SourceReplayBuffer(BaseFrameBuffer):
@@ -194,6 +217,7 @@ class SourceReplayBuffer(BaseFrameBuffer):
     """
 
     def __init__(self):
+        super().__init__()
         self._entries: list[tuple[str, Optional[Union[float, np.ndarray]]]] = []
         self._cleaned = False
 
@@ -248,7 +272,7 @@ class SourceReplayBuffer(BaseFrameBuffer):
             buf.append(path)
         return buf
 
-    def cleanup(self) -> None:
+    def _do_cleanup(self) -> None:
         """清理内部状态（无临时文件需要删除）。"""
         if self._cleaned:
             return
