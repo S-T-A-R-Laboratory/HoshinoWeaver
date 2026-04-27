@@ -327,6 +327,7 @@ def _segment_worker_main(
                 iter_count += 1
                 iter_type = cmd["iter_type"]
                 params = cmd.get("params", {})
+                assert local_buffer is not None, "iterate cmd received but local_buffer is None"
 
                 # 从 broadcast shm 解包 ref_data（close 但不 unlink）
                 ref_data = broadcast_unpack(
@@ -344,9 +345,14 @@ def _segment_worker_main(
                     del ref_data
                     proxy_tracker.report_mem(
                         f"w{worker_id} iter{iter_count} sigma_clip merger created")
+                    bar_name = f"w{worker_id}_iter{iter_count}"
+                    proxy_tracker.create_bar(bar_name, len(local_buffer),
+                                             desc=f"Worker {worker_id} [sigma_clip iter {iter_count}]")
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         clip_merger.merge(raw, weight)
+                        proxy_tracker.update(bar_name)
+                    proxy_tracker.close_bar(bar_name)
                     await output_ipc.put(clip_merger.result)
                     del clip_merger
                     proxy_tracker.report_mem(
@@ -360,9 +366,14 @@ def _segment_worker_main(
                     del ref_data
                     proxy_tracker.report_mem(
                         f"w{worker_id} iter{iter_count} huber merger created")
+                    bar_name = f"w{worker_id}_iter{iter_count}"
+                    proxy_tracker.create_bar(bar_name, len(local_buffer),
+                                             desc=f"Worker {worker_id} [huber iter {iter_count}]")
                     for idx in range(len(local_buffer)):
                         raw, weight = local_buffer[idx]
                         huber_merger.merge(raw, weight)
+                        proxy_tracker.update(bar_name)
+                    proxy_tracker.close_bar(bar_name)
                     await output_ipc.put(huber_merger.result)
                     del huber_merger
                     proxy_tracker.report_mem(

@@ -17,10 +17,11 @@ def main():
     parser.add_argument("dir",
                         type=str,
                         help="Directory containing the input images.")
-    parser.add_argument("--num-workers",
-                        type=int,
-                        default=None,
-                        help="Number of worker processes to use (default: None).")
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Number of worker processes to use (default: 1).")
     log_group = parser.add_mutually_exclusive_group()
     log_group.add_argument("--debug",
                            action="store_true",
@@ -65,7 +66,10 @@ def main():
     }
 
     asyncio.run(
-        run_from_yaml(yaml_path, global_inputs, global_configs, num_workers=num_workers))
+        run_from_yaml(yaml_path,
+                      global_inputs,
+                      global_configs,
+                      num_workers=num_workers))
 
 
 if __name__ == "__main__":
