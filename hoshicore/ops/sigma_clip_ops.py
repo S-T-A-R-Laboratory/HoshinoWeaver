@@ -27,12 +27,16 @@ SigmaClipIteratorOp：
 """
 from typing import Any, Optional
 
+import cv2
 import numpy as np
 from loguru import logger
 
-from ..component.frame_buffer import DiskFrameBuffer, SourceReplayBuffer
+from ..component.frame_buffer import (BaseFrameBuffer, DiskFrameBuffer,
+                                      SourceReplayBuffer)
 from ..component.merger import (MeanMerger, SigmaClippingMerger,
                                 HuberWeightedMerger)
+from ..component.noise_equalization import (threshold_max_merge,
+                                            compute_adaptive_n_sigma)
 from ..component.data_container import FloatImage, FastGaussianParam
 from ..engine.registry import register_op
 from ..component.queue import StreamExhausted
@@ -147,7 +151,10 @@ class DiskBufferWriterOp(BaseOp):
                 f"{self.name}: buffered {stacked_num}/{tot_num} frames "
                 f"({failed_num} fail(s)), mode={mode_label}.")
 
-            # 将 buffer 实例推给下游
+            # 按下游消费者数量设置引用计数
+            n_consumers = len(self.outputs.get("buffer_handle", []))
+            for _ in range(n_consumers):
+                frame_buffer.acquire()
             await self._broadcast_outputs({"buffer_handle": frame_buffer})
 
         except Exception as e:
@@ -456,4 +463,96 @@ class MedianReduceOp(BaseOp):
             raise
         finally:
             self.tracker.close_bar(self.name)
+            frame_buffer.cleanup()
+
+
+@register_op()
+class ThresholdMaxIteratorOp(BaseOp):
+    """Threshold-Max 归约：从缓冲帧中提取显著亮于背景的像素叠入均值图像。
+
+    背景 = sigma-clipped 均值，亮特征 = 各帧最大值。
+    用于替代 MaxNoiseEqualizationOp，提供对局部亮度调整更鲁棒的噪声均匀化。
+
+    接收：
+        - fgp_total: FastGaussianParam（sigma-clip 后的统计量）
+        - buffer_handle: BaseFrameBuffer 实例（来自 DiskBufferWriterOp）
+        - n_sigma: 信号检测阈值（-1 = 按帧数自适应）
+
+    输出：
+        - result: 校正后的图像 (FloatImage)
+    """
+
+    EXECUTOR = "cpu"
+    BUFFER_ITERATOR = True
+    ITERATOR_TYPE = "threshold_max"
+    CONFIGS: dict[str, dict[str, Any]] = {
+        "fgp_total": {
+            "type": "image",
+            "required": True,
+        },
+        "buffer_handle": {
+            "type": "image",
+            "required": True,
+        },
+        "n_sigma": {
+            "type": "float",
+            "default": -1,
+        },
+        "morph_kernel_size": {
+            "type": "int",
+            "default": 3,
+        },
+    }
+    OUTPUTS = {
+        "result": {
+            "type": "image",
+        },
+    }
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        fgp: FastGaussianParam = configs['fgp_total']
+        frame_buffer: BaseFrameBuffer = configs['buffer_handle']
+        n_sigma_cfg: float = configs['n_sigma']
+        kernel_size: int = configs['morph_kernel_size']
+
+        try:
+            n_frames = len(frame_buffer)
+            if n_sigma_cfg <= 0:
+                n_sigma = compute_adaptive_n_sigma(n_frames)
+                logger.info(
+                    f"{self.name}: auto n_sigma={n_sigma:.2f} "
+                    f"for {n_frames} frames")
+            else:
+                n_sigma = n_sigma_cfg
+
+            mean_img = fgp.mu.astype(np.float64)
+            std_img = np.sqrt(np.maximum(fgp.var, 0).astype(np.float64))
+            result = mean_img.copy()
+
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_RECT, (kernel_size, kernel_size))
+
+            self.tracker.create_bar(
+                self.name, n_frames,
+                desc=f"{self.name} [ThresholdMax]")
+
+            for idx in range(n_frames):
+                raw, weight = frame_buffer[idx]
+                frame = raw.astype(np.float64)
+                await self._run_cpu(
+                    threshold_max_merge,
+                    frame, mean_img, std_img, result,
+                    n_sigma, weight, kernel)
+                self.tracker.update(self.name)
+
+            self.tracker.close_bar(self.name)
+
+            out = FloatImage(data=result, dtype=fgp.source_dtype)
+            await self._broadcast_outputs({"result": out})
+            logger.info(f"{self.name} threshold-max complete.")
+
+        except Exception as e:
+            logger.error(f"{self.name} failed: {e}")
+            raise
+        finally:
             frame_buffer.cleanup()

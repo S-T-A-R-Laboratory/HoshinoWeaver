@@ -1,0 +1,98 @@
+description: "Threshold-Max 星轨叠加：基于均值背景的亮信号提取，支持渐入渐出和蒙版合成"
+version: "1"
+
+# ── 全局输入 ──
+inputs:
+  fnames: { type: sequence, required: true }
+
+# ── 全局配置 ──
+configs:
+  fin: { type: float, default: 0 }
+  fout: { type: float, default: 0 }
+  int_weight: { type: bool, default: true }
+  exif_reduce_type: { type: str, default: "sum" }
+  loader_type: { type: str, default: "img_file_list" }
+  rej_high: { type: float, default: 3.0 }
+  rej_low: { type: float, default: 3.0 }
+  max_iter: { type: int, default: 5 }
+  n_sigma: { type: float, default: -1 }
+  mask: { type: str, default: null }
+  loader_configs: { type: dict, default: {} }
+  output_filename: { type: str, default: "result.tif" }
+  output_dtype: { type: str, default: "uint16" }
+  buffer_mode: { type: str, default: "auto" }
+
+# ── 节点 ──
+#
+#                  ┌──► data_loader ──┐
+#  inputs.fnames ──┤                  ├──► threshold_max_sub ──┐
+#                  ├──► weight_gen ───┘                        ├──► image_saver
+#                  │                                           │
+#                  └──► exif_loader ──► exif_reducer ──────────┘
+
+nodes:
+  data_loader:
+    op: ImgDataLoaderOp
+    inputs:
+      src: inputs.fnames
+    configs:
+      loader_type: configs.loader_type
+      configs: configs.loader_configs
+    outputs:
+      result: { type: sequence }
+
+  weight_generator:
+    op: WeightGeneratorOp
+    inputs:
+      sequence: inputs.fnames
+    configs:
+      fin: configs.fin
+      fout: configs.fout
+    outputs:
+      result: { type: sequence }
+
+  threshold_max_sub:
+    op: threshold_max_startrail.yaml
+    inputs:
+      data: data_loader.result
+      weight: weight_generator.result
+      fnames: inputs.fnames
+    configs:
+      int_weight: configs.int_weight
+      rej_high: configs.rej_high
+      rej_low: configs.rej_low
+      max_iter: configs.max_iter
+      buffer_mode: configs.buffer_mode
+      n_sigma: configs.n_sigma
+    outputs:
+      result: { type: image }
+
+  exif_loader:
+    op: ExifReadOp
+    inputs:
+      fnames: inputs.fnames
+    outputs:
+      result: { type: sequence }
+
+  exif_reducer:
+    op: ExifReduceOp
+    inputs:
+      exifs: exif_loader.result
+    configs:
+      merge_method: configs.exif_reduce_type
+    outputs:
+      result: { type: object }
+
+  image_saver:
+    op: ImageSaveOp
+    configs:
+      image: threshold_max_sub.result
+      exif: exif_reducer.result
+      output_dtype: configs.output_dtype
+      output_filename: configs.output_filename
+    outputs:
+      return_code: { type: int }
+
+# ── 全局输出 ──
+outputs:
+  result: image_saver.return_code
