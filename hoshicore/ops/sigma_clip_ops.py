@@ -31,15 +31,15 @@ import cv2
 import numpy as np
 from loguru import logger
 
+from ..component.data_container import FastGaussianParam, FloatImage
 from ..component.frame_buffer import (BaseFrameBuffer, DiskFrameBuffer,
                                       SourceReplayBuffer)
-from ..component.merger import (MeanMerger, SigmaClippingMerger,
-                                HuberWeightedMerger)
-from ..component.noise_equalization import (threshold_max_merge,
-                                            compute_adaptive_n_sigma)
-from ..component.data_container import FloatImage, FastGaussianParam
-from ..engine.registry import register_op
+from ..component.merger import (HuberWeightedMerger, MeanMerger,
+                                SigmaClippingMerger)
+from ..component.noise_equalization import (compute_adaptive_n_sigma,
+                                            threshold_max_merge)
 from ..component.queue import StreamExhausted
+from ..engine.registry import register_op
 from .base import BaseOp
 
 

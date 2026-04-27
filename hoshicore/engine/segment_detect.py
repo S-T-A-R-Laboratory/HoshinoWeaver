@@ -19,9 +19,8 @@ from typing import Optional
 
 from loguru import logger
 
-from ..ops.base import BaseOp, ParallelBaseOp, FilterBaseOp
+from ..ops.base import BaseOp, FilterBaseOp, ParallelBaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
-
 
 # ────────────────────────────────────────────────────────────────
 # 帧分配策略
