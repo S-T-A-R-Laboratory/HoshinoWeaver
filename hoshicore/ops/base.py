@@ -93,10 +93,10 @@ class BaseOp(object):
         # ── 6. 输出长度广播 ──
         output_length = self._infer_output_length(input_lengths)
         for key, queue_list in self.outputs.items():
-            if self.OUTPUTS[key].get("type") != "sequence":
-                continue
+            is_seq = self.OUTPUTS[key].get("type") == "sequence"
+            length = output_length if is_seq else 1
             for queue in queue_list:
-                await queue.set_length(output_length)
+                await queue.set_length(length)
 
         # ── 7. 等待配置就绪 ──
         return {x: await self.config[x].get() for x in self.config.keys()}

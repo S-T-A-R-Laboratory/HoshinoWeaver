@@ -146,9 +146,9 @@ python launcher.py /path/to/your/work_dir --mode mean --output "img.jpg"
 
 #### v0.5.0上线前需要做的
 - 前端界面分离，通过配置文件生成可选参数
-- 新的去网格叠加算法
-- 缩星算子
+- 新的去网格叠加算法【待优化】
 - 对齐接入
+- 单元测试
 
 To Be Fixed
 - Display P3 问题

@@ -5,7 +5,7 @@ import os
 import sys
 
 from loguru import logger
-from hoshicore.component.utils import is_support_format
+from hoshicore.component.utils import is_support_format, init_logger
 
 
 def main():
@@ -17,11 +17,10 @@ def main():
     parser.add_argument("dir",
                         type=str,
                         help="Directory containing the input images.")
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=1,
-        help="Number of worker processes to use (default: 1).")
+    parser.add_argument("--num-workers",
+                        type=int,
+                        default=1,
+                        help="Number of worker processes to use (default: 1).")
     log_group = parser.add_mutually_exclusive_group()
     log_group.add_argument("--debug",
                            action="store_true",
@@ -33,14 +32,7 @@ def main():
 
     args = parser.parse_args()
 
-    # 配置日志级别：默认 INFO，--debug → DEBUG，--trace → TRACE
-    logger.remove()
-    if args.trace:
-        logger.add(sys.stderr, level="TRACE")
-    elif args.debug:
-        logger.add(sys.stderr, level="DEBUG")
-    else:
-        logger.add(sys.stderr, level="INFO")
+    logger = init_logger(logger, args.debug, args.trace, None)
 
     yaml_path = args.config
     if not os.path.isfile(yaml_path):
