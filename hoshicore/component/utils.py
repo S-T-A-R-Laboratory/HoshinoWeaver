@@ -28,17 +28,10 @@ RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng", "rw2", "raf"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
-VERSION = "0.5.0"
-
+VERSION = "1.0.0"
+RELEASE_NAME = "Vega"
 ORG_NAME = f"STARLab"
 SOFTWARE_NAME = f"HoshinoWeaver"
-
-
-def error_raiser(error, result_queue):
-    """A simple error raiser. For subprocessor callback function."""
-    result_queue.put(EasyDict(img=None, err_msg=[
-        error,
-    ]))
 
 
 def is_support_format(fname: str) -> bool:
@@ -104,32 +97,15 @@ def time_cost_warpper(func: Callable) -> Callable:
     return do_func
 
 
-def get_mp_num(tot_num: int,
-               prefer_num: Optional[int] = None) -> tuple[int, float]:
-    """
-    设置处理器使用数目，在不超出处理器数目限制的情况下，尽可能使每个处理器叠加sqrt(N)张图像
-    """
-    cpu_num = mp.cpu_count()
-    if prefer_num:
-        mp_num = prefer_num
-        if prefer_num > cpu_num:
-            logger.warning(
-                f"Preferred multiprocessing num ({prefer_num}) is larger " +
-                f"than cpu num ({cpu_num})!")
-    else:
-        psutil.virtual_memory().available
-        cpu_num = cpu_num // 4 + (1 if cpu_num <= 8 else 0)
-        mp_num = min(floor(sqrt(tot_num)), cpu_num)
-    sub_length = tot_num / mp_num
-    return mp_num, sub_length
-
-
-def init_logger(logger, debug_mode: bool, log_path: Optional[str]):
+def init_logger(logger, debug_mode: bool, trace_mode:bool, log_path: Optional[str]):
     """用于初始化Loguru的logger"""
     logger.remove()
+    if trace_mode:
+        logger.add(sys.stderr, level="TRACE")
     if debug_mode:
-        logger.add(sys.stdout, level="DEBUG")
+        logger.add(sys.stderr, level="DEBUG")
     else:
-        logger.add(sys.stdout, level="INFO")
+        logger.add(sys.stderr, level="INFO")
     if log_path:
-        logger.add(log_path, level="DEBUG")
+        logger.add(log_path, level="TRACE")
+    return logger
