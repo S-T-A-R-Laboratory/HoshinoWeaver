@@ -11,4 +11,5 @@ pyside6>=6.4.3
 PyYAML >=6.0.0
 qasync>=0.28.0
 rawpy>=0.20.0
+scipy>=1.10.0
 tifffile>=2026.3
