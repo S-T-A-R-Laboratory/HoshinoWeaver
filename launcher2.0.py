@@ -4,7 +4,7 @@ import argparse
 import os
 import sys
 
-from loguru import logger
+from loguru import logger as default_logger
 from hoshicore.component.utils import is_support_format, init_logger
 
 
@@ -31,8 +31,8 @@ def main():
         help="Enable TRACE level logging (includes [MEM] diagnostics).")
 
     args = parser.parse_args()
-
-    logger = init_logger(logger, args.debug, args.trace, None)
+    
+    logger = init_logger(default_logger, args.debug, args.trace, None)
 
     yaml_path = args.config
     if not os.path.isfile(yaml_path):
