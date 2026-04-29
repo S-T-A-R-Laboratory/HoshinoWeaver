@@ -21,6 +21,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Awaitable, Optional, Sequence
 
+import yaml
 from loguru import logger
 
 from ..component.progress import DummyTracker, ProgressTracker
@@ -33,11 +34,12 @@ from .flatten import INACTIVE_MARKER
 from .registry import REGISTERED_OP
 
 # ────────────────────────────────────────────────────────────────
-# 子图 YAML 搜索路径
+# 包级路径常量
 # ────────────────────────────────────────────────────────────────
 
-# 内置 DAG 目录（基于包位置，不依赖工作目录）
-_BUILTIN_DAG_DIR = Path(__file__).resolve().parent.parent / "dag"
+_HOSHICORE_ROOT = Path(__file__).resolve().parent.parent
+_BUILTIN_DAG_DIR = _HOSHICORE_ROOT / "dag"
+_DEFAULT_SETTINGS_PATH = _HOSHICORE_ROOT / "default_settings.yaml"
 
 # 默认搜索路径列表：op 字段以 .yaml 结尾时，按序搜索。
 # 用户可通过 set_dag_search_paths() 追加自定义目录。
@@ -53,6 +55,16 @@ def set_dag_search_paths(paths: list[Path]) -> None:
     """
     global DEFAULT_DAG_SEARCH_PATHS
     DEFAULT_DAG_SEARCH_PATHS = [Path(p) for p in paths]
+
+
+def _load_default_settings(path: Optional[Path] = None) -> dict[str, Any]:
+    """读取全局默认设置文件，返回 flat dict。文件不存在或为空时返回空 dict。"""
+    p = path or _DEFAULT_SETTINGS_PATH
+    if not p.exists():
+        return {}
+    with open(p, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    return raw if isinstance(raw, dict) else {}
 
 
 def _resolve_sub_dag_yaml(op_name: str) -> Path:
@@ -457,6 +469,11 @@ async def run_from_yaml(
     from .flatten import flatten_sub_dags
     from .multiprocess import run_dag_multiprocess
     spec = _load_yaml(yaml_path)
+
+    # 合并全局默认设置（优先级：用户显式 > 全局默认 > YAML default > Op default）
+    defaults = _load_default_settings()
+    if defaults:
+        global_configs = {**defaults, **global_configs}
 
     # Meta YAML 预处理：编译路由选择 + 节点开关
     if route_choices is not None or _spec_needs_meta_resolve(spec):

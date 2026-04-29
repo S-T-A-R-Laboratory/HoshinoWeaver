@@ -1,0 +1,36 @@
+# ──────────────────────────────────────────────────────────────
+# EasyStacker / hoshicore 全局默认设置
+# ──────────────────────────────────────────────────────────────
+#
+# 持久化配置，适用于跨管线共享的默认值。
+# 配置优先级（高 → 低）：
+#   1. 用户运行时显式传入的 global_configs
+#   2. 本文件中的值
+#   3. YAML 管线定义中的 default
+#   4. Op CONFIGS 声明中的 default
+#
+# 取消注释并修改需要覆盖的项。未设置的项将继续使用管线/算子默认值。
+# ──────────────────────────────────────────────────────────────
+
+# 输出数据类型（如 "uint8", "uint16", "float32"）
+# 影响所有 image_saver 及叠加结果的输出 dtype
+output_dtype: "uint16"
+
+# 序列加权时是否使用整数权重（避免浮点累积误差）
+int_weight: true
+
+# 帧缓冲模式：auto / disk / memory
+# auto 模式根据帧数和可用内存自动选择
+# buffer_mode: "auto"
+
+
+# 临时文件目录（磁盘缓冲、文件缓存队列等）
+# 不设置时使用系统默认临时目录 (tempfile.gettempdir())
+# temp_path: "/tmp/easystacker"
+
+# CPU 工作进程数量
+# 不设置时自动单进程
+# num_workers: 4
+
+# 日志级别：DEBUG / INFO / WARNING / ERROR
+# log_level: "INFO"
