@@ -32,6 +32,19 @@ class TestRescaleArray:
         assert up.dtype == np.uint32
         assert up[0] > 0
 
+    def test_uint16_to_uint8(self):
+        arr = np.array([0, 257, 32896, 65535], dtype=np.uint16)
+        down = rescale_array(arr, np.dtype("uint16"), np.dtype("uint8"))
+        assert down.dtype == np.uint8
+        assert down[0] == 0
+        assert down[-1] == 255
+
+    def test_uint8_roundtrip(self):
+        arr = np.array([0, 1, 127, 255], dtype=np.uint8)
+        up = rescale_array(arr, np.dtype("uint8"), np.dtype("uint16"))
+        down = rescale_array(up, np.dtype("uint16"), np.dtype("uint8"))
+        np.testing.assert_array_equal(down, arr)
+
     def test_same_dtype_passthrough(self):
         arr = np.array([100, 200], dtype=np.uint16)
         out = rescale_array(arr, np.dtype("uint16"), np.dtype("uint16"))

@@ -81,7 +81,7 @@ def save_img(filename: str,
         img (np.ndarray): The image to be saved.
         png_compressing (int): PNG compressing arguments, ranges from 0 (no compressing) to 9. Defaults to 0.
         jpg_quality (int): JPG quality parameter, ranges from 0 to 100. Defaults to 90.
-        exif (Union[dict, EasyDict, None]): exif info in dict or EasyDict format.
+        exif (Union[ExifData, None]): optional exif info in ExifData format.
         colorprofile (bytes): icc_profile in bytes format. Defaults to b"".
 
     Raises:

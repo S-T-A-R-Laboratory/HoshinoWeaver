@@ -10,7 +10,6 @@ from typing import Callable, Optional, Union
 
 import numpy as np
 import psutil
-from easydict import EasyDict
 from loguru import logger
 
 ERROR_NAME_MAPPING = {
