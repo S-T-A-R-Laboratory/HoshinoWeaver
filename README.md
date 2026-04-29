@@ -145,11 +145,9 @@ python launcher.py /path/to/your/work_dir --mode mean --output "img.jpg"
 ### HoshinoWeaver的RoadMap
 
 #### v1.0.0 上线前需要做的
-- 前端界面分离，通过配置文件生成可选参数
+- 前端界面分离，通过配置文件生成可选参数【前端】
 - 新的去网格叠加算法【待优化】
 - 对齐接入
-- 单元测试
-- 全局配置文件（缓存路径，参数偏好等）
 
 To Be Fixed
 - Display P3 问题
@@ -217,3 +215,9 @@ TO BE DONE
 星点对齐功能 基于 LoveDaisy 的[星点对齐]( https://github.com/LoveDaisy/star_alignment) 算法实现。
 
 感谢所有参与 HoshinoWeaver 测试和提出建议的用户（目前还没有就是了🤔️）。
+
+                        
+### Stargazers over time
+[![Stargazers over time](https://starchart.cc/Designerspr/HoshinoWeaver.svg?variant=adaptive)](https://starchart.cc/Designerspr/HoshinoWeaver)
+
+                    
