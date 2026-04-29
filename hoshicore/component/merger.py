@@ -305,8 +305,16 @@ class HuberWeightedMerger(BaseMerger):
         self._ref_std = np.sqrt(np.maximum(ref_stats.var,
                                            0)).astype(np.float32)
 
+    def _merge(self, base_img: HuberMeanParam, new_img: HuberMeanParam) -> HuberMeanParam:
+        return base_img + new_img
+
+    @property
+    def merged_image(self) -> Union[FloatImage, None]:
+        if self.result is None:
+            return None
+        return FloatImage(self.result.mu, dtype=self._source_dtype or np.dtype("float64"))
+
     def _pre_process(self, img: np.ndarray, weight=None) -> HuberMeanParam:
-        """计算 Huber 权重，构造单帧的 HuberMeanParam。"""
         r = (img.astype(np.float32) - self._ref_mean) / (self._ref_std + 1e-10)
         abs_r = np.abs(r)
         huber_w = np.where(

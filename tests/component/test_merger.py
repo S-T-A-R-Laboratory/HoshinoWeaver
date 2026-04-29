@@ -114,27 +114,52 @@ class TestSigmaClippingMerger:
 
 
 class TestHuberWeightedMerger:
-    @pytest.mark.skip(reason="HuberWeightedMerger missing _merge impl — cannot instantiate (known issue)")
+    def _build_ref(self, frames):
+        mean_merger = MeanMerger()
+        for f in frames:
+            mean_merger.merge(f)
+        return mean_merger.result
+
     def test_constant_frames(self):
         n_frames = 10
         val = 100
         frames = [np.full((8, 8, 3), val, dtype=np.uint8) for _ in range(n_frames)]
+        ref_fgp = self._build_ref(frames)
 
-        # Phase 1: reference stats
-        mean_merger = MeanMerger()
-        for f in frames:
-            mean_merger.merge(f)
-        ref_fgp = mean_merger.result
-
-        # Phase 2: Huber weighted mean
         huber = HuberWeightedMerger(ref_stats=ref_fgp)
         for f in frames:
             huber.merge(f)
 
         result = huber.merged_image
         assert result is not None
-        mu = result.mu
-        np.testing.assert_allclose(mu, val, atol=1)
+        np.testing.assert_allclose(result.data, val, atol=1)
+
+    def test_outlier_downweighted(self):
+        val = 100
+        frames = [np.full((8, 8, 3), val, dtype=np.uint8) for _ in range(20)]
+        ref_fgp = self._build_ref(frames)
+
+        all_frames = frames + [np.full((8, 8, 3), 250, dtype=np.uint8)]
+        huber = HuberWeightedMerger(ref_stats=ref_fgp)
+        for f in all_frames:
+            huber.merge(f)
+
+        result = huber.merged_image
+        assert result is not None
+        np.testing.assert_allclose(result.data, val, atol=10)
+
+    def test_merged_image_returns_float_image(self):
+        from hoshicore.component.data_container import FloatImage
+        frames = [np.full((4, 4, 3), 50, dtype=np.uint8) for _ in range(5)]
+        ref_fgp = self._build_ref(frames)
+
+        huber = HuberWeightedMerger(ref_stats=ref_fgp)
+        for f in frames:
+            huber.merge(f)
+
+        result = huber.merged_image
+        assert isinstance(result, FloatImage)
+        assert result.dtype == np.dtype("uint8")
 
 
 class TestAccumDtypes:

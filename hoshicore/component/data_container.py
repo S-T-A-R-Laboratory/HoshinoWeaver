@@ -101,7 +101,7 @@ def rescale_array(
     diff = to_level - from_level
     if diff == 0:
         return data.astype(to_dtype)
-    sf = _cumscale_factor(diff, exp_base=from_level)
+    sf = _cumscale_factor(diff, exp_base=min(from_level, to_level))
     if diff > 0:
         return data.astype(to_dtype) * sf
     else:

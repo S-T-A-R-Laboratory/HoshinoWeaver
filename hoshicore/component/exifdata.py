@@ -83,8 +83,8 @@ def read_exif_data(fname: str):
         fname (str): /path/to/the/image.file
 
     Returns:
-        Optional[EasyDict]: a Easydict that stores EXIF information.
-        When exception occurs, an easyDict with no EXIF data and empty colorprofile will be returned instead.
+        Optional[ExifData]: ExifData that stores EXIF information.
+        When exception occurs, None will be returned instead.
     """
     try:
         with open(fname, mode='rb') as f:
