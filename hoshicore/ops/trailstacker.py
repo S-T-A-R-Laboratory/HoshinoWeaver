@@ -81,7 +81,6 @@ class TrailStackerOp(BaseOp):
         int_weight: bool = configs['int_weight']
         merger = self.MERGER(int_weight=int_weight)
         tot_num = self.length
-        assert tot_num is not None, "TrailStackerOp requires sequence length information."
 
         has_weight = self.inputs['weight'].active
 
@@ -89,10 +88,11 @@ class TrailStackerOp(BaseOp):
         failed_num = 0
         err_msg_collector = []
 
-        self.tracker.create_bar(self.name, tot_num)
+        if tot_num is not None:
+            self.tracker.create_bar(self.name, tot_num)
 
         try:
-            for i in range(tot_num):
+            for i in self._input_range():
                 cur_filename = f"the {i+1}-th frame"
 
                 try:
@@ -101,8 +101,9 @@ class TrailStackerOp(BaseOp):
                     weight = (await upper_stream_data['weight']
                               ) if has_weight else None
                 except StreamExhausted:
-                    logger.warning(
-                        f"{self.name}: upstream ended at {i}/{tot_num}")
+                    if tot_num is not None:
+                        logger.warning(
+                            f"{self.name}: upstream ended at {i}/{tot_num}")
                     break
 
                 # Empty result handling
@@ -112,7 +113,8 @@ class TrailStackerOp(BaseOp):
                     logger.warning(warning_msg)
                     logger.warning(f"Skip {cur_filename}.")
                     failed_num += 1
-                    self.tracker.update(self.name)
+                    if tot_num is not None:
+                        self.tracker.update(self.name)
                     continue
 
                 try:
@@ -122,16 +124,18 @@ class TrailStackerOp(BaseOp):
                         f"Shape of {cur_filename} does not match.")
                     raise e
                 stacked_num += 1
-                self.tracker.update(self.name)
+                if tot_num is not None:
+                    self.tracker.update(self.name)
 
+            total_str = str(tot_num) if tot_num is not None else "?"
             if stacked_num == 0:
                 raise ValueError(
-                    f"{self.name}: No valid frames loaded from {tot_num} inputs."
+                    f"{self.name}: No valid frames loaded from {total_str} inputs."
                 )
 
             logger.info(
                 f"{self.name} successfully stacked {stacked_num} " +
-                f"images from {tot_num} images. ({failed_num} fail(s)).")
+                f"images from {total_str} images. ({failed_num} fail(s)).")
 
             # 输出结果
             outputs: dict[str, Any] = {"result": merger.merged_image}
@@ -144,7 +148,8 @@ class TrailStackerOp(BaseOp):
             logger.error(f"{self.name} failed: {e}")
             raise
         finally:
-            self.tracker.close_bar(self.name)
+            if tot_num is not None:
+                self.tracker.close_bar(self.name)
 
 
 @register_op()
