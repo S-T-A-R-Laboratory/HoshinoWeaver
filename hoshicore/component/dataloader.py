@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Any, TypeAlias, Union
+from typing import Any, Union
 
 import av
 import numpy as np
@@ -11,7 +11,7 @@ from .imgfio import load_img
 from .queue import RichContextQueue
 from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, is_support_format
 
-Frame: TypeAlias = Union[NDArray[np.uint8], NDArray[np.uint16], None]
+Frame = Union[NDArray[np.uint8], NDArray[np.uint16], None]
 
 
 class BaseLoader(object):
