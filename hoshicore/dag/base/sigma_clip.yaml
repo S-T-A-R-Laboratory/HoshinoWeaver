@@ -11,6 +11,7 @@ inputs:
 # 与原 SigmaClippingStackerOp 的 CONFIGS 对齐
 configs:
   int_weight: { type: bool, default: true }
+  mask: { type: image, required: false, default: null }  # 可选空间掩码，传入 MeanStackerOp
   rej_high: { type: float, default: 3.0 }
   rej_low: { type: float, default: 3.0 }
   max_iter: { type: int, default: 5 }
@@ -30,6 +31,7 @@ nodes:
       data: inputs.data
     configs:
       int_weight: configs.int_weight
+      mask: configs.mask
     outputs:
       result: { type: image }
       statistics: { type: image }

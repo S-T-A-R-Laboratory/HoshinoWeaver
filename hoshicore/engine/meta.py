@@ -104,7 +104,10 @@ def meta_resolve(
                 f"(node '{node_name}'). "
                 f"Available options: {list(options.keys())}")
 
-        node_spec["op"] = options[choice]
+        # fixed-op 节点：op 字段已由用户显式声明，跳过赋值
+        # （options 值为 null 时作为纯标签，仅用于 route_configs 分支选择）
+        if "op" not in node_spec:
+            node_spec["op"] = options[choice]
 
         _apply_route_extras(node_spec, route_key, choice, top_route_configs)
         resolved_routes[route_key] = choice

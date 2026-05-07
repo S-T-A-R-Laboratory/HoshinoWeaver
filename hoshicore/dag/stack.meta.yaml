@@ -1,4 +1,4 @@
-description: "通用叠加算法"
+description: "均值/中值叠加算法"
 version: "2"
 
 # ── 全局输入 ──
@@ -9,10 +9,10 @@ inputs:
 routes:
   stacker:
     options:
-      mean:       MeanStackerOp
-      sigma_clip: sigma_clip.yaml
-      median:     median_stack_core.yaml
-      huber_mean: huber_mean.yaml
+      mean:       null   # fixed-op，算法由 stacker.meta.yaml 内部路由决定
+      sigma_clip: null
+      median:     null
+      huber_mean: null
     default: mean
 
 # ── 全局配置 ──
@@ -23,18 +23,6 @@ configs:
   output_dtype:     { type: str,  default: "uint8" }
   loader_type:      { type: str,  default: "img_file_list" }
   loader_configs:   { type: dict, default: {} }
-
-# ── 路由专属配置 ──
-route_configs:
-  stacker:
-    sigma_clip:
-      rej_high: { type: float, default: 3.0 }
-      rej_low:  { type: float, default: 3.0 }
-      max_iter: { type: int,   default: 5 }
-    median:
-      chunk_rows: { type: int, default: 32 }
-    huber_mean:
-      huber_c: { type: float, default: 1.345 }
 
 # ── 节点 ──
 #
@@ -54,7 +42,10 @@ nodes:
       result: { type: sequence }
 
   stacker:
+    op: stacker.meta.yaml      # fixed-op；route_key 透传算法选择到子图
     route_key: stacker
+    routes:
+      stacker: routes.stacker  # 透传父图选择到子图 stacker route
     inputs:
       data: data_loader.result
     route_configs:
@@ -62,9 +53,9 @@ nodes:
         int_weight: configs.int_weight
       sigma_clip:
         int_weight: configs.int_weight
+      median: {}
       huber_mean:
         int_weight: configs.int_weight
-      median: {}
     outputs:
       result: { type: image }
 

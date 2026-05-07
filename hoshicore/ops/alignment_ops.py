@@ -84,6 +84,7 @@ class StarAlignmentOp(BaseOp):
 
             # 消费 EXIF 并拆包为 dict（Op 层负责 ExifData → dict 转换）
             exif_tags = None
+            exif_obj = None
             if exifs_active:
                 try:
                     exif_obj = await data['exifs']
@@ -106,7 +107,7 @@ class StarAlignmentOp(BaseOp):
                 else:
                     logger.info(f"{self.name}: using homography path")
                 await self._broadcast_outputs(
-                    {"result": frame, "aligned_exifs": exif_tags})
+                    {"result": frame, "aligned_exifs": exif_obj})
                 aligned_count += 1
                 continue
 
@@ -127,7 +128,7 @@ class StarAlignmentOp(BaseOp):
                 aligned = (FloatImage(data=aligned_arr, dtype=frame.dtype)
                            if isinstance(frame, FloatImage) else aligned_arr)
                 await self._broadcast_outputs(
-                    {"result": aligned, "aligned_exifs": exif_tags})
+                    {"result": aligned, "aligned_exifs": exif_obj})
                 aligned_count += 1
             except AlignmentError as e:
                 skipped_count += 1

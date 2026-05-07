@@ -43,7 +43,7 @@ _DEFAULT_SETTINGS_PATH = _HOSHICORE_ROOT / "default_settings.yaml"
 
 # 默认搜索路径列表：op 字段以 .yaml 结尾时，按序搜索。
 # 用户可通过 set_dag_search_paths() 追加自定义目录。
-DEFAULT_DAG_SEARCH_PATHS: list[Path] = [_BUILTIN_DAG_DIR]
+DEFAULT_DAG_SEARCH_PATHS: list[Path] = [x[0] for x in _BUILTIN_DAG_DIR.walk()]
 
 
 def set_dag_search_paths(paths: list[Path]) -> None:

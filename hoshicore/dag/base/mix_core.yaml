@@ -1,0 +1,73 @@
+description: "Mix 星轨核心子图：Max 叠加 + Sigma-Clip 统计 + MaxNoiseEqualization 合成"
+version: "1"
+
+# ── 全局输入 ──
+inputs:
+  data:   { type: sequence }
+  weight: { type: sequence, required: false }
+  fnames: { type: sequence, required: false }
+
+# ── 全局配置 ──
+configs:
+  int_weight:  { type: bool,  default: true }
+  rej_high:    { type: float, default: 3.0 }
+  rej_low:     { type: float, default: 3.0 }
+  max_iter:    { type: int,   default: 5 }
+  buffer_mode: { type: str,   default: "auto" }
+  mask:        { type: str,   default: null }
+  minus_only:  { type: bool,  default: true }
+
+# ── 节点 ──
+#
+#  inputs.data ──┬──► trailstacker ──────────────────────────────► mne ──► result
+#                │                                                  ▲
+#                ├──► sigma_clip ──► statistics ───────────────────┤
+#  inputs.weight ┘                                                  │
+#  inputs.fnames                                              load_mask
+
+nodes:
+  trailstacker:
+    op: TrailStackerOp
+    inputs:
+      data: inputs.data
+      weight: inputs.weight
+    configs:
+      int_weight: configs.int_weight
+    outputs:
+      result: { type: image }
+
+  sigma_clip:
+    op: sigma_clip.yaml
+    inputs:
+      data: inputs.data
+      fnames: inputs.fnames
+    configs:
+      int_weight: configs.int_weight
+      rej_high: configs.rej_high
+      rej_low: configs.rej_low
+      max_iter: configs.max_iter
+      buffer_mode: configs.buffer_mode
+    outputs:
+      result: { type: image }
+      statistics: { type: image }
+
+  load_mask:
+    op: LoadMaskImageOp
+    configs:
+      path: configs.mask
+    outputs:
+      result: { type: image }
+
+  mne:
+    op: MaxNoiseEqualizationOp
+    configs:
+      max_img: trailstacker.result
+      statistics: sigma_clip.statistics
+      mask: load_mask.result
+      minus_only: configs.minus_only
+    outputs:
+      result: { type: image }
+
+# ── 全局输出 ──
+outputs:
+  result: mne.result

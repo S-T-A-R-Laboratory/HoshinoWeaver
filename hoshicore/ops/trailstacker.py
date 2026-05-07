@@ -89,14 +89,16 @@ class TrailStackerOp(BaseOp):
 
         has_weight = self.inputs['weight'].active
 
-        # 预处理 spatial mask: 确保 2D bool
+        # 预处理 spatial mask: 确保 2D bool；shape 对齐在第一帧到来后执行
         raw_mask = configs.get('mask')
         spatial_mask = None
+        mask_needs_resize = False
         if raw_mask is not None:
             spatial_mask = raw_mask
             if spatial_mask.ndim == 3:
                 spatial_mask = spatial_mask[..., 0]
             spatial_mask = spatial_mask > 0.5
+            mask_needs_resize = True  # 延迟到第一帧后按实际 shape resize
 
         stacked_num = 0
         failed_num = 0
@@ -131,6 +133,22 @@ class TrailStackerOp(BaseOp):
                         self.tracker.update(self.name)
                     continue
 
+                # mask shape 对齐：第一帧到来后按实际图像尺寸 resize
+                if mask_needs_resize:
+                    h, w = cur_img.shape[:2]
+                    if spatial_mask.shape != (h, w):
+                        spatial_mask = cv2.resize(
+                            spatial_mask.astype(np.float32), (w, h),
+                            interpolation=cv2.INTER_NEAREST) > 0.5
+                    mask_needs_resize = False
+
+                # empty region auto mask
+                if spatial_mask is not None:
+                    # 找到cur_img中三个通道全为0的像素点，生成empty_mask
+                    if cur_img.ndim == 3 and cur_img.shape[2] >= 3:
+                        empty_mask = np.all(cur_img[..., :3] == 0, axis=-1)
+                        spatial_mask = spatial_mask & (~empty_mask)
+                
                 try:
                     await self._run_cpu(
                         merger.merge, cur_img, weight,
