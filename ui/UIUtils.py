@@ -16,7 +16,7 @@ from ui import resource
 
 # 导入Core接口
 from hoshicore.engine.wiring import run_from_yaml
-from hoshicore.component.imgfio import scan_all_exif
+from hoshicore.component.image_io import scan_all_exif
 
 class SlotHandler(QMainWindow):
     # 文件检查约束级别：normal-异常情况仅提示；strong-异常情况不允许叠加

@@ -4,7 +4,7 @@ from typing import Any, Awaitable, Mapping, Optional
 
 from loguru import logger
 
-from ..component.exifdata import CommonExifTags, ExifData, read_exif_data
+from ..component.exif import CommonExifTags, ExifData, read_exif_data
 from ..component.queue import StreamExhausted
 from ..engine.registry import register_op
 from .base import BaseOp, ParallelBaseOp

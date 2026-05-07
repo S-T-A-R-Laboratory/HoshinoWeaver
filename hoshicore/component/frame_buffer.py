@@ -18,7 +18,7 @@ from typing import Optional, Union
 import numpy as np
 from loguru import logger
 
-from .imgfio import load_img
+from .image_io import load_img
 
 
 @dataclass
