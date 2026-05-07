@@ -64,6 +64,32 @@ def fgp_weighted_mean_merge(
 
 
 @njit(parallel=True, cache=True)
+def fgp_masked_mean_merge(
+    img,
+    mask,
+    sum_mu,
+    square_sum,
+    n,
+):
+    """只在 mask[i,j]=True 的位置累加到 FGP 累加器。
+
+    mask: 2D bool array (H, W)，所有通道共享同一 mask。
+    """
+    H = img.shape[0]
+    W = img.shape[1]
+    C = img.shape[2]
+    for i in prange(H):
+        for j in range(W):
+            if not mask[i, j]:
+                continue
+            for c in range(C):
+                v = sum_mu.dtype.type(img[i, j, c])
+                sum_mu[i, j, c] += v
+                square_sum[i, j, c] += square_sum.dtype.type(v) * square_sum.dtype.type(v)
+                n[i, j, c] += 1
+
+
+@njit(parallel=True, cache=True)
 def sigma_clip_fused_merge(
     img,
     rej_high_img,

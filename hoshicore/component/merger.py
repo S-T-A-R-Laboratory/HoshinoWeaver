@@ -11,7 +11,8 @@ from numpy.typing import NDArray
 from .data_container import (DTYPE_LEVEL, DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP,
                              _SCALE_BASE, FloatImage, FastGaussianParam,
                              HuberMeanParam)
-from .numba_kernels import (fgp_mean_merge, fgp_weighted_mean_merge,
+from .numba_kernels import (fgp_masked_mean_merge, fgp_mean_merge,
+                            fgp_weighted_mean_merge,
                             sigma_clip_fused_merge)
 
 
@@ -156,7 +157,8 @@ class MeanMerger(BaseMerger):
 
     def merge(self,
               new_img: np.ndarray,
-              weight: Optional[Union[float, NDArray]] = None):
+              weight: Optional[Union[float, NDArray]] = None,
+              spatial_mask: Optional[np.ndarray] = None):
         raw = new_img
         if self._source_dtype is None:
             self._source_dtype = raw.dtype
@@ -171,7 +173,13 @@ class MeanMerger(BaseMerger):
             self._square_sum = np.zeros(raw.shape, dtype=sq_dt)
             self._n = np.zeros(raw.shape, dtype=n_dt)
 
-        if weight is not None and isinstance(weight, (int, np.integer)):
+        if spatial_mask is not None:
+            if weight is not None:
+                raise NotImplementedError(
+                    "spatial_mask + weight combination is not yet supported")
+            fgp_masked_mean_merge(raw, spatial_mask, self._sum_mu,
+                                  self._square_sum, self._n)
+        elif weight is not None and isinstance(weight, (int, np.integer)):
             fgp_weighted_mean_merge(raw, weight, self._sum_mu,
                                     self._square_sum, self._n)
         else:

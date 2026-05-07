@@ -264,12 +264,14 @@ class FastGaussianParam(ShmTransportable):
 
     @property
     def mu(self) -> np.ndarray:
-        return np.round(self.sum_mu / self.n)
+        safe_n = np.where(self.n > 0, self.n, 1)
+        return np.round(self.sum_mu / safe_n)
 
     @property
     def var(self) -> np.ndarray:
         sum_mu = np.array(self.sum_mu, dtype=self.square_sum.dtype)
-        return (self.square_sum - np.square(sum_mu) / self.n) / (self.n -
+        safe_n = np.where(self.n > self.ddof, self.n, self.ddof + 1)
+        return (self.square_sum - np.square(sum_mu) / safe_n) / (safe_n -
                                                                  self.ddof)
 
     def upscale(self):
