@@ -35,7 +35,12 @@ class TrailStackerOp(BaseOp):
         "int_weight": {
             "type": "bool",
             "default": False
-        }
+        },
+        "mask": {
+            "type": "image",
+            "default": None,
+            "required": False
+        },
     }
     OUTPUTS = {
         "result": {
@@ -84,6 +89,15 @@ class TrailStackerOp(BaseOp):
 
         has_weight = self.inputs['weight'].active
 
+        # 预处理 spatial mask: 确保 2D bool
+        raw_mask = configs.get('mask')
+        spatial_mask = None
+        if raw_mask is not None:
+            spatial_mask = raw_mask
+            if spatial_mask.ndim == 3:
+                spatial_mask = spatial_mask[..., 0]
+            spatial_mask = spatial_mask > 0.5
+
         stacked_num = 0
         failed_num = 0
         err_msg_collector = []
@@ -118,7 +132,9 @@ class TrailStackerOp(BaseOp):
                     continue
 
                 try:
-                    await self._run_cpu(merger.merge, cur_img, weight)
+                    await self._run_cpu(
+                        merger.merge, cur_img, weight,
+                        spatial_mask=spatial_mask)
                 except AssertionError as e:
                     err_msg_collector.append(
                         f"Shape of {cur_filename} does not match.")

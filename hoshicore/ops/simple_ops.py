@@ -338,3 +338,51 @@ class NoneOutputOp(BaseOp):
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         await self._broadcast_outputs({"result": None})
+
+
+# ── Mask 操作 ──
+
+
+@register_op()
+class MaskInvertOp(BaseOp):
+    """反转 mask：output = 1 - input。"""
+
+    CONFIGS: dict[str, Any] = {
+        "mask": {"type": "image", "required": True},
+    }
+    OUTPUTS: dict[str, Any] = {
+        "result": {"type": "image"},
+    }
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        mask = configs['mask']
+        result = 1.0 - mask
+        await self._broadcast_outputs({"result": result})
+
+
+# ── 图像算术 ──
+
+
+@register_op()
+class ImageAddOp(BaseOp):
+    """两路图像逐像素相加。用于互补 mask 分离叠加后的合成。"""
+
+    CONFIGS: dict[str, Any] = {
+        "image_a": {"type": "image", "required": True},
+        "image_b": {"type": "image", "required": True},
+    }
+    OUTPUTS: dict[str, Any] = {
+        "result": {"type": "image"},
+    }
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        a = configs['image_a']
+        b = configs['image_b']
+        a_arr = a.data if isinstance(a, FloatImage) else a
+        b_arr = b.data if isinstance(b, FloatImage) else b
+        result_arr = np.add(a_arr, b_arr)
+        if isinstance(a, FloatImage):
+            result = FloatImage(data=result_arr, dtype=a.dtype)
+        else:
+            result = result_arr
+        await self._broadcast_outputs({"result": result})

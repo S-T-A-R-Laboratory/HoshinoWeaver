@@ -18,7 +18,6 @@ class BaseOp(object):
     OUTPUTS: dict[str, Any] = {}
     MAX_SIZE: int = 1
     VARIABLE_OUTPUT: bool = False  # True 时标记为变长输出（Filter 类）
-    PROGRESS_DESC: Optional[str] = None  # 非 None 时 execute() 自动创建进度条
     DATA_PARALLEL: bool = False   # True 时允许被 SegmentAdapter 纳入数据并行段
     DECOMPOSABLE: bool = False    # True 时支持分布式归约（merge_partial）
 

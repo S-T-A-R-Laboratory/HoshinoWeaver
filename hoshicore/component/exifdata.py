@@ -2,12 +2,20 @@
 EXIF 元数据读写
 """
 from dataclasses import dataclass
+from typing import Optional
 
 import pyexiv2
 from loguru import logger
 from numpy.typing import NDArray
 from .utils import SUPPORT_COLOR_SPACE, SOFTWARE_NAME, VERSION
 
+# FocalPlaneResolutionUnit: EXIF 标准定义
+_RESOLUTION_UNIT_FACTORS = {
+    "2": 25.4,    # inch → mm
+    "3": 10.0,    # cm → mm
+    "4": 1.0,     # mm
+    "5": 0.001,   # μm → mm
+}
 
 # 常用属性的简称和全称映射，方便编辑属性
 class CommonExifTags:
@@ -127,3 +135,20 @@ def get_color_profile(color_bstring):
     return NotImplementedError(
         "Unsupported color space. For now only these color spaces are supported: %s"
         % SUPPORT_COLOR_SPACE)
+
+
+def _parse_rational(value: str) -> Optional[float]:
+    """解析 EXIF 有理数字符串 (如 "50/1", "4.5") 为 float。"""
+    if value is None:
+        return None
+    value = value.strip()
+    if "/" in value:
+        parts = value.split("/")
+        try:
+            return float(parts[0]) / float(parts[1])
+        except (ValueError, ZeroDivisionError):
+            return None
+    try:
+        return float(value)
+    except ValueError:
+        return None

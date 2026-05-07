@@ -1,65 +1,39 @@
 """
 对齐算子：星点对齐等帧间配准操作。
 
-StarAlignmentOp 实现基于 norma 的 2D 单应性路径：
-  detect_star_points → 近似单位向量 → match_star_pairs → warpPerspective
+StarAlignmentOp 支持两条对齐路径：
+  1. 2D 单应性（homography）：FlatCameraModel + warpPerspective（无需 EXIF）
+  2. 相机模型优化（camera_model）：Intrinsics + optimize_alignment + remap
 
+method="auto" 时，根据 EXIF 是否能构建完整 Intrinsics 自动选择。
 对齐失败的帧被丢弃，输出为变长序列（sentinel 驱动）。
 """
-from typing import Any
+from typing import Any, Optional
 
-import cv2
 import numpy as np
 from loguru import logger
 
-from ..component.norma.alignment import match_star_pairs
-from ..component.norma.cache import GeometryView, StarDetectionCache
+from ..component.norma.frame_align import (AlignmentError,
+                                           align_frame_camera_model,
+                                           align_frame_homography,
+                                           make_geometry, try_build_camera)
+from ..component.norma.types import CameraModel
+from ..component.norma.cache import GeometryView
 from ..component.queue import StreamExhausted
 from ..engine.registry import register_op
 from ..component.data_container import FloatImage
 from .base import BaseOp
 
 
-def _to_gray_f64(arr: np.ndarray) -> np.ndarray:
-    """Convert image array to grayscale float64 in [0, 1] range.
-
-    Handles any input dtype: integer arrays are divided by their dtype max,
-    float arrays with values > 1 are divided by their actual max.
-    """
-    if arr.ndim == 3:
-        gray = cv2.cvtColor(arr.astype(np.float32), cv2.COLOR_RGB2GRAY).astype(np.float64)
-    else:
-        gray = arr.astype(np.float64)
-
-    if np.issubdtype(arr.dtype, np.integer):
-        gray /= np.iinfo(arr.dtype).max
-    else:
-        max_val = gray.max()
-        if max_val > 1.0:
-            gray /= max_val
-
-    return gray
-
-
-def _make_geometry(arr: np.ndarray) -> GeometryView:
-    """Build a flat-projection GeometryView from a raw image array."""
-    gray = _to_gray_f64(arr)
-    cache = StarDetectionCache(gray)
-    return GeometryView.from_flat_projection(cache)
-
-
-class AlignmentError(Exception):
-    """对齐失败异常。"""
-    pass
-
-
 @register_op()
 class StarAlignmentOp(BaseOp):
     """星点对齐：将序列帧对齐到参考帧。
 
-    参考帧可通过 reference config 传入（来自上游或用户指定）。
-    若 reference 未连接（为 None），则自动使用第一帧作为参考帧。
+    支持两条路径：
+    - homography: 2D 单应性（FlatCameraModel），无需相机信息
+    - camera_model: 联合优化旋转+焦距+畸变，需要 EXIF 提供内参
 
+    method="auto" 时根据 EXIF 可用性自动选择。
     对齐失败的帧被丢弃（不输出），因此输出为变长序列。
     """
 
@@ -67,28 +41,39 @@ class StarAlignmentOp(BaseOp):
     VARIABLE_OUTPUT = True
     INPUTS: dict[str, Any] = {
         "data": {"type": "sequence"},
+        "exifs": {"type": "sequence", "required": False},
     }
     CONFIGS: dict[str, Any] = {
-        "reference": {"type": "image", "default": None},
-        "method":    {"type": "str",   "default": "auto"},
+        "reference":   {"type": "image", "default": None},
+        "method":      {"type": "str",   "default": "auto"},
+        "same_camera": {"type": "bool",  "default": True},
+        "distortion":  {"type": "list",  "default": None},
     }
     OUTPUTS: dict[str, Any] = {
         "result": {"type": "sequence"},
+        "aligned_exifs": {"type": "sequence"},
     }
 
     def _infer_output_length(self, input_lengths):
-        return None  # sentinel 驱动
+        return None
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         reference = configs.get('reference')
-        ref_geo: GeometryView | None = None
-        ref_arr: np.ndarray | None = None
+        method = configs.get('method', 'auto')
+        same_camera = configs.get('same_camera', True)
+        init_distortion = configs.get('distortion')
+
+        exifs_active = self.inputs['exifs'].active
+
+        ref_geo: Optional[GeometryView] = None
+        ref_arr: Optional[np.ndarray] = None
+        ref_camera: Optional[CameraModel] = None
         aligned_count = 0
         skipped_count = 0
 
         if reference is not None:
             ref_arr = reference.data if isinstance(reference, FloatImage) else reference
-            ref_geo = await self._run_cpu(_make_geometry, ref_arr)
+            ref_geo = await self._run_cpu(make_geometry, ref_arr)
 
         for i in self._input_range():
             data = self._async_convert_inputs()
@@ -97,23 +82,54 @@ class StarAlignmentOp(BaseOp):
             except StreamExhausted:
                 break
 
+            # 消费 EXIF 并拆包为 dict（Op 层负责 ExifData → dict 转换）
+            exif_tags = None
+            if exifs_active:
+                try:
+                    exif_obj = await data['exifs']
+                    exif_tags = exif_obj.exif if exif_obj is not None else None
+                except StreamExhausted:
+                    pass
+
             frame_arr = frame.data if isinstance(frame, FloatImage) else frame
 
-            # 未指定参考帧时，使用第一帧
+            # 首帧：设定参考 + 确定路径
             if ref_geo is None:
                 ref_arr = frame_arr
-                ref_geo = await self._run_cpu(_make_geometry, ref_arr)
-                await self._broadcast_outputs({"result": frame})
+                ref_geo = await self._run_cpu(make_geometry, ref_arr)
+                ref_camera = try_build_camera(
+                    exif_tags, ref_arr.shape, method, init_distortion)
+                if ref_camera:
+                    logger.info(
+                        f"{self.name}: camera model path enabled "
+                        f"(focal={ref_camera.intrinsics.focal_length_mm:.1f}mm)")
+                else:
+                    logger.info(f"{self.name}: using homography path")
+                await self._broadcast_outputs(
+                    {"result": frame, "aligned_exifs": exif_tags})
                 aligned_count += 1
                 continue
 
+            # 后续帧：对齐
             try:
-                aligned_arr = await self._run_cpu(
-                    self._align, frame_arr, ref_geo, ref_arr)
-                aligned = FloatImage(data=aligned_arr, dtype=frame.dtype) if isinstance(frame, FloatImage) else aligned_arr
-                await self._broadcast_outputs({"result": aligned})
+                src_camera = try_build_camera(
+                    exif_tags, frame_arr.shape, method, init_distortion)
+
+                if ref_camera and src_camera and method != "homography":
+                    aligned_arr = await self._run_cpu(
+                        align_frame_camera_model,
+                        frame_arr, ref_geo, ref_arr,
+                        ref_camera, src_camera, same_camera)
+                else:
+                    aligned_arr = await self._run_cpu(
+                        align_frame_homography, frame_arr, ref_geo, ref_arr)
+
+                aligned = (FloatImage(data=aligned_arr, dtype=frame.dtype)
+                           if isinstance(frame, FloatImage) else aligned_arr)
+                await self._broadcast_outputs(
+                    {"result": aligned, "aligned_exifs": exif_tags})
                 aligned_count += 1
-            except (AlignmentError, NotImplementedError) as e:
+            except AlignmentError as e:
                 skipped_count += 1
                 logger.warning(
                     f"{self.name}: frame {i} alignment failed ({e}), skipping")
@@ -121,31 +137,3 @@ class StarAlignmentOp(BaseOp):
         logger.info(
             f"{self.name}: aligned {aligned_count} frames, "
             f"skipped {skipped_count}")
-
-    def _align(self, frame: np.ndarray, ref_geo: GeometryView,
-               reference: np.ndarray) -> np.ndarray:
-        """将 frame 对齐到 reference（2D 单应性路径）。
-
-        ref_geo 为预计算的参考帧 GeometryView，避免每帧重复检测星点。
-        """
-        src_geo = _make_geometry(frame)
-
-        if len(ref_geo.positions) < 20 or len(src_geo.positions) < 20:
-            raise AlignmentError(
-                f"Insufficient stars: ref={len(ref_geo.positions)}, "
-                f"src={len(src_geo.positions)} (need ≥20)")
-
-        try:
-            match = match_star_pairs(
-                ref_geo.unit_vectors, src_geo.unit_vectors,
-                ref_geo.volumes, src_geo.volumes,
-                ref_geo.positions, src_geo.positions,
-            )
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            raise AlignmentError(f"Star matching failed: {e}") from e
-
-        h, w = reference.shape[:2]
-        H = np.linalg.inv(match.init_homography)
-        return cv2.warpPerspective(frame, H, (w, h))

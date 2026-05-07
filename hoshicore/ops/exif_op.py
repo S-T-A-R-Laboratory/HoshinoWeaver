@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Mapping, Optional
 from loguru import logger
 
 from ..component.exifdata import CommonExifTags, ExifData, read_exif_data
+from ..component.queue import StreamExhausted
 from ..engine.registry import register_op
 from .base import BaseOp, ParallelBaseOp
 
@@ -37,15 +38,15 @@ class ExifReduceOp(BaseOp):
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         merge_method = configs["merge_method"]
 
-        tot_num = self.length
-        assert tot_num is not None, "TrailStackerOp requires sequence length information."
-
         if merge_method == "sum":
             time_cumsum = fractions.Fraction(0)
             base_exif = None
-            for i in range(tot_num):
+            for i in self._input_range():
                 input_data = self._async_convert_inputs()
-                cur_exif: ExifData = await input_data['exifs']
+                try:
+                    cur_exif: ExifData = await input_data['exifs']
+                except StreamExhausted:
+                    break
                 if cur_exif is None:
                     continue
                 if base_exif is None:
