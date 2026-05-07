@@ -9,6 +9,7 @@ inputs:
 # ── 全局配置 ──
 configs:
   int_weight: { type: bool, default: true }
+  mask: { type: image, required: false, default: null }  # 可选空间掩码，传入 MeanStackerOp
   huber_c: { type: float, default: 1.345 }
   buffer_mode: { type: str, default: "auto" }  # auto/disk/replay
 
@@ -25,6 +26,7 @@ nodes:
       data: inputs.data
     configs:
       int_weight: configs.int_weight
+      mask: configs.mask
     outputs:
       result: { type: image }
       statistics: { type: image }

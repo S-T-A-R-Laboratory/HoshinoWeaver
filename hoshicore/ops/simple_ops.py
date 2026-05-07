@@ -345,10 +345,10 @@ class NoneOutputOp(BaseOp):
 
 @register_op()
 class MaskInvertOp(BaseOp):
-    """反转 mask：output = 1 - input。"""
+    """反转 mask：output = 1 - input。input 为 None 时输出 np.zeros((1,1))（全0哨兵，下游负责 resize）。"""
 
     CONFIGS: dict[str, Any] = {
-        "mask": {"type": "image", "required": True},
+        "mask": {"type": "image", "required": False, "default": None},
     }
     OUTPUTS: dict[str, Any] = {
         "result": {"type": "image"},
@@ -356,7 +356,10 @@ class MaskInvertOp(BaseOp):
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         mask = configs['mask']
-        result = 1.0 - mask
+        if mask is None:
+            result = np.zeros((1, 1), dtype=np.float32)
+        else:
+            result = 1.0 - mask
         await self._broadcast_outputs({"result": result})
 
 

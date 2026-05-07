@@ -1,9 +1,24 @@
-description: "天地分离对齐均值叠加"
-version: "1"
+description: "天地分离对齐叠加（天空/地面算法独立可选）"
+version: "2"
 
 # ── 全局输入 ──
 inputs:
   fnames: { type: sequence, required: true }
+
+# ── 路由定义 ──
+# 天空和地面使用独立路由，允许选择不同的叠加算法
+routes:
+  sky_stacker:
+    options:
+      mean:       null   # fixed-op，op 由节点 op 字段决定
+      sigma_clip: null
+      huber_mean: null
+    default: sigma_clip
+  ground_stacker:
+    options:
+      mean:       null
+      huber_mean: null
+    default: mean
 
 # ── 全局配置 ──
 configs:
@@ -16,15 +31,29 @@ configs:
   align_method:     { type: str,   default: "auto" }
   same_camera:      { type: bool,  default: true }
   distortion:       { type: list,  default: null }
-  mask:             { type: str,   required: true }
+  mask:             { type: str,   required: false, default: null }
+
+# ── 路由专属配置 ──
+route_configs:
+  sky_stacker:
+    sigma_clip:
+      rej_high:             { type: float, default: 3.0 }
+      rej_low:              { type: float, default: 3.0 }
+      max_iter:             { type: int,   default: 5 }
+      early_converge_ratio: { type: float, default: 0.99 }
+    huber_mean:
+      huber_c: { type: float, default: 1.345 }
+  ground_stacker:
+    huber_mean:
+      huber_c: { type: float, default: 1.345 }
 
 # ── 节点 ──
 #
-#  inputs.fnames ──┬──► data_loader ──┬──► star_aligner ──► sky_stacker ──────┐
-#                  │                  │                                        │
-#                  │                  └──► ground_stacker ─────────────────────┼──► image_add ──► saver
-#                  │                                                           │
-#                  ├──► exif_loader ──► star_aligner ──► exif_reducer ─────────┘
+#  inputs.fnames ──┬──► data_loader ──┬──► star_aligner ──► sky_stacker ────┐
+#                  │                  │                                      │
+#                  │                  └──► ground_stacker ───────────────────┼──► image_add ──► image_saver
+#                  │                                                         │
+#                  ├──► exif_loader ──► star_aligner ──► exif_reducer ───────┘
 #                  │
 #                  └──► load_mask ──┬──► sky_stacker
 #                                   └──► mask_invert ──► ground_stacker
@@ -75,26 +104,44 @@ nodes:
       aligned_exifs: { type: sequence }
 
   sky_stacker:
-    op: MeanStackerOp
+    op: stacker.meta.yaml      # fixed-op；route_key 选择 route_configs 分支
+    route_key: sky_stacker
+    routes:
+      stacker: routes.sky_stacker   # 透传父图选择到子图 stacker route
     inputs:
       data: star_aligner.result
-    configs:
-      int_weight: configs.int_weight
-      mask: load_mask.result
+    route_configs:
+      mean:
+        int_weight: configs.int_weight
+        mask: load_mask.result
+      sigma_clip:
+        int_weight: configs.int_weight
+        mask: load_mask.result
+        # rej_high, rej_low, max_iter, early_converge_ratio — auto-wired
+      huber_mean:
+        int_weight: configs.int_weight
+        mask: load_mask.result
+        # huber_c — auto-wired
     outputs:
       result: { type: image }
-      statistics: { type: image }
 
   ground_stacker:
-    op: MeanStackerOp
+    op: stacker.meta.yaml      # fixed-op；route_key 选择 route_configs 分支
+    route_key: ground_stacker
+    routes:
+      stacker: routes.ground_stacker   # 透传父图选择到子图 stacker route
     inputs:
       data: data_loader.result
-    configs:
-      int_weight: configs.int_weight
-      mask: mask_invert.result
+    route_configs:
+      mean:
+        int_weight: configs.int_weight
+        mask: mask_invert.result
+      huber_mean:
+        int_weight: configs.int_weight
+        mask: mask_invert.result
+        # huber_c — auto-wired
     outputs:
       result: { type: image }
-      statistics: { type: image }
 
   image_add:
     op: ImageAddOp

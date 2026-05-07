@@ -167,7 +167,6 @@ def fine_tune_transform(
                                 pts2[init_pair_idx[tmp_ind, 1]],
                                 method=cv2.RANSAC,
                                 ransacReprojThreshold=5)
-        print(pts1.shape, np.array([[p] for p in pts1], dtype="float32").shape, tf[0])
         pts12 = cv2.perspectiveTransform(
             np.array([[p] for p in pts1], dtype="float32"), tf[0])[:, 0, :]
         dist_mat = spd.cdist(pts12, pts2)

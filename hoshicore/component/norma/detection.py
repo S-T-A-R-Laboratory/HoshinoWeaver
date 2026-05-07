@@ -94,7 +94,7 @@ def detect_star_points(
         mask = np.ones(tmp_mask.shape, dtype="bool")
 
     while True:
-        img_rec = _bandpass_dog(img_blr, resize_factor=resize_factor) * mask
+        img_rec = _wavelet_dec_rec(img_blr, resize_factor=resize_factor) * mask
         bw = ((img_rec > np.percentile(img_rec[mask], 99.5)) * mask).astype(
             np.uint8) * 255
         bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
