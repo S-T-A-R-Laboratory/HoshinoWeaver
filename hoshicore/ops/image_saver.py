@@ -10,7 +10,7 @@ from loguru import logger
 
 from hoshicore.component.data_container import FloatImage, rescale_array
 
-from ..component.imgfio import save_img
+from ..component.image_io import save_img
 from ..engine.registry import register_op
 from .base import BaseOp, ParallelBaseOp
 

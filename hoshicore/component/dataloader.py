@@ -7,7 +7,7 @@ import numpy as np
 from loguru import logger
 from numpy.typing import NDArray
 
-from .imgfio import load_img
+from .image_io import load_img
 from .queue import RichContextQueue
 from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, is_support_format
 

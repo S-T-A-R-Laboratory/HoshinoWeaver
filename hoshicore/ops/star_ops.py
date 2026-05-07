@@ -4,9 +4,9 @@ import numpy as np
 from loguru import logger
 
 from ..component.data_container import FloatImage
-from ..component.stardetect import (detect_starmask_by_dog,
+from ..component.star_detect import (detect_starmask_by_dog,
                                     detect_starmask_by_threshold)
-from ..component.starshrink import (apply_mask, apply_mask_guided,
+from ..component.star_shrink import (apply_mask, apply_mask_guided,
                                     deringing, morph_shrink)
 from ..engine.registry import register_op
 from .base import ParallelBaseOp

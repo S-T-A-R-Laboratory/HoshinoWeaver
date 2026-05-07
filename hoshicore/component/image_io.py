@@ -1,7 +1,7 @@
 """
-imgfio contains functions and classes about image file i/o.
+image_io contains functions and classes about image file i/o.
 
-imgfio包含了与图像IO相关的函数和类。
+image_io包含了与图像IO相关的函数和类。
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import rawpy
 import tifffile
 from loguru import logger
 
-from .exifdata import ExifData, encode_exif_data
+from .exif import ExifData, encode_exif_data
 from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SAME_SUFFIX_MAPPING,
                     is_support_format, time_cost_warpper)
 
