@@ -18,6 +18,9 @@ routes:
 configs:
   fin:              { type: float, default: 0 }
   fout:             { type: float, default: 0 }
+  enable_star_shrink:     { type: bool, default: true }
+  enable_satellite_clean: { type: bool, default: false }
+  sat_window_size:        { type: int,  default: 2 }
   int_weight:       { type: bool,  default: true }
   exif_reduce_type: { type: str,   default: "sum" }
   loader_type:      { type: str,   default: "img_file_list" }
@@ -60,6 +63,24 @@ nodes:
     outputs:
       result: { type: sequence }
 
+  star_shrink:
+    op: StarShrinkOp
+    enable: configs.enable_star_shrink
+    inputs:
+      data: data_loader.result
+    outputs:
+      result: { type: sequence }
+
+  satellite_clean:
+    op: satellite_clean.yaml
+    enable: configs.enable_satellite_clean
+    inputs:
+      data: star_shrink.result
+    configs:
+      window_size: configs.sat_window_size
+    outputs:
+      result: { type: sequence }
+
   weight_generator:
     op: WeightGeneratorOp
     inputs:
@@ -73,7 +94,7 @@ nodes:
   core_algo:
     route_key: mode
     inputs:
-      data: data_loader.result
+      data: satellite_clean.result
       weight: weight_generator.result
       fnames: inputs.fnames
     route_configs:
