@@ -49,6 +49,92 @@ INACTIVE_MARKER = "__inactive__"
 _OMIT_SENTINEL = object()
 
 
+def _collapse_route_configs(spec: dict[str, Any]) -> None:
+    """将 meta_resolve 产生的嵌套 route_configs 坍缩为 flat config key。
+
+    meta_resolve 将 route_configs 合并到 configs 嵌套命名空间：
+        configs["stacker"]["sigma_clip"]["rej_high"] = {type: float, default: 3.0}
+    内部节点引用为 configs.stacker.sigma_clip.rej_high。
+
+    当子图作为 SubDAG 被展开时，父图以 flat key（如 "rej_high"）提供这些参数。
+    本函数将嵌套结构提升回 flat key，并重写内部节点引用，
+    使子图的 config 接口与父图提供的 key 对齐。
+
+    仅在 SubDAG 展开上下文中调用（修改 spec 副本，不影响独立执行）。
+    """
+    configs = spec.get("configs")
+    if not isinstance(configs, dict):
+        return
+
+    # 收集嵌套结构（无 type/default 的 dict entry = meta_resolve 生成的命名空间）
+    nested_keys: list[str] = []
+    promotions: dict[str, tuple[str, dict]] = {}  # flat_name → (dotted_path, leaf_spec)
+
+    for key, value in list(configs.items()):
+        if not isinstance(value, dict):
+            continue
+        if "type" in value or "default" in value:
+            continue
+        nested_keys.append(key)
+        _collect_leaves(value, key, promotions, configs)
+
+    if not promotions:
+        return
+
+    # 移除嵌套结构，添加 flat key
+    for key in nested_keys:
+        del configs[key]
+    for flat_name, (_dotted_path, leaf_spec) in promotions.items():
+        configs[flat_name] = leaf_spec
+
+    # 构建重写映射：configs.stacker.sigma_clip.rej_high → configs.rej_high
+    rewrite_map: dict[str, str] = {
+        f"configs.{dotted_path}": f"configs.{flat_name}"
+        for flat_name, (dotted_path, _) in promotions.items()
+    }
+
+    # 重写节点内部引用
+    nodes = spec.get("nodes")
+    if not isinstance(nodes, dict):
+        return
+    for node_spec in nodes.values():
+        if not isinstance(node_spec, dict):
+            continue
+        for section in ("inputs", "configs"):
+            sec = node_spec.get(section)
+            if not isinstance(sec, dict):
+                continue
+            for arg_key, binding in list(sec.items()):
+                if isinstance(binding, str) and binding in rewrite_map:
+                    sec[arg_key] = rewrite_map[binding]
+                elif isinstance(binding, dict) and binding.get("src") in rewrite_map:
+                    binding["src"] = rewrite_map[binding["src"]]
+
+
+def _collect_leaves(
+    nested: dict[str, Any],
+    prefix: str,
+    promotions: dict[str, tuple[str, dict]],
+    top_configs: dict[str, Any],
+) -> None:
+    """递归收集嵌套 dict 的叶节点（含 type/default 的 spec）。"""
+    for key, value in nested.items():
+        dotted = f"{prefix}.{key}"
+        if isinstance(value, dict) and "type" not in value and "default" not in value:
+            _collect_leaves(value, dotted, promotions, top_configs)
+        else:
+            flat_name = key
+            if flat_name in top_configs:
+                raise ValueError(
+                    f"Route config '{dotted}' collides with existing config "
+                    f"'{flat_name}' when collapsing for SubDAG expansion.")
+            if flat_name in promotions:
+                raise ValueError(
+                    f"Route config '{dotted}' collides with another promoted "
+                    f"config '{promotions[flat_name][0]}' (both map to '{flat_name}').")
+            promotions[flat_name] = (dotted, value)
+
+
 def flatten_sub_dags(
     spec: dict[str, Any],
     dag_search_paths: Optional[list[Path]] = None,
@@ -149,6 +235,7 @@ def _expand_one_sub_dag(
             parent_node_spec, parent_spec)
         from .meta import meta_resolve
         sub_spec = meta_resolve(sub_spec, parent_route_choices)
+        _collapse_route_configs(sub_spec)
         logger.debug(
             f"[flatten] meta_resolve applied to sub-DAG '{parent_name}' "
             f"with choices: {parent_route_choices}")

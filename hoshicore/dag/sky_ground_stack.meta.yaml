@@ -17,6 +17,7 @@ routes:
   ground_stacker:
     options:
       mean:       null
+      sigma_clip: null
       huber_mean: null
     default: mean
 
@@ -44,6 +45,11 @@ route_configs:
     huber_mean:
       huber_c: { type: float, default: 1.345 }
   ground_stacker:
+    sigma_clip:
+      rej_high:             { type: float, default: 3.0 }
+      rej_low:              { type: float, default: 3.0 }
+      max_iter:             { type: int,   default: 5 }
+      early_converge_ratio: { type: float, default: 0.99 }
     huber_mean:
       huber_c: { type: float, default: 1.345 }
 
