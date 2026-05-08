@@ -50,7 +50,7 @@ nodes:
         int_weight: configs.int_weight
         mask: configs.mask
         # rej_high, rej_low, max_iter, early_converge_ratio — auto-wired
-      median:
+      median: {}
         # chunk_rows — auto-wired；median 不使用 int_weight / mask
       huber_mean:
         int_weight: configs.int_weight

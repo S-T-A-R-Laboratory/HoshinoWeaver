@@ -87,8 +87,6 @@ class DiskBufferWriterOp(BaseOp):
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         tot_num = self.length
-        assert tot_num is not None, \
-            "DiskBufferWriterOp requires sequence length information."
 
         has_weight = self.inputs['weight'].active
         has_fnames = self.inputs['fnames'].active
@@ -112,11 +110,12 @@ class DiskBufferWriterOp(BaseOp):
         stacked_num = 0
         failed_num = 0
 
-        self.tracker.create_bar(self.name,
+        if tot_num is not None:
+            self.tracker.create_bar(self.name,
                                 tot_num,
                                 desc=f"{self.name} [{mode_label}]")
         try:
-            for i in range(tot_num):
+            for i in self._input_range():
                 cur_filename = f"the {i + 1}-th frame"
                 try:
                     upper = self._async_convert_inputs()
@@ -125,7 +124,7 @@ class DiskBufferWriterOp(BaseOp):
                     weight = (await upper['weight']) if has_weight else None
                 except StreamExhausted:
                     logger.warning(
-                        f"{self.name}: upstream ended at {i}/{tot_num}")
+                        f"{self.name}: upstream ended at {i}/{tot_num or '?'}")
                     break
 
                 if cur_img is None:
@@ -148,7 +147,7 @@ class DiskBufferWriterOp(BaseOp):
                 return
 
             logger.info(
-                f"{self.name}: buffered {stacked_num}/{tot_num} frames "
+                f"{self.name}: buffered {stacked_num}/{tot_num or '?'} frames "
                 f"({failed_num} fail(s)), mode={mode_label}.")
 
             # 按下游消费者数量设置引用计数
@@ -192,6 +191,11 @@ class SigmaClipIteratorOp(BaseOp):
             "type": "image",
             "required": True,
         },
+        "mask": {
+            "type": "image",
+            "required": False,
+            "default": None,
+        },
         "rej_high": {
             "type": "float",
             "default": 3.0,
@@ -226,6 +230,15 @@ class SigmaClipIteratorOp(BaseOp):
         max_iter: int = configs['max_iter']
         early_converge_ratio: float = configs['early_converge_ratio']
 
+        # 静态 mask：与 MeanStackerOp 保持一致，确保重放时排除相同区域
+        raw_mask = configs.get('mask')
+        static_mask = None
+        if raw_mask is not None:
+            static_mask = raw_mask
+            if static_mask.ndim == 3:
+                static_mask = static_mask[..., 0]
+            static_mask = static_mask > 0.5
+
         try:
             fgp_total.inplace_calc = False
             ref_fgp = fgp_total
@@ -245,7 +258,20 @@ class SigmaClipIteratorOp(BaseOp):
 
                 for idx in range(len(frame_buffer)):
                     raw, weight = frame_buffer[idx]
-                    await self._run_cpu(clip_merger.merge, raw, weight)
+                    # 合成 spatial_mask：静态 mask + 当前帧 empty_mask
+                    spatial_mask = None
+                    if static_mask is not None:
+                        if raw.ndim == 3 and raw.shape[2] >= 3:
+                            empty_mask = np.all(raw[..., :3] == 0, axis=-1)
+                            spatial_mask = static_mask & (~empty_mask)
+                        else:
+                            spatial_mask = static_mask
+                    elif raw.ndim == 3 and raw.shape[2] >= 3:
+                        empty_mask = np.all(raw[..., :3] == 0, axis=-1)
+                        if empty_mask.any():
+                            spatial_mask = ~empty_mask
+                    await self._run_cpu(clip_merger.merge, raw, weight,
+                                        spatial_mask=spatial_mask)
                     self.tracker.update(self.name)
 
                 self.tracker.close_bar(self.name)
@@ -258,13 +284,12 @@ class SigmaClipIteratorOp(BaseOp):
                 cur_n = accepted.n
                 converge_ratio = (np.sum(cur_n == last_n) /
                                   np.prod(cur_n.shape))
+                logger.info(f"{self.name} converge ratio: "
+                                f"{converge_ratio * 100:.2f}%")
                 if converge_ratio >= early_converge_ratio:
                     logger.info(f"{self.name} converged at iteration "
                                 f"{iteration + 1}.")
                     break
-                else:
-                    logger.info(f"{self.name} converge ratio: "
-                                f"{converge_ratio * 100:.2f}%")
                 last_n = cur_n.copy()
                 ref_fgp = accepted
                 logger.info(

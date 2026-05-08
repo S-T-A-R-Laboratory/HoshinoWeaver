@@ -9,6 +9,7 @@ from ..component.calibration import (calibration_divide, calibration_subtract,
                                      crop_roi, natural_sort_key, resize_image)
 from ..component.data_container import DTYPE_MAX_VALUE, FloatImage
 from ..component.image_io import load_img
+from ..component.queue import StreamExhausted
 from ..engine.registry import register_op
 from .base import BaseOp, ParallelBaseOp
 
@@ -88,16 +89,32 @@ class ImageResizeOp(ParallelBaseOp):
     """
 
     INPUTS: dict[str, Any] = {
-        "data": {"type": "sequence"},
+        "data": {
+            "type": "sequence"
+        },
     }
     CONFIGS: dict[str, Any] = {
-        "scale":         {"type": "float", "default": None},
-        "width":         {"type": "int",   "default": None},
-        "height":        {"type": "int",   "default": None},
-        "interpolation": {"type": "str",   "default": "auto"},
+        "scale": {
+            "type": "float",
+            "default": None
+        },
+        "width": {
+            "type": "int",
+            "default": None
+        },
+        "height": {
+            "type": "int",
+            "default": None
+        },
+        "interpolation": {
+            "type": "str",
+            "default": "auto"
+        },
     }
     OUTPUTS: dict[str, Any] = {
-        "result": {"type": "sequence"},
+        "result": {
+            "type": "sequence"
+        },
     }
 
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
@@ -128,16 +145,32 @@ class ImageCropOp(ParallelBaseOp):
     """图像 ROI 裁切：从序列帧中裁取指定区域。"""
 
     INPUTS: dict[str, Any] = {
-        "data": {"type": "sequence"},
+        "data": {
+            "type": "sequence"
+        },
     }
     CONFIGS: dict[str, Any] = {
-        "x":          {"type": "int", "required": True},
-        "y":          {"type": "int", "required": True},
-        "roi_width":  {"type": "int", "required": True},
-        "roi_height": {"type": "int", "required": True},
+        "x": {
+            "type": "int",
+            "required": True
+        },
+        "y": {
+            "type": "int",
+            "required": True
+        },
+        "roi_width": {
+            "type": "int",
+            "required": True
+        },
+        "roi_height": {
+            "type": "int",
+            "required": True
+        },
     }
     OUTPUTS: dict[str, Any] = {
-        "result": {"type": "sequence"},
+        "result": {
+            "type": "sequence"
+        },
     }
 
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
@@ -171,13 +204,20 @@ class CalibrationSubtractOp(ParallelBaseOp):
 
     EXECUTOR = "cpu"
     INPUTS: dict[str, Any] = {
-        "data": {"type": "sequence"},
+        "data": {
+            "type": "sequence"
+        },
     }
     CONFIGS: dict[str, Any] = {
-        "reference": {"type": "image", "default": None},
+        "reference": {
+            "type": "image",
+            "default": None
+        },
     }
     OUTPUTS: dict[str, Any] = {
-        "result": {"type": "sequence"},
+        "result": {
+            "type": "sequence"
+        },
     }
 
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
@@ -199,8 +239,8 @@ class CalibrationSubtractOp(ParallelBaseOp):
         else:
             ref_arr, ref_dtype = ref, ref.dtype
 
-        result_arr, out_dtype = calibration_subtract(
-            frame_arr, ref_arr, frame_dtype, ref_dtype)
+        result_arr, out_dtype = calibration_subtract(frame_arr, ref_arr,
+                                                     frame_dtype, ref_dtype)
 
         # 重包装
         if isinstance(frame, FloatImage):
@@ -223,13 +263,20 @@ class CalibrationDivideOp(ParallelBaseOp):
 
     EXECUTOR = "cpu"
     INPUTS: dict[str, Any] = {
-        "data": {"type": "sequence"},
+        "data": {
+            "type": "sequence"
+        },
     }
     CONFIGS: dict[str, Any] = {
-        "reference": {"type": "image", "default": None},
+        "reference": {
+            "type": "image",
+            "default": None
+        },
     }
     OUTPUTS: dict[str, Any] = {
-        "result": {"type": "sequence"},
+        "result": {
+            "type": "sequence"
+        },
     }
 
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
@@ -250,8 +297,8 @@ class CalibrationDivideOp(ParallelBaseOp):
         else:
             ref_arr, ref_dtype = ref, ref.dtype
 
-        result_arr, out_dtype = calibration_divide(
-            frame_arr, ref_arr, frame_dtype, ref_dtype)
+        result_arr, out_dtype = calibration_divide(frame_arr, ref_arr,
+                                                   frame_dtype, ref_dtype)
 
         if isinstance(frame, FloatImage):
             result = FloatImage(data=result_arr, dtype=out_dtype)
@@ -275,14 +322,24 @@ class SequenceSortOp(BaseOp):
     """
 
     INPUTS: dict[str, Any] = {
-        "data": {"type": "sequence"},
+        "data": {
+            "type": "sequence"
+        },
     }
     CONFIGS: dict[str, Any] = {
-        "sort_key": {"type": "str", "default": "natural"},
-        "reverse":  {"type": "bool", "default": False},
+        "sort_key": {
+            "type": "str",
+            "default": "natural"
+        },
+        "reverse": {
+            "type": "bool",
+            "default": False
+        },
     }
     OUTPUTS: dict[str, Any] = {
-        "result": {"type": "sequence"},
+        "result": {
+            "type": "sequence"
+        },
     }
 
     def _infer_output_length(self, input_lengths):
@@ -309,13 +366,13 @@ class SequenceSortOp(BaseOp):
         }
         key_fn = key_funcs.get(sort_key_name)
         if key_fn is None:
-            raise ValueError(
-                f"Unsupported sort_key: {sort_key_name}. "
-                f"Available: {sorted(key_funcs.keys())}")
+            raise ValueError(f"Unsupported sort_key: {sort_key_name}. "
+                             f"Available: {sorted(key_funcs.keys())}")
 
         sorted_items = sorted(items, key=key_fn, reverse=reverse)
         logger.info(
-            f"{self.name}: sorted {len(sorted_items)} items by '{sort_key_name}'")
+            f"{self.name}: sorted {len(sorted_items)} items by '{sort_key_name}'"
+        )
 
         # 输出阶段
         for item in sorted_items:
@@ -333,7 +390,9 @@ class NoneOutputOp(BaseOp):
     """
 
     OUTPUTS: dict[str, Any] = {
-        "result": {"type": "image"},
+        "result": {
+            "type": "image"
+        },
     }
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
@@ -348,10 +407,16 @@ class MaskInvertOp(BaseOp):
     """反转 mask：output = 1 - input。input 为 None 时输出 np.zeros((1,1))（全0哨兵，下游负责 resize）。"""
 
     CONFIGS: dict[str, Any] = {
-        "mask": {"type": "image", "required": False, "default": None},
+        "mask": {
+            "type": "image",
+            "required": False,
+            "default": None
+        },
     }
     OUTPUTS: dict[str, Any] = {
-        "result": {"type": "image"},
+        "result": {
+            "type": "image"
+        },
     }
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
@@ -371,11 +436,19 @@ class ImageAddOp(BaseOp):
     """两路图像逐像素相加。用于互补 mask 分离叠加后的合成。"""
 
     CONFIGS: dict[str, Any] = {
-        "image_a": {"type": "image", "required": True},
-        "image_b": {"type": "image", "required": True},
+        "image_a": {
+            "type": "image",
+            "required": True
+        },
+        "image_b": {
+            "type": "image",
+            "required": True
+        },
     }
     OUTPUTS: dict[str, Any] = {
-        "result": {"type": "image"},
+        "result": {
+            "type": "image"
+        },
     }
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
@@ -389,3 +462,53 @@ class ImageAddOp(BaseOp):
         else:
             result = result_arr
         await self._broadcast_outputs({"result": result})
+
+
+@register_op()
+class ApplyMaskOp(BaseOp):
+    """图像乘以 mask。mask 为 None 时直接 passthrough。"""
+
+    INPUTS: dict[str, Any] = {"image": {"type": "sequence", "required": True}}
+
+    CONFIGS: dict[str, Any] = {
+        "mask": {
+            "type": "image",
+            "required": False,
+            "default": None
+        }
+    }
+    OUTPUTS: dict[str, Any] = {"result": {"type": "sequence"}}
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        tot_num = self.length
+        mask = configs['mask']
+        runtime_mask = None
+        if mask is not None:
+            if mask.ndim==2:
+                mask = np.repeat(mask[..., None], 3, axis=-1)
+            runtime_mask = mask > 0.5
+        for i in self._input_range():
+            try:
+                img = await self._async_convert_inputs()['image']
+            except StreamExhausted:
+                if tot_num is not None:
+                    logger.warning(
+                        f"{self.name}: upstream ended at {i}/{tot_num}")
+                break
+
+            if runtime_mask is None:
+                result = img
+            else:
+                img_arr = img.data if isinstance(img, FloatImage) else img
+                if runtime_mask.shape != img_arr.shape:
+                    h, w = img_arr.shape
+                    runtime_mask = cv2.resize(
+                        mask.astype(np.float32), dsize=(w, h),
+                        interpolation=cv2.INTER_NEAREST) > 0.5
+                result_arr = np.multiply(img_arr, runtime_mask)
+                cv2.imwrite(f"debug_mask_{i}.tif", result_arr)
+                if isinstance(img, FloatImage):
+                    result = FloatImage(data=result_arr, dtype=img.dtype)
+                else:
+                    result = result_arr
+            await self._broadcast_outputs({"result": result})
