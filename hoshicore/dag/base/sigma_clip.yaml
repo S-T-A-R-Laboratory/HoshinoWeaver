@@ -51,6 +51,7 @@ nodes:
     configs:
       fgp_total: mean_stacker.statistics
       buffer_handle: disk_buffer.buffer_handle
+      mask: configs.mask
       rej_high: configs.rej_high
       rej_low: configs.rej_low
       max_iter: configs.max_iter

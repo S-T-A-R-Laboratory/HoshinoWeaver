@@ -396,6 +396,8 @@ def main(argv: list[str]) -> int:
         result = spec_to_mermaid(spec, direction=args.direction)
 
     if args.output:
+        if args.output.endswith(".md"):
+            result = f"```mermaid\n{result}\n```"
         Path(args.output).write_text(result, encoding="utf-8")
         print(f"已写入：{args.output}")
     else:

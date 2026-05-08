@@ -134,6 +134,11 @@ class StarAlignmentOp(BaseOp):
                 skipped_count += 1
                 logger.warning(
                     f"{self.name}: frame {i} alignment failed ({e}), skipping")
+            except Exception as e:
+                import traceback
+                traceback_str = traceback.format_exc()
+                logger.error(traceback_str)
+                raise e
 
         logger.info(
             f"{self.name}: aligned {aligned_count} frames, "

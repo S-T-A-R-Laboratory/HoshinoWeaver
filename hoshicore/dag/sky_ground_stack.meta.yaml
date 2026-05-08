@@ -13,12 +13,14 @@ routes:
       mean:       null   # fixed-op，op 由节点 op 字段决定
       sigma_clip: null
       huber_mean: null
+      median: null
     default: sigma_clip
   ground_stacker:
     options:
       mean:       null
       sigma_clip: null
       huber_mean: null
+      median: null
     default: mean
 
 # ── 全局配置 ──
@@ -96,10 +98,28 @@ nodes:
     outputs:
       result: { type: image }
 
+  apply_sky_mask:
+    op: ApplyMaskOp
+    inputs:
+      image: data_loader.result
+    configs:
+      mask: load_mask.result
+    outputs:
+      result: {type: sequence}
+  
+  apply_ground_mask:
+    op: ApplyMaskOp
+    inputs:
+      image: data_loader.result
+    configs:
+      mask: mask_invert.result
+    outputs:
+      result: {type: sequence}
+
   star_aligner:
     op: StarAlignmentOp
     inputs:
-      data: data_loader.result
+      data: apply_sky_mask.result
       exifs: exif_loader.result
     configs:
       method: configs.align_method
@@ -128,6 +148,8 @@ nodes:
         int_weight: configs.int_weight
         mask: load_mask.result
         # huber_c — auto-wired
+      median:
+        mask: load_mask.result
     outputs:
       result: { type: image }
 
@@ -137,15 +159,21 @@ nodes:
     routes:
       stacker: routes.ground_stacker   # 透传父图选择到子图 stacker route
     inputs:
-      data: data_loader.result
+      data: apply_ground_mask.result
     route_configs:
       mean:
         int_weight: configs.int_weight
         mask: mask_invert.result
+      sigma_clip:
+        int_weight: configs.int_weight
+        mask: mask_invert.result
+        # rej_high, rej_low, max_iter, early_converge_ratio — auto-wired
       huber_mean:
         int_weight: configs.int_weight
         mask: mask_invert.result
         # huber_c — auto-wired
+      median:
+        mask: mask_invert.result
     outputs:
       result: { type: image }
 
@@ -169,8 +197,8 @@ nodes:
   image_saver:
     op: ImageSaveOp
     configs:
-      image: image_add.result
-      exif: exif_reducer.result
+      image: ground_stacker.result
+      #exif: exif_reducer.result
       output_filename: configs.output_filename
       output_dtype: configs.output_dtype
     outputs:

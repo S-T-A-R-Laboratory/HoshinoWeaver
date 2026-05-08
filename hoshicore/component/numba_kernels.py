@@ -90,6 +90,39 @@ def fgp_masked_mean_merge(
 
 
 @njit(parallel=True, cache=True)
+def sigma_clip_fused_masked_merge(
+    img,
+    mask,
+    rej_high_img,
+    rej_low_img,
+    sum_mu,
+    square_sum,
+    n,
+):
+    """带空间 mask 的 sigma clip 融合 kernel。
+
+    mask[i,j]=False 的像素完全跳过（不累加到 rejected FGP），
+    与 MeanMerger 的 fgp_masked_mean_merge 语义对称。
+
+    mask: 2D bool array (H, W)，所有通道共享同一 mask。
+    """
+    H = img.shape[0]
+    W = img.shape[1]
+    C = img.shape[2]
+    for i in prange(H):
+        for j in range(W):
+            if not mask[i, j]:
+                continue
+            for c in range(C):
+                v = img[i, j, c]
+                if v < rej_low_img[i, j, c] or v > rej_high_img[i, j, c]:
+                    sv = sum_mu.dtype.type(v)
+                    sum_mu[i, j, c] += sv
+                    square_sum[i, j, c] += square_sum.dtype.type(sv) * square_sum.dtype.type(sv)
+                    n[i, j, c] += 1
+
+
+@njit(parallel=True, cache=True)
 def sigma_clip_fused_merge(
     img,
     rej_high_img,

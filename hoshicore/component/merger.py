@@ -12,8 +12,8 @@ from .data_container import (DTYPE_LEVEL, DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP,
                              _SCALE_BASE, FloatImage, FastGaussianParam,
                              HuberMeanParam)
 from .numba_kernels import (fgp_masked_mean_merge, fgp_mean_merge,
-                            fgp_weighted_mean_merge,
-                            sigma_clip_fused_merge)
+                            fgp_weighted_mean_merge, sigma_clip_fused_merge,
+                            sigma_clip_fused_masked_merge)
 
 
 def _accum_dtypes(
@@ -247,8 +247,10 @@ class SigmaClippingMerger(MeanMerger):
     def __init__(self, ref_img: FastGaussianParam, rej_high: float,
                  rej_low: float, **kwargs) -> None:
         super().__init__()
-        ref_mu = ref_img.mu
-        ref_std = np.sqrt(ref_img.var)
+        # n=0 的位置（被 mask 排除）mu/var 均无意义，归零以避免 NaN 传播
+        valid = ref_img.n > 0
+        ref_mu = np.where(valid, ref_img.mu, 0)
+        ref_std = np.where(valid, np.sqrt(np.maximum(ref_img.var, 0)), 0)
         rej_dtype = ref_img.source_dtype
         self.rej_high_img = np.array(
             np.floor(ref_mu + ref_std * rej_high).clip(
@@ -263,7 +265,8 @@ class SigmaClippingMerger(MeanMerger):
 
     def merge(self,
               new_img: np.ndarray,
-              weight: Optional[Union[float, NDArray]] = None):
+              weight: Optional[Union[float, NDArray]] = None,
+              spatial_mask: Optional[np.ndarray] = None):
         raw = new_img
         if self._source_dtype is None:
             self._source_dtype = raw.dtype
@@ -277,8 +280,13 @@ class SigmaClippingMerger(MeanMerger):
             self._square_sum = np.zeros(img.shape, dtype=sq_dt)
             self._n = np.zeros(img.shape, dtype=n_dt)
 
-        sigma_clip_fused_merge(img, self.rej_high_img, self.rej_low_img,
-                               self._sum_mu, self._square_sum, self._n)
+        if spatial_mask is not None:
+            sigma_clip_fused_masked_merge(img, spatial_mask, self.rej_high_img,
+                                          self.rej_low_img, self._sum_mu,
+                                          self._square_sum, self._n)
+        else:
+            sigma_clip_fused_merge(img, self.rej_high_img, self.rej_low_img,
+                                   self._sum_mu, self._square_sum, self._n)
 
 
 class HuberWeightedMerger(BaseMerger):
@@ -313,14 +321,16 @@ class HuberWeightedMerger(BaseMerger):
         self._ref_std = np.sqrt(np.maximum(ref_stats.var,
                                            0)).astype(np.float32)
 
-    def _merge(self, base_img: HuberMeanParam, new_img: HuberMeanParam) -> HuberMeanParam:
+    def _merge(self, base_img: HuberMeanParam,
+               new_img: HuberMeanParam) -> HuberMeanParam:
         return base_img + new_img
 
     @property
     def merged_image(self) -> Union[FloatImage, None]:
         if self.result is None:
             return None
-        return FloatImage(self.result.mu, dtype=self._source_dtype or np.dtype("float64"))
+        return FloatImage(self.result.mu,
+                          dtype=self._source_dtype or np.dtype("float64"))
 
     def _pre_process(self, img: np.ndarray, weight=None) -> HuberMeanParam:
         r = (img.astype(np.float32) - self._ref_mean) / (self._ref_std + 1e-10)
