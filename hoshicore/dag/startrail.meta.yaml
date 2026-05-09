@@ -11,7 +11,7 @@ routes:
     options:
       fifo: TrailStackerOp
       mix:  mix_core.yaml
-      tmax: threshold_max_startrail.yaml
+      #tmax: threshold_max_startrail.yaml
     default: fifo
 
 # ── 全局配置 ──
@@ -96,7 +96,9 @@ nodes:
     inputs:
       data: satellite_clean.result
       weight: weight_generator.result
-      fnames: inputs.fnames
+    route_inputs:
+      mix: {fnames: inputs.fnames}
+      tmax: {fnames: inputs.fnames}
     route_configs:
       fifo:
         int_weight: configs.int_weight

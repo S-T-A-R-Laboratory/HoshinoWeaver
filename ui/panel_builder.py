@@ -124,7 +124,33 @@ def _build_config_spec(key: str, meta_spec: dict, ui_spec: dict) -> ConfigSpec:
         step=ui_spec.get("step"),
         options=ui_spec.get("options"),
         bind=ui_spec.get("bind"),
+        accept=ui_spec.get("accept"),
+        transform=ui_spec.get("transform"),
     )
+
+
+# ─── Value Transforms ────────────────────────────────────────────────────────
+
+# Named transforms applied when forwarding widget values to backend params.
+# Each transform is a callable: float -> float.
+_VALUE_TRANSFORMS: dict[str, Callable[[float], float]] = {
+    "identity": lambda x: x,
+    "negate": lambda x: -x,           # UI shows -3..5, backend needs |−x|
+    "complement": lambda x: 1 - x,    # UI right handle 0.8 → backend gets 0.2
+    "abs": lambda x: abs(x),
+}
+
+
+def _apply_transform(name: str | None, value):
+    if name is None or value is None:
+        return value
+    fn = _VALUE_TRANSFORMS.get(name)
+    if fn is None:
+        return value
+    try:
+        return fn(value)
+    except Exception:
+        return value
 
 
 def _infer_widget(typ: str) -> str:
@@ -192,6 +218,15 @@ class DynamicConfigPanel(QWidget):
             self._main_layout.addWidget(frame)
             self._route_getters[route_key] = getter
 
+            # Place the route_config container immediately below its selector
+            if route_key in self._schema.route_configs:
+                container = QWidget(self)
+                container_layout = QVBoxLayout(container)
+                container_layout.setContentsMargins(0, 0, 0, 0)
+                container_layout.setSpacing(0)
+                self._main_layout.addWidget(container)
+                self._route_config_container[route_key] = container
+
     def _render_configs(self):
         layout_info = self._schema.layout
         groups = layout_info.get("groups", [])
@@ -212,9 +247,9 @@ class DynamicConfigPanel(QWidget):
                 ]
                 if not specs_in_group:
                     continue
-                self._add_group_header(group_name)
+                group_layout = self._add_group_box(group_name)
                 for spec in specs_in_group:
-                    self._add_config_widget(spec)
+                    self._add_config_widget(spec, target_layout=group_layout)
                     rendered_keys.add(spec.key)
 
         remaining = [
@@ -230,12 +265,14 @@ class DynamicConfigPanel(QWidget):
 
     def _render_route_configs(self):
         for route_key in self._schema.route_configs:
-            container = QWidget(self)
-            container_layout = QVBoxLayout(container)
-            container_layout.setContentsMargins(0, 0, 0, 0)
-            container_layout.setSpacing(0)
-            self._main_layout.addWidget(container)
-            self._route_config_container[route_key] = container
+            if route_key not in self._route_config_container:
+                # Fallback: route_configs key has no matching route selector
+                container = QWidget(self)
+                container_layout = QVBoxLayout(container)
+                container_layout.setContentsMargins(0, 0, 0, 0)
+                container_layout.setSpacing(0)
+                self._main_layout.addWidget(container)
+                self._route_config_container[route_key] = container
             current_option = self._route_getters[route_key]()
             self._rebuild_route_config_section(route_key, current_option)
 
@@ -260,30 +297,95 @@ class DynamicConfigPanel(QWidget):
             if spec.bind:
                 bound_targets.add(spec.bind)
 
-        for spec in specs:
-            if spec.hidden or spec.key in bound_targets:
-                continue
+        visible_specs = [s for s in specs if not s.hidden and s.key not in bound_targets]
+        if not visible_specs:
+            return
+
+        # Resolve group header: "{route_label} · {option_label}"
+        route_spec = self._schema.routes.get(route_key)
+        route_label = (route_spec.label or route_key) if route_spec else route_key
+        if route_spec and option in route_spec.options:
+            option_label = route_spec.options[option].label or option
+        else:
+            option_label = option
+        group_name = f"{route_label} · {option_label}"
+
+        group_layout = self._add_group_box(
+            group_name,
+            target_layout=container.layout(),
+            parent_widget=container,
+        )
+
+        for spec in visible_specs:
             row, getter, setter = create_config_row(
                 spec, parent=container,
                 on_change=self.values_changed.emit,
             )
-            container.layout().addWidget(row)
+            group_layout.addWidget(row)
             getter_key = f"_rc_{route_key}_{spec.key}"
             self._route_config_getters[getter_key] = getter
             if spec.bind:
                 self._bound_pairs[getter_key] = spec.bind
 
-    def _add_config_widget(self, spec: ConfigSpec):
+    def _add_config_widget(self, spec: ConfigSpec, target_layout=None):
         if spec.widget == "range_slider" and spec.bind:
             self._bound_pairs[spec.key] = spec.bind
+        layout = target_layout if target_layout is not None else self._main_layout
         row, getter, setter = create_config_row(
             spec, parent=self,
             on_change=self.values_changed.emit,
         )
-        self._main_layout.addWidget(row)
+        layout.addWidget(row)
         self._config_getters[spec.key] = getter
 
+    def _add_group_box(
+        self, name: str,
+        target_layout=None,
+        parent_widget: QWidget | None = None,
+    ) -> QVBoxLayout:
+        """Create a bordered group box, return its inner layout.
+
+        target_layout  – layout to add the box to (defaults to _main_layout).
+        parent_widget  – Qt parent for the frame (defaults to self).
+        """
+        parent = parent_widget if parent_widget is not None else self
+        outer = QFrame(parent)
+        outer.setObjectName("groupBox")
+        outer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        outer.setStyleSheet(
+            "QFrame#groupBox {"
+            "  border: 1px solid rgba(160,160,160,160);"
+            "  border-radius: 4px;"
+            "  background-color: rgba(245,245,245,80);"
+            "  margin-top: 4px;"
+            "}"
+            "QFrame#groupBox > QLabel#groupHeader {"
+            "  border: none;"
+            "  border-radius: 0px;"
+            "}"
+        )
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 4)
+        outer_layout.setSpacing(0)
+
+        header = QLabel(name, outer)
+        header.setObjectName("groupHeader")
+        header.setStyleSheet(
+            "font-weight: bold; font-size: 11px;"
+            "color: rgba(255,255,255,220);"
+            "background-color: rgba(90,90,90,200);"
+            "border: none;"
+            "border-top-left-radius: 3px;"
+            "border-top-right-radius: 3px;"
+            "padding: 3px 6px;"
+        )
+        outer_layout.addWidget(header)
+        layout = target_layout if target_layout is not None else self._main_layout
+        layout.addWidget(outer)
+        return outer_layout
+
     def _add_group_header(self, name: str):
+        # kept for backward compat, not used when groups are present
         header = QLabel(name, self)
         header.setStyleSheet(
             "font-weight: bold; font-size: 11px; color: rgba(80,80,80,200); "
@@ -303,28 +405,50 @@ class DynamicConfigPanel(QWidget):
                 val = self._config_getters[spec.key]()
                 if spec.key in self._bound_pairs:
                     if isinstance(val, (list, tuple)):
-                        result[spec.key] = val[0]
-                        result[self._bound_pairs[spec.key]] = val[1]
+                        left, right = val[0], val[1]
+                        if isinstance(spec.transform, dict):
+                            left = _apply_transform(spec.transform.get("left"), left)
+                            right = _apply_transform(spec.transform.get("right"), right)
+                        result[spec.key] = left
+                        result[self._bound_pairs[spec.key]] = right
                     continue
+                if isinstance(spec.transform, str):
+                    val = _apply_transform(spec.transform, val)
                 result[spec.key] = val
 
         for getter_key, getter in self._route_config_getters.items():
             # getter_key format: "_rc_{route_key}_{param_key}"
             # route_key may contain underscores, so we use known route_keys to parse
+            route_key = None
             param_key = None
             for rk in self._schema.route_configs:
                 prefix = f"_rc_{rk}_"
                 if getter_key.startswith(prefix):
+                    route_key = rk
                     param_key = getter_key[len(prefix):]
                     break
             if param_key is None:
                 continue
+
+            # Locate the spec for this active route option to read its transform
+            spec = None
+            current_option = self._route_getters[route_key]() if route_key else None
+            if current_option is not None:
+                option_specs = self._schema.route_configs.get(route_key, {}).get(current_option, [])
+                spec = next((s for s in option_specs if s.key == param_key), None)
+
             val = getter()
             if getter_key in self._bound_pairs:
                 if isinstance(val, (list, tuple)):
-                    result[param_key] = val[0]
-                    result[self._bound_pairs[getter_key]] = val[1]
+                    left, right = val[0], val[1]
+                    if spec and isinstance(spec.transform, dict):
+                        left = _apply_transform(spec.transform.get("left"), left)
+                        right = _apply_transform(spec.transform.get("right"), right)
+                    result[param_key] = left
+                    result[self._bound_pairs[getter_key]] = right
                 continue
+            if spec and isinstance(spec.transform, str):
+                val = _apply_transform(spec.transform, val)
             result[param_key] = val
 
         return result

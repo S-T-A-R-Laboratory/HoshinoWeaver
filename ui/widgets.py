@@ -32,6 +32,11 @@ class ConfigSpec:
     step: float | None = None
     options: list | None = None
     bind: str | None = None
+    accept: str | None = None
+    # Named transform applied to the widget value before sending to backend.
+    # For range_slider: dict like {"left": "negate", "right": "complement"}.
+    # For other numeric widgets: a single string like "negate".
+    transform: Any = None
 
 
 @dataclass
@@ -100,8 +105,8 @@ def create_config_row(
     layout.setSpacing(6)
 
     label = QLabel(spec.label or spec.key, row)
-    label.setMinimumWidth(70)
-    label.setMaximumWidth(90)
+    label.setMinimumWidth(60)
+    label.setMaximumWidth(80)
     label.setStyleSheet("font-size: 11px; color: rgba(30,30,30,200);")
     label.setToolTip(spec.description)
     layout.addWidget(label)
@@ -125,8 +130,10 @@ def create_config_row(
         layout.addWidget(val_label)
 
     elif spec.widget == "range_slider":
-        ds, getter, setter = _make_range_slider(spec, row, on_change)
+        ds, getter, setter, left_label, right_label = _make_range_slider(spec, row, on_change)
+        layout.addWidget(left_label)
         layout.addWidget(ds, 1)
+        layout.addWidget(right_label)
 
     elif spec.widget == "select":
         combo = QComboBox(row)
@@ -154,10 +161,10 @@ def create_config_row(
         btn.setMinimumWidth(28)
 
         def _browse():
-            accept = spec.description if spec.description else ""
+            accept = spec.accept or ""
             path, _ = QFileDialog.getOpenFileName(
                 row, spec.label or "选择文件", "",
-                f"支持的文件 ({accept});;全部文件 (*)" if accept else "全部文件 (*)")
+                f"支持的文件 (*{' *'.join(accept.split(','))} );;全部文件 (*)" if accept else "全部文件 (*)")
             if path:
                 line.setText(path)
                 if on_change:
@@ -272,9 +279,10 @@ def _make_slider(
     slider.setMaximum(int(mx * multiplier))
     slider.setSingleStep(int(step * multiplier))
     slider.setValue(int(default * multiplier))
+    slider.setMinimumWidth(40)
 
     val_label = QLabel(parent)
-    val_label.setMinimumWidth(35)
+    val_label.setMinimumWidth(28)
     val_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
     def _update_label(v):
@@ -300,7 +308,7 @@ def _make_slider(
 
 def _make_range_slider(
     spec: ConfigSpec, parent: QWidget, on_change: Callable | None
-) -> tuple[DoubleSlider, Callable, Callable]:
+) -> tuple[DoubleSlider, Callable, Callable, QLabel, QLabel]:
     """Create a DoubleSlider for range_slider widget type."""
     mn = spec.min if spec.min is not None else 0
     mx = spec.max if spec.max is not None else 100
@@ -316,8 +324,22 @@ def _make_range_slider(
     ds.right_value = int(mx * multiplier) if spec.bind else int(default * multiplier)
     ds.update_slider()
 
-    if on_change:
-        ds.valueChanged.connect(lambda l, r: on_change())
+    _val_style = "font-size: 10px; color: rgba(60,60,60,200); min-width: 20px;"
+    left_label = QLabel(parent)
+    left_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    left_label.setStyleSheet(_val_style)
+    right_label = QLabel(parent)
+    right_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    right_label.setStyleSheet(_val_style)
+
+    def _update_labels(l, r):
+        left_label.setText(f"{l / multiplier:.2f}")
+        right_label.setText(f"{r / multiplier:.2f}")
+        if on_change:
+            on_change()
+
+    ds.valueChanged.connect(_update_labels)
+    _update_labels(ds.left_value, ds.right_value)
 
     def getter():
         return ds.left_value / multiplier, ds.right_value / multiplier
@@ -327,5 +349,6 @@ def _make_range_slider(
             ds.left_value = int(vals[0] * multiplier)
             ds.right_value = int(vals[1] * multiplier)
             ds.update_slider()
+        _update_labels(ds.left_value, ds.right_value)
 
-    return ds, getter, setter
+    return ds, getter, setter, left_label, right_label

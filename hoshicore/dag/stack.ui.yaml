@@ -48,9 +48,10 @@ route_configs:
       description: "低于/高于均值多少个标准差视为异常值"
       widget: range_slider
       bind: rej_high
-      min: 0.5
-      max: 6.0
+      min: -5.0
+      max: 5.0
       step: 0.1
+      transform: {left: abs}
     rej_high:
       hidden: true
     max_iter:

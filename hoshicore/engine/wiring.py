@@ -434,7 +434,7 @@ async def run_from_yaml(
     dag_search_paths: Optional[list[Path]] = None,
     tracker: Optional[DummyTracker] = None,
     cancel_event: Optional[asyncio.Event] = None,
-    num_workers: Optional[int] = None,
+    num_workers: Optional[int] = 1,
     route_choices: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """
