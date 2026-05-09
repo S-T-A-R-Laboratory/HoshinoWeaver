@@ -83,10 +83,10 @@ python "HoshinoWeaver desktop.py"
 ### v1.0.0 上线前需要做的
 - 前端界面分离，通过配置文件生成可选参数【前端】
 - 新的去网格叠加算法【待优化】
-- 对齐接入
 
 To Be Fixed
 - Display P3 问题
+- 对齐接缝黑边问题
 
 ### Further
 

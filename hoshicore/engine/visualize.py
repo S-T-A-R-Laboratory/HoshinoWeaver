@@ -63,28 +63,19 @@ def spec_to_mermaid(
             lines.append(f"    class {node_id} inputNode")
 
     # -- Op nodes
+    _CATEGORY_SHAPE: dict[str, tuple[str, str]] = {
+        # category: (mermaid shape format, class name)
+        # {id} = node_id, {label} = escaped label
+        "map":    ('    {id}(["{label}"])',         "mapNode"),
+        "reduce": ('    {id}[/"{label}"\\]',        "reduceNode"),
+        "sink":   ('    {id}((("{label}")))',      "sinkNode"),
+        "util":   ('    {id}["{label}"]',           None),
+    }
+
     lines.append("")
     lines.append("    %% Nodes")
-    for node_name, node_spec in nodes.items():
-        if not isinstance(node_spec, dict):
-            continue
-        op_name = node_spec.get("op", "?")
-        node_id = _sanitize_id(node_name)
-
-        if isinstance(op_name, str) and op_name.endswith(".yaml"):
-            # SubDAG node — use subroutine shape
-            label = f"{node_name}\\n[{op_name}]"
-            lines.append(f"    {node_id}[[\"{label}\"]]")
-            lines.append(f"    class {node_id} subDagNode")
-        elif node_spec.get("route_key"):
-            # Route node (unresolved) — use hexagon shape
-            route_key = node_spec.get("route_key", "")
-            label = f"{node_name}\\n{{{{{route_key}}}}}"
-            lines.append(f"    {node_id}{{{{{{\"{label}\"}}}}}}")
-            lines.append(f"    class {node_id} routeNode")
-        else:
-            label = f"{node_name}\\n({op_name})"
-            lines.append(f"    {node_id}[\"{label}\"]")
+    tree = _build_subgraph_tree(list(nodes.keys()))
+    _render_nodes_grouped(tree, nodes, lines, _CATEGORY_SHAPE)
 
     # -- Global output nodes
     if global_outputs:
@@ -133,6 +124,9 @@ def spec_to_mermaid(
     lines.append("    classDef outputNode fill:#e8f5e9,stroke:#388e3c")
     lines.append("    classDef subDagNode fill:#fff3e0,stroke:#f57c00")
     lines.append("    classDef routeNode fill:#f3e5f5,stroke:#7b1fa2")
+    lines.append("    classDef mapNode fill:#e3f2fd,stroke:#1565c0")
+    lines.append("    classDef reduceNode fill:#fce4ec,stroke:#c62828")
+    lines.append("    classDef sinkNode fill:#efebe9,stroke:#4e342e")
 
     return "\n".join(lines)
 
@@ -179,6 +173,137 @@ def _spec_needs_meta_resolve(spec: dict[str, Any]) -> bool:
             if isinstance(ns, dict) and ("route_key" in ns or "enabled" in ns):
                 return True
     return False
+
+
+def _classify_node(node_spec: dict[str, Any]) -> str:
+    """根据节点输入/输出类型推断节点类别。
+
+    Returns:
+        "map"    — 序列入序列出（流式处理）
+        "reduce" — 序列入单值出（叠加/归约）
+        "sink"   — 终端节点（无 sequence 输出，输出为 int/return_code 等）
+        "util"   — 其他（单值变换、mask 生成等）
+    """
+    inputs = node_spec.get("inputs", {})
+    outputs = node_spec.get("outputs", {})
+
+    if not isinstance(inputs, dict):
+        inputs = {}
+    if not isinstance(outputs, dict):
+        outputs = {}
+
+    has_seq_input = any(
+        _is_sequence_binding(inputs.get(k))
+        for k in inputs
+    )
+    out_types = {
+        (v.get("type") if isinstance(v, dict) else None)
+        for v in outputs.values()
+    }
+
+    has_seq_output = "sequence" in out_types
+
+    if has_seq_input and has_seq_output:
+        return "map"
+    if has_seq_input and not has_seq_output:
+        if out_types & {"int", "return_code"}:
+            return "sink"
+        return "reduce"
+    if not has_seq_input and not has_seq_output:
+        if out_types & {"int", "return_code"}:
+            return "sink"
+        return "util"
+    # no seq input but has seq output (source/loader)
+    return "map"
+
+
+def _is_sequence_binding(binding: Any) -> bool:
+    """判断绑定目标是否来自 sequence 类型节点（通过命名启发式）。"""
+    # 无法完全静态确定，但 inputs 字段存在即认为可能是 sequence 连接
+    return binding is not None
+
+
+def _build_subgraph_tree(
+    node_names: list[str],
+) -> dict[str, Any]:
+    """将带 '.' 的节点名构建为嵌套层级树。
+
+    返回结构：{"__nodes__": [顶层节点名], "prefix": {"__nodes__": [...], ...}}
+    """
+    tree: dict[str, Any] = {"__nodes__": []}
+    for name in node_names:
+        parts = name.split(".")
+        if len(parts) == 1:
+            tree["__nodes__"].append(name)
+        else:
+            cursor = tree
+            for prefix in parts[:-1]:
+                if prefix not in cursor:
+                    cursor[prefix] = {"__nodes__": []}
+                cursor = cursor[prefix]
+            cursor["__nodes__"].append(name)
+    return tree
+
+
+def _render_nodes_grouped(
+    tree: dict[str, Any],
+    nodes: dict[str, dict[str, Any]],
+    lines: list[str],
+    category_shape: dict[str, tuple[str, str]],
+    indent: int = 1,
+    prefix: str = "",
+) -> None:
+    """递归渲染节点，嵌套层级用 subgraph 包裹。"""
+    pad = "    " * indent
+
+    for node_name in tree["__nodes__"]:
+        node_spec = nodes.get(node_name)
+        if not isinstance(node_spec, dict):
+            continue
+        _emit_single_node(node_name, node_spec, lines, category_shape, pad)
+
+    for group_key, subtree in tree.items():
+        if group_key == "__nodes__":
+            continue
+        full_path = f"{prefix}{group_key}" if not prefix else f"{prefix}_{group_key}"
+        sg_id = _sanitize_id(full_path)
+        lines.append(f"{pad}subgraph {sg_id} [\"{group_key}\"]")
+        _render_nodes_grouped(
+            subtree, nodes, lines, category_shape, indent + 1,
+            prefix=full_path)
+        lines.append(f"{pad}end")
+
+
+def _emit_single_node(
+    node_name: str,
+    node_spec: dict[str, Any],
+    lines: list[str],
+    category_shape: dict[str, tuple[str, str]],
+    pad: str,
+) -> None:
+    """渲染单个节点（形状 + class）。"""
+    op_name = node_spec.get("op", "?")
+    node_id = _sanitize_id(node_name)
+    short_name = node_name.rsplit(".", 1)[-1]
+
+    if isinstance(op_name, str) and op_name.endswith(".yaml"):
+        label = f"{short_name}\\n[{op_name}]"
+        lines.append(f"{pad}{node_id}[[\"{label}\"]]")
+        lines.append(f"{pad}class {node_id} subDagNode")
+    elif node_spec.get("route_key"):
+        route_key = node_spec.get("route_key", "")
+        label = f"{short_name}\\n{{{{{route_key}}}}}"
+        lines.append(f"{pad}{node_id}{{{{{{\"{label}\"}}}}}}")
+        lines.append(f"{pad}class {node_id} routeNode")
+    else:
+        category = _classify_node(node_spec)
+        label = f"{short_name}\\n({op_name})"
+        shape_fmt, cls_name = category_shape[category]
+        # shape_fmt uses fixed 4-space indent; replace with current pad
+        rendered = shape_fmt.format(id=node_id, label=label)
+        lines.append(rendered.replace("    ", pad, 1))
+        if cls_name:
+            lines.append(f"{pad}class {node_id} {cls_name}")
 
 
 def _sanitize_id(name: str) -> str:
@@ -255,26 +380,17 @@ def spec_to_mermaid_with_configs(
             lines.append(f"    class {node_id} inputNode")
 
     # -- Op nodes
+    _CATEGORY_SHAPE_D: dict[str, tuple[str, str]] = {
+        "map":    ('    {id}(["{label}"])',         "mapNode"),
+        "reduce": ('    {id}[/"{label}"\\]',        "reduceNode"),
+        "sink":   ('    {id}((("{label}")))',      "sinkNode"),
+        "util":   ('    {id}["{label}"]',           None),
+    }
+
     lines.append("")
     lines.append("    %% Nodes")
-    for node_name, node_spec in nodes.items():
-        if not isinstance(node_spec, dict):
-            continue
-        op_name = node_spec.get("op", "?")
-        node_id = _sanitize_id(node_name)
-
-        if isinstance(op_name, str) and op_name.endswith(".yaml"):
-            label = f"{node_name}\\n[{op_name}]"
-            lines.append(f"    {node_id}[[\"{label}\"]]")
-            lines.append(f"    class {node_id} subDagNode")
-        elif node_spec.get("route_key"):
-            route_key = node_spec.get("route_key", "")
-            label = f"{node_name}\\n{{{{{route_key}}}}}"
-            lines.append(f"    {node_id}{{{{{{\"{label}\"}}}}}}")
-            lines.append(f"    class {node_id} routeNode")
-        else:
-            label = f"{node_name}\\n({op_name})"
-            lines.append(f"    {node_id}[\"{label}\"]")
+    tree = _build_subgraph_tree(list(nodes.keys()))
+    _render_nodes_grouped(tree, nodes, lines, _CATEGORY_SHAPE_D)
 
     # -- Global outputs
     if global_outputs:
@@ -342,6 +458,9 @@ def spec_to_mermaid_with_configs(
     lines.append("    classDef outputNode fill:#e8f5e9,stroke:#388e3c")
     lines.append("    classDef subDagNode fill:#fff3e0,stroke:#f57c00")
     lines.append("    classDef routeNode fill:#f3e5f5,stroke:#7b1fa2")
+    lines.append("    classDef mapNode fill:#e3f2fd,stroke:#1565c0")
+    lines.append("    classDef reduceNode fill:#fce4ec,stroke:#c62828")
+    lines.append("    classDef sinkNode fill:#efebe9,stroke:#4e342e")
 
     return "\n".join(lines)
 
