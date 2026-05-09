@@ -54,141 +54,7 @@ class SlotHandler(QMainWindow):
             self.window.ui_max.setIcon(QIcon(u":/icons/resource/icon/win.png"))
             self.window.ui_max.setToolTip('窗口化')
 
-    @Slot()
-    def choose_algorithm_mean(self):
-        '''
-        处理均值叠加算法选择
-        '''
-        val = self.window.alter_algorithm_mean.currentText()
-        if val == '平均值-排异':
-            self.window._mode = 'sigmaclip-mean'
-            # 迭代次数 隐藏
-            self.window.frame_max_iter.show()
-            self.window.frame_max_iter.setVisible(True)
-            # 拒绝倍率 隐藏
-            self.window.frame_rejection.show()
-            self.window.frame_rejection.setVisible(True)
-            # 渐隐选项
-            self.window.frame_fade_in_out.hide()
-            self.window.frame_fade_in_out.setVisible(False)
-            # 计算加速
-            self.window.frame_int_weight.hide()
-            self.window.frame_int_weight.setVisible(False)
-            # 蒙版选项 隐藏
-            self.window.frame_mask.hide()
-            self.window.frame_mask.setVisible(False)
-            # 启用拒绝倍率和迭代次数
-            self.window.alter_max_iter.setEnabled(True)
-            self.window.alter_rejection.setEnabled(True)
-        else:
-            self.window._mode = 'mean'
-            # 迭代次数 隐藏
-            self.window.frame_max_iter.hide()
-            self.window.frame_max_iter.setVisible(False)
-            # 拒绝倍率 隐藏
-            self.window.frame_rejection.hide()
-            self.window.frame_rejection.setVisible(False)
-            # 渐隐选项
-            self.window.frame_fade_in_out.hide()
-            self.window.frame_fade_in_out.setVisible(False)
-            # 计算加速
-            self.window.frame_int_weight.hide()
-            self.window.frame_int_weight.setVisible(False)
-            # 蒙版选项 隐藏
-            self.window.frame_mask.hide()
-            self.window.frame_mask.setVisible(False)
-        self.detect_status()
-    
-    @Slot()
-    def choose_algorithm_max(self):
-        '''
-        处理最大值叠加算法选择
-        '''
-        val = self.window.alter_algorithm_startrail.currentText()
-        if val == '混合模式':
-            self.window._mode = 'mask-mix'
-            # 迭代次数 隐藏
-            self.window.frame_max_iter.show()
-            self.window.frame_max_iter.setVisible(True)
-            # 拒绝倍率 隐藏
-            self.window.frame_rejection.show()
-            self.window.frame_rejection.setVisible(True)
-            # 渐隐选项
-            self.window.frame_fade_in_out.show()
-            self.window.frame_fade_in_out.setVisible(True)
-            # 计算加速
-            self.window.frame_int_weight.show()
-            self.window.frame_int_weight.setVisible(True)
-            # 蒙版选项 隐藏
-            self.window.frame_mask.show()
-            self.window.frame_mask.setVisible(True)
-            # 混合模式时 如果没有添加蒙版 则迭代次数 拒绝倍率不可用
-            if len(self.window._input_files['蒙版']) == 0:
-                self.window.alter_max_iter.setEnabled(False)
-                self.window.alter_rejection.setEnabled(False)
-            else:
-                self.window.alter_max_iter.setEnabled(True)
-                self.window.alter_rejection.setEnabled(True)
-        else:
-            self.window._mode = 'max'
-            # 迭代次数 隐藏
-            self.window.frame_max_iter.hide()
-            self.window.frame_max_iter.setVisible(False)
-            # 拒绝倍率 隐藏
-            self.window.frame_rejection.hide()
-            self.window.frame_rejection.setVisible(False)
-            # 渐隐选项
-            self.window.frame_fade_in_out.show()
-            self.window.frame_fade_in_out.setVisible(True)
-            # 计算加速
-            self.window.frame_int_weight.show()
-            self.window.frame_int_weight.setVisible(True)
-            # 蒙版选项 隐藏
-            self.window.frame_mask.hide()
-            self.window.frame_mask.setVisible(False)
-        self.detect_status()
-
-    @Slot()
-    def choose_algorithm_min(self):
-        '''
-        处理最小值叠加算法选择
-        '''
-        val = self.window.alter_algorithm_mean.currentText()
-        if val == '最小值':
-            self.window._mode = 'min'
-            # 迭代次数 隐藏
-            self.window.frame_max_iter.hide()
-            self.window.frame_max_iter.setVisible(False)
-            # 拒绝倍率 隐藏
-            self.window.frame_rejection.hide()
-            self.window.frame_rejection.setVisible(False)
-            # 渐隐选项
-            self.window.frame_fade_in_out.hide()
-            self.window.frame_fade_in_out.setVisible(False)
-            # 计算加速
-            self.window.frame_int_weight.hide()
-            self.window.frame_int_weight.setVisible(False)
-            # 蒙版选项 隐藏
-            self.window.frame_mask.hide()
-            self.window.frame_mask.setVisible(False)
-        else:
-            self.window._mode = 'min'
-            # 迭代次数 隐藏
-            self.window.frame_max_iter.hide()
-            self.window.frame_max_iter.setVisible(False)
-            # 拒绝倍率 隐藏
-            self.window.frame_rejection.hide()
-            self.window.frame_rejection.setVisible(False)
-            # 渐隐选项
-            self.window.frame_fade_in_out.hide()
-            self.window.frame_fade_in_out.setVisible(False)
-            # 计算加速
-            self.window.frame_int_weight.hide()
-            self.window.frame_int_weight.setVisible(False)
-            # 蒙版选项 隐藏
-            self.window.frame_mask.hide()
-            self.window.frame_mask.setVisible(False)
-        self.detect_status()
+    # choose_algorithm_mean/max/min — 已移除，由 DynamicConfigPanel 接管
 
     @Slot()
     def show_choose_mode_window(self):
@@ -218,92 +84,31 @@ class SlotHandler(QMainWindow):
     @Slot()
     def change_mode(self, mode):
         '''
-        响应选择的模式
-        根据选择的模式，重置算法为默认算法，设置背景图 设置默认算法下的控件显示与隐藏
+        响应选择的模式 — 加载对应的动态参数面板 + 设置背景图
         '''
         self.window.m_flag = False
         self.window.setCursor(QCursor(Qt.ArrowCursor))
         self.window.label_current_mode.setText(mode)
-        if mode == '星轨叠加':
-            # 设置算法选项框可见性
-            self.window.frame_algorithm_mean.hide()
-            self.window.frame_algorithm_mean.setVisible(False)
-            self.window.frame_algorithm_min.hide()
-            self.window.frame_algorithm_min.setVisible(False)
-            self.window.frame_algorithm_startrail.show()
-            self.window.frame_algorithm_startrail.setVisible(True)
 
-            # 设置默认叠加算法 最大值
-            self.window.alter_algorithm_startrail.setCurrentIndex(0)
-            self.choose_algorithm_max()
+        # 加载动态面板
+        self.window.load_mode_panel(mode)
 
-            # # 迭代次数 隐藏
-            # self.window.frame_max_iter.hide()
-            # self.window.frame_max_iter.setVisible(False)
-            # # 拒绝倍率 隐藏
-            # self.window.frame_rejection.hide()
-            # self.window.frame_rejection.setVisible(False)
-            # # 渐隐选项
-            # self.window.frame_fade_in_out.show()
-            # self.window.frame_fade_in_out.setVisible(True)
-            # # 计算加速
-            # self.window.frame_int_weight.show()
-            # self.window.frame_int_weight.setVisible(True)
-            # # 蒙版选项 隐藏
-            # self.window.frame_mask.hide()
-            # self.window.frame_mask.setVisible(False)
+        # 设置背景图
+        bg_map = {
+            '星轨叠加': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
+            '堆栈降噪': 'url(:/img/resource/img/back02.jpg)',
+            '天地分离': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
+        }
+        bg = bg_map.get(mode, 'url(:/img/resource/img/back02.jpg)')
+        self.window.main_frame.setStyleSheet(f"""
+            #main_frame {{
+                border:none;
+                background-image: {bg};
+                background-repeat: no-repeat;
+                background-position: center;
+            }}
+        """)
 
-            # 设置背景
-            self.window.main_frame.setStyleSheet("""
-                #main_frame {
-                        border:none;
-                        background-image: url(:/img/resource/img/皿仓山星轨-s.jpg);
-                        background-repeat: no-repeat;                     /* 不重复背景图 */
-                        background-position: center;                      /* 居中显示背景图 */
-                    }
-                """
-            )
-
-        elif mode == '堆栈降噪':
-            # 设置算法选项框可见性
-            self.window.frame_algorithm_mean.show()
-            self.window.frame_algorithm_mean.setVisible(True)
-            self.window.frame_algorithm_min.hide()
-            self.window.frame_algorithm_min.setVisible(False)
-            self.window.frame_algorithm_startrail.hide()
-            self.window.frame_algorithm_startrail.setVisible(False)
-
-            # 设置默认叠加算法 最大值
-            self.window.alter_algorithm_mean.setCurrentIndex(0)
-            self.choose_algorithm_mean()
-
-            # # 迭代次数 隐藏
-            # self.window.frame_max_iter.hide()
-            # self.window.frame_max_iter.setVisible(False)
-            # # 拒绝倍率 隐藏
-            # self.window.frame_rejection.hide()
-            # self.window.frame_rejection.setVisible(False)
-            # # 渐隐选项 隐藏
-            # self.window.frame_fade_in_out.hide()
-            # self.window.frame_fade_in_out.setVisible(False)
-            # # 计算加速 隐藏
-            # self.window.frame_int_weight.hide()
-            # self.window.frame_int_weight.setVisible(False)
-            # # 蒙版选项 隐藏
-            # self.window.frame_mask.hide()
-            # self.window.frame_mask.setVisible(False)
-
-            # 设置背景
-            self.window.main_frame.setStyleSheet("""
-                #main_frame {
-                        border:none;
-                        background-image: url(:/img/resource/img/back02.jpg);
-                        background-repeat: no-repeat;                     /* 不重复背景图 */
-                        background-position: center;                      /* 居中显示背景图 */
-                    }
-                """
-            )
-        # 更新两个标记 避免点击顶部按钮切换到子页面后 主页面无法响应鼠标release事件导致两个参数保持True，后续引发预期之外的事件
         self.window.dragging = False
         self.window.resizing = False
 
@@ -373,101 +178,8 @@ class SlotHandler(QMainWindow):
         self.window.output_path_2.setToolTip((self.window._output_file_path))
         self.detect_status()
     
-    @Slot()
-    def alter_fade_in_out(self, fade_in=None, fade_out=None):
-        '''
-        响应双滑块，修改fade_in fade_out参数，或初始化双滑块（不传参时）
-        '''
-        if fade_in is None:
-            fade_in = self.window._fade_in
-        if fade_out is None:
-            fade_out = 100 - self.window._fade_out
-        self.window.fade_in.setText(f'{fade_in}%')
-        self.window.fade_out.setText(f'{100 - fade_out}%')
-        self.window._fade_in = fade_in
-        self.window._fade_out = 100 - fade_out
-        self.detect_status()
-
-    @Slot()
-    def alter_rejection(self, rej_low=None, rej_high=None):
-        '''
-        响应双滑块，修改rej_low rej_high参数，或初始化双滑块（不传参时）
-        '''
-        if rej_low is None:
-            rej_low = 0 - self.window._rej_low * 10
-        if rej_high is None:
-            rej_high = self.window._rej_high * 10
-        self.window._rej_low = 0 - round(rej_low / 10, 1)
-        self.window._rej_high = round(rej_high / 10, 1)
-        self.window.rejection_low.setText('%.1f' % round(rej_low / 10, 1))
-        self.window.rejection_high.setText('%.1f' % self.window._rej_high)
-        self.detect_status()
-
-    Slot()
-    def mask_able(self):
-        if self.window.mask_able.isChecked():
-            self.window.frame_mask_sub2.show()
-            self.window.frame_mask_sub2.setVisible(True)
-            self.window.frame_mask.setMinimumHeight(60)
-            self.window.frame_mask.setMaximumHeight(60)
-            self.window._mask_able = True
-        else:
-            self.window.frame_mask_sub2.hide()
-            self.window.frame_mask_sub2.setVisible(False)
-            self.window.frame_mask.setMinimumHeight(40)
-            self.window.frame_mask.setMaximumHeight(40)
-            self.window._mask_able = False
-        self.detect_status()
-
-    @Slot()
-    def alter_mask_file(self):
-        file_dialog = QFileDialog(self,caption='添加蒙版')
-        file_dialog.setFileMode(QFileDialog.ExistingFile)
-        file_dialog.setNameFilters([
-                '全部支持文件(*.cr2 *.cr3 *.arw *.nef *.dng *.tiff *.tif *.jpeg *.jpg *.png *.bmp *.gif *.fits)',
-                'RAW文件(*.cr2 *.cr3 *.arw *.nef *.dng)',
-                'tif文件(*.tiff *.tif)',
-                'jpg文件(*.jpeg *.jpg)',
-                'png文件(*.png)',
-                '其它图片文件(*.bmp *.gif *.fits)'
-        ])
-        if file_dialog.exec_() == QDialog.Accepted:
-            file_path = [url.toLocalFile() for url in file_dialog.selectedUrls()]
-            self.window._input_files['蒙版'] = file_path
-            self.window.mask_file_path.setText(file_path[0])
-            self.window.mask_file_path.setToolTip((file_path[0]))
-            # 启用拒绝倍率和迭代次数
-            self.window.alter_max_iter.setEnabled(True)
-            self.window.alter_rejection.setEnabled(True)
-        self.detect_status()
-
-    @Slot()
-    def int_weight_able(self):
-        if self.window.int_weight_able.isChecked():
-            self.window._int_weight = True
-        else:
-            self.window._int_weight = False 
-        self.detect_status()
-
-    @Slot()
-    def alter_max_iter(self, value = None):
-        if value is None:
-            value = self.window._max_iter
-        self.window.max_iter.setText(str(value))
-        self.window._max_iter = value
-        self.detect_status()
-
-    @Slot()
-    def alter_output_bits(self, value = None):
-        '''
-        响应色深下拉框的修改
-        当传入的value为空时，将_output_bits传入下拉框
-        '''
-        if value is None:
-            self.window.alter_output_bits.setCurrentText(f'{value} bit')
-        else:
-            self.window._output_bits = int(value.replace(' bit',''))
-        self.detect_status()
+    # alter_fade_in_out, alter_rejection, mask_able, alter_mask_file,
+    # int_weight_able, alter_max_iter, alter_output_bits — 已移除，由动态面板接管
 
     @Slot()
     def alter_png_level(self,val=None):
@@ -868,43 +580,15 @@ class SlotHandler(QMainWindow):
         # 创建取消事件，供 cancel_task 触发
         self.window._cancel_event = asyncio.Event()
 
-        # 根据 mode 选择 DAG YAML 和构造参数
-        mode = self.window._mode
-        BITS_MAP = {'8': 'uint8', '16': 'uint16', '32': 'uint32'}
-        output_dtype = BITS_MAP.get(str(self.window._output_bits), 'uint8')
-
+        # 从动态面板收集参数
+        yaml_path = self.window._current_meta_yaml_path
         global_inputs = {"fnames": self.window._input_files['亮场']}
-        global_configs = {
-            "output_filename": self.window._output_file_path,
-            "output_dtype": output_dtype,
-            "int_weight": self.window._int_weight,
-        }
+        global_configs = self.window.config_panel.collect_configs()
+        route_choices = self.window.config_panel.collect_route_choices()
 
-        route_choices = None
-
-        if mode == 'max':
-            yaml_path = "./hoshicore/dag/fifo_startrail.yaml"
-            global_configs["fin"] = self.window._fade_in / 100
-            global_configs["fout"] = self.window._fade_out / 100
-        elif mode == 'mean':
-            yaml_path = "./hoshicore/dag/stack.meta.yaml"
-            route_choices = {"stacker": "mean"}
-        elif mode == 'sigmaclip-mean':
-            yaml_path = "./hoshicore/dag/stack.meta.yaml"
-            route_choices = {"stacker": "sigma_clip"}
-            global_configs["rej_high"] = self.window._rej_high
-            global_configs["rej_low"] = self.window._rej_low
-            global_configs["max_iter"] = self.window._max_iter
-        elif mode == 'mask-mix':
-            yaml_path = "./hoshicore/dag/mix_startrail.yaml"
-            global_configs["fin"] = self.window._fade_in / 100
-            global_configs["fout"] = self.window._fade_out / 100
-            global_configs["rej_high"] = self.window._rej_high
-            global_configs["rej_low"] = self.window._rej_low
-            global_configs["max_iter"] = self.window._max_iter
-            global_configs['mask'] = self.window.mask_file_path
-        else:
-            yaml_path = "./hoshicore/dag/fifo_startrail.yaml"
+        # 确保 output_filename 有值（面板可能收集到 None）
+        if not global_configs.get("output_filename"):
+            global_configs["output_filename"] = self.window._output_file_path
 
         try:
             await run_from_yaml(
@@ -914,12 +598,12 @@ class SlotHandler(QMainWindow):
                 route_choices=route_choices)
 
             # 执行成功
-            self.view_file(self.window._output_file_path)
+            output_path = global_configs.get("output_filename", "")
+            self.view_file(output_path)
             self.window._status = 'successed'
             self.window._status_n['status'] = '任务完成'
             self.window._status_n['tips_2'] = ''
         except asyncio.CancelledError:
-            # 用户主动取消 — cancel_task() 已处理 UI 状态
             pass
         except Exception as e:
             self.window.status_text.setStyleSheet("#status_text {color:rgba(200,0,0,200)}")
@@ -1041,7 +725,6 @@ class SlotHandler(QMainWindow):
                     file_item.__remove_bnt.setEnabled(False)
                     file_item.__view_bnt.setEnabled(False)
 
-    # 更改界面的组件的可操作性，用于在执行快速预览、叠加过程中屏蔽大部分组件的可操作性
     @Slot()
     def set_widget_handleable(self, handleable : bool = True, task_type : str = None):
         handleable_widget_content = {
@@ -1055,27 +738,18 @@ class SlotHandler(QMainWindow):
             '08' : {'widget':self.window.add_files,                 'type' : 'operable_widget'},
             '09' : {'widget':self.window.add_folder,                'type' : 'operable_widget'},
             '10' : {'widget':self.window.clear_files,               'type' : 'operable_widget'},
-            '11' : {'widget':self.window.alter_algorithm_startrail, 'type' : 'operable_widget'},
-            '12' : {'widget':self.window.alter_algorithm_mean,      'type' : 'operable_widget'},
-            '13' : {'widget':self.window.alter_algorithm_min,       'type' : 'operable_widget'},
-            '14' : {'widget':self.window.alter_mask_file,           'type' : 'operable_widget'},
-            '15' : {'widget':self.window.alter_max_iter,            'type' : 'operable_widget'},
-            '16' : {'widget':self.window.alter_rejection,           'type' : 'operable_widget'},
-            '17' : {'widget':self.window.alter_fade_in_out,         'type' : 'operable_widget'},
-            '18' : {'widget':self.window.int_weight_able,           'type' : 'operable_widget'},
-            '19' : {'widget':self.window.alter_output_type_2,       'type' : 'operable_widget'},
-            '20' : {'widget':self.window.alter_output_2,            'type' : 'operable_widget'},
-            '21' : {'widget':self.window.alter_png_level,           'type' : 'operable_widget'},
-            '22' : {'widget':self.window.alter_jpg_level,           'type' : 'operable_widget'},
-            '23' : {'widget':self.window.alter_output_bits,         'type' : 'operable_widget'},
-            '24' : {'widget':self.window.btn_star_trail_preview,    'type' : 'operable_widget'},
-            '25' : {'widget':self.window.btn_star_trail_start,      'type' : 'operable_widget'}
+            '11' : {'widget':self.window.config_panel,              'type' : 'operable_widget'},
+            '12' : {'widget':self.window.alter_output_type_2,       'type' : 'operable_widget'},
+            '13' : {'widget':self.window.alter_output_2,            'type' : 'operable_widget'},
+            '14' : {'widget':self.window.alter_png_level,           'type' : 'operable_widget'},
+            '15' : {'widget':self.window.alter_jpg_level,           'type' : 'operable_widget'},
+            '16' : {'widget':self.window.alter_output_bits,         'type' : 'operable_widget'},
+            '17' : {'widget':self.window.btn_star_trail_preview,    'type' : 'operable_widget'},
+            '18' : {'widget':self.window.btn_star_trail_start,      'type' : 'operable_widget'}
         }
         dis_handleable_widget_content = {
-            'star_trail_fast_preview' : ['01','02','03','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24','25'],
-            # 'star_trail_fast_preview' : [],
-            'star_trail' : ['01','02','03','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24','25']
-            # 'star_trail' : []
+            'star_trail_fast_preview' : ['01','02','03','06','07','08','09','10','11','12','13','14','15','16','17','18'],
+            'star_trail' : ['01','02','03','06','07','08','09','10','11','12','13','14','15','16','17','18']
         }
 
         if handleable:
@@ -1083,9 +757,7 @@ class SlotHandler(QMainWindow):
                 if widget['type'] == 'operable_widget':
                     widget['widget'].setEnabled(handleable)
                 elif widget['type'] == 'tree_wieget':
-                    # 禁用文件的点击操作
                     self.set_file_list_clickable(clickable=handleable)
-                    # 设置菜单栏的不可点击项目
                     self.window.star_trail_file_tree.remove_disabled_menu_items({'展开', '折叠', '清空', '添加文件', '添加文件夹','预览', '从列表删除'})
         else:
             for w_id in dis_handleable_widget_content[task_type]:
@@ -1095,9 +767,7 @@ class SlotHandler(QMainWindow):
                 elif widget['type'] == 'operable_widget':
                     widget['widget'].setEnabled(handleable)
                 elif widget['type'] == 'tree_wieget':
-                    # 禁用文件的点击操作
                     self.set_file_list_clickable(clickable=handleable)
-                    # 设置菜单栏的不可点击项目
                     self.window.star_trail_file_tree.add_disabled_menu_items({'展开', '折叠', '清空', '添加文件', '添加文件夹','预览', '从列表删除'})
 
     @Slot()
@@ -1109,62 +779,18 @@ class SlotHandler(QMainWindow):
         self.window.btn_star_trail_start.setText(text)
 
     def detect_status(self):
-        if self.window._mode == 'max':
-            if len(self.window._input_files['亮场']) == 0:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加图像文件'
-            elif len(self.window._input_files['亮场']) < 3:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加3张或以上图像文件'
-            elif self.window._output_file_path_cache[self.window._output_file_type] is None:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请选择存储路径'
-            else:
-                self.window._status_n['status'] = '就绪'
-                self.window._status_n['tips'] = '点击开始按钮进行图像处理'
-        elif self.window._mode == 'mask-mix':
-            if len(self.window._input_files['亮场']) == 0:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加图像文件'
-            elif len(self.window._input_files['亮场']) < 3:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加3张或以上图像文件'
-            elif len(self.window._input_files['蒙版']) == 0:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请选择蒙版文件'
-            elif self.window._output_file_path_cache[self.window._output_file_type] is None:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请选择存储路径'
-            else:
-                self.window._status_n['status'] = '就绪'
-                self.window._status_n['tips'] = '点击开始按钮进行图像处理'
-        elif self.window._mode == 'mean':
-            if len(self.window._input_files['亮场']) == 0:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加图像文件'
-            elif len(self.window._input_files['亮场']) < 3:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加3张或以上图像文件'
-            elif self.window._output_file_path_cache[self.window._output_file_type] is None:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请选择存储路径'
-            else:
-                self.window._status_n['status'] = '就绪'
-                self.window._status_n['tips'] = '点击开始按钮进行图像处理'
-        elif self.window._mode == 'sigmaclip-mean':
-            if len(self.window._input_files['亮场']) == 0:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加图像文件'
-            elif len(self.window._input_files['亮场']) < 3:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请添加3张或以上图像文件'
-            elif self.window._output_file_path_cache[self.window._output_file_type] is None:
-                self.window._status_n['status'] = '未就绪'
-                self.window._status_n['tips'] = '请选择存储路径'
-            else:
-                self.window._status_n['status'] = '就绪'
-                self.window._status_n['tips'] = '点击开始按钮进行图像处理'
-        # print(self.window._status_n)
+        if len(self.window._input_files['亮场']) == 0:
+            self.window._status_n['status'] = '未就绪'
+            self.window._status_n['tips'] = '请添加图像文件'
+        elif len(self.window._input_files['亮场']) < 3:
+            self.window._status_n['status'] = '未就绪'
+            self.window._status_n['tips'] = '请添加3张或以上图像文件'
+        elif self.window._output_file_path_cache[self.window._output_file_type] is None:
+            self.window._status_n['status'] = '未就绪'
+            self.window._status_n['tips'] = '请选择存储路径'
+        else:
+            self.window._status_n['status'] = '就绪'
+            self.window._status_n['tips'] = '点击开始按钮进行图像处理'
         self.update_status_display()
 
     def update_status_display(self):
