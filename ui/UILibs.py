@@ -575,12 +575,15 @@ class DoubleSlider(QFrame):
         self.left_handdle_pos = self.valueToPixel(self.left_value)
         self.right_handle_pos = self.valueToPixel(self.right_value)
 
-        # 设置固定大小
-        self.setFixedSize(self.width_, self.height_)
+        # 高度固定，宽度自适应容器
+        self.setFixedHeight(self.height_)
+        self.setMinimumWidth(60)
         # 启用鼠标跟踪
         self.setMouseTracking(True)
 
     def update_slider(self):
+        self.width_ = self.width() if self.width() > 0 else self.width_
+        self.track_width = self.width_ - self.track_width_margin_left - self.track_width_margin_right
         self.track_center_height = self.track_height/2
         self.track_center_height += self.track_height_margin_top
         self.track_left_able_height = self.track_height
@@ -590,6 +593,10 @@ class DoubleSlider(QFrame):
         self.left_handdle_pos = self.valueToPixel(self.left_value)
         self.right_handle_pos = self.valueToPixel(self.right_value)
         self.update()
+
+    def resizeEvent(self, event):
+        self.update_slider()
+        super().resizeEvent(event)
 
 
     def paintEvent(self, event):
