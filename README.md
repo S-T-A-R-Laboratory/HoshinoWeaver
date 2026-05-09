@@ -2,6 +2,8 @@
 
 <h1><center>HoshinoWeaver | 织此星辰</center></h1>
 
+基于 DAG 算子的天文摄影预处理工作站
+
 [![GitHub release](https://img.shields.io/github/release/Designerspr/HoshinoWeaver.svg)](https://github.com/Designerspr/HoshinoWeaver/releases/latest) [![GitHub Release Date](https://img.shields.io/github/release-date/Designerspr/HoshinoWeaver.svg)](https://github.com/Designerspr/HoshinoWeaver/releases/latest) [![Github All Releases](https://img.shields.io/github/downloads/Designerspr/HoshinoWeaver/total.svg)](https://github.com/Designerspr/HoshinoWeaver/releases) 
 
 [![license](https://img.shields.io/github/license/Designerspr/HoshinoWeaver)](./LICENSE) [![Tests](https://github.com/Designerspr/HoshinoWeaver/actions/workflows/test.yaml/badge.svg)](https://github.com/Designerspr/HoshinoWeaver/actions/workflows/test.yaml)
@@ -12,142 +14,96 @@
 
 ## 简介
 
-HoshinoWeaver 是一个面向天文与星轨摄影的图像堆栈工具，可用于快速从大量照片中创建星轨或对齐堆栈图像。
+**HoshinoWeaver (织此星辰)** 是一款专为天文摄影设计的通用图像预处理工具。它不仅是一个合成软件，更是一个灵活的**计算图编织机**。
+
+无论是壮丽的星轨、纯净的星空堆栈，还是复杂的天地分离堆栈合成，HoshinoWeaver 都能通过其独有的算子编排引擎，为你织就理想的星辰影像。
+
+> [!TIP]
+> **为什么要用它？**
+> 如果你的电脑配置不高，却想处理上千张星轨；或者你厌倦了“黑盒”软件，想要精确控制堆栈的数学逻辑，HoshinoWeaver 就是为你准备的。
+
+访问 [官网](https://hoshinoweaver.springcitystudio.top/) 以了解更多最新信息。
 
 
-## 特性
+## 核心特性
 
-- **多种星轨模式** -- 经典最大值、渐入渐出、去除叠加网格、最大值-均值混合叠加，覆盖常见星轨需求
-- **专业堆栈模式** -- 支持多种均值和中位数算法，自动剔除异常值，降噪同时排异噪声
-- **完整校准流程** -- 支持 Bias / 暗场 / 平场校准，支持加载 Master 帧或从拍摄序列自动生成
-- **可选滤镜** -- 可选的缩星处理，减少改善深空及星轨图像的星点表现
-- **设备友好** : 叠加速度与主流星轨叠加软件齐平；无需一次加载全部图像，低配设备也能处理大批量照片
+### 🚀 性能与架构
+
+* **流式处理 (Stream Processing)**：无需一次性读入所有照片，即使是 8GB 内存，也能轻松处理大量高像素的图片。
+* **DAG 算子引擎**：基于有向无环图驱动，计算流程由 YAML 自由定义。这意味着你可以像搭建积木一样，组合出专属于你的处理工作流。
+
+### 🌠 核心算法
+
+* **智能星轨合成**：除了常规模式，独家支持**混合叠加 (Mix)**，自动匹配地景亮度并抑制噪声网格。
+* **天地分离对齐**：通过蒙版分离天空与地面，天空对齐降噪的同时兼顾地面细节
+* **专业级堆栈算子**：内置 Sigma Clip、Huber Mean 等稳健统计算法，支持剔除星轨和堆栈图像中卫星线、飞机线等的异常干扰。
 
 
-## 发行版本
 
-可以从[Github的Release页](https://github.com/Designerspr/HoshinoWeaver/releases)获取到HoshinoWeaver的所有发行版本。
+## 快速上手
 
-## 环境要求
+### 运行发行版本
 
-### 环境
+目前的最新版本是 v1.0.0 "Vega"。从 [官方网站](https://hoshinoweaver.springcitystudio.top/) 或 [Github的Release页](https://github.com/Designerspr/HoshinoWeaver/releases) 获取 HoshinoWeaver 的发行版本。当下载并安装完毕后， 双击运行 `HoshinoWeaver.exe` 即可。
 
-至少在 Python >= 3.10 的环境运行该项目。
+> [!NOTE]
+> 首次启动将进入引导模式，帮助你快速上手图形界面。
 
-### 依赖包
+### 从源码运行
 
-见 [requirements.txt](./requirements.txt)。可通过在项目目录下运行 `pip install -r requirements.txt` 快速安装这些依赖包。
-
-在部分设备和python版本上，可能需要手动编译 pyexiv2 以正常进行元数据读写。具体编译方法参见[pyexiv2的说明](https://github.com/LeoHsiao1/pyexiv2/blob/master/docs/Tutorial.md)。
-
-## 用法
-
-```bash
-python "HoshinoWeaver desktop.py"
-```
-
-使用发行版本时直接运行同名可执行文件即可。首次启动会显示引导说明。
+- 至少在 Python >= 3.10 的环境运行该项目。
+- 在项目目录下运行 `pip install -r requirements.txt` 快速安装这些依赖包。
+- 运行 `python "HoshinoWeaver desktop.py"` 启动图形界面。
 
 
 ## HoshinoWeaver已实现
 
 ### 支持的文件格式
 
-| 级别 | 格式 | 说明 |
-|------|------|------|
-| 完整支持 | TIFF, JPEG, PNG | 图像 + EXIF + 色彩配置文件 |
-| RAW 支持 | CR2, CR3, ARW, NEF, DNG, RA2 | 图像 + 基础 EXIF（暂不支持 XMP 调整参数） |
-| 基础支持 | BMP, GIF | 仅图像数据 |
+| 支持程度 | 格式类型 | 备注 |
+| --- | --- | --- |
+| **完整支持** | TIFF, JPEG, PNG | 保留 EXIF 信息与色彩配置文件 |
+| **RAW 支持** | CR2, CR3, ARW, NEF, DNG, RA2 | 基础解析（暂不支持 XMP 调整） |
+| **基础支持** | BMP, GIF | 仅像素数据 |
 
-### 支持的星轨类叠加模式
+### 算子库能力（部分）
+
+* **星轨叠加**：最大值 (fifo)、混合叠加 (mix)、阈值提取 (tmax)
+* **图像校准**：偏置帧 (Bias) / 暗场 (Dark) / 平场 (Flat) 完整流程支持
+* **后期滤镜**：缩星、卫星轨迹去除、去网格化辅助等
+
+### 支持的工作流
+
+#### 星轨类叠加
 
 | 模式 | 适用场景 | 关键特性 |
 |------|----------|----------|
 | 最大值星轨 (fifo) | 经典星轨合成 | 支持渐入渐出效果 |
-| 混合星轨 (mix) | 星轨 + 地景降噪 | 天空取最大值，地景取均值，自动亮度匹配+抑制噪声网格 |
-| Threshold-Max 星轨 | 干净星轨，去除干扰 | 基于背景统计提取亮信号，抑制噪声和干扰 |
+| 混合星轨 (mix) | 星轨 + 地景降噪 | 天空使用最大值叠加，地景取均值叠加，自动亮度匹配+抑制噪声网格 |
+| Threshold-Max 星轨 (tmax) | 干净星轨，去除干扰 | 基于背景统计提取亮信号，抑制噪声和干扰 |
 
-
-### 支持的堆栈类叠加模式
+### 对齐类叠加
 
 | 模式 | 适用场景 | 关键特性 |
 |------|----------|----------|
-| 均值 (mean) | 通用降噪、模拟慢门 | 支持整数权重加速 |
-| Sigma 裁剪 (sigma_clip) | 有异常帧的降噪 | 迭代剔除异常像素后求均值 |
-| 中位数 (median) | 简单稳健降噪 | 天然抗异常值，分块处理节省内存 |
-| Huber 均值 (huber_mean) | 稳健降噪 | 基于 Huber 损失函数对异常值降权 |
-
-
-## RoadMap
-
-### v1.0.0 上线前需要做的
-- 前端界面分离，通过配置文件生成可选参数【前端】
-- 新的去网格叠加算法【待优化】
-
-To Be Fixed
-- Display P3 问题
-- 对齐接缝黑边问题
-
-### Further
-
-1. 图形界面
-  * 叠加预览
-  * 蒙版绘制
-
-2. 支持已知的叠加功能
-  * 去除热燥 (暗场) / 去除暗角（平场）
-  * 创建星轨延时序列
-  * 实现星空对齐/星空地景分别对齐的常规堆栈降噪
-  * 星轨断点的补齐(P0)
-  * 支持创建时间切片
-
-3. 输入和输出数据支持
-  * 视频输入：支持视频抽帧叠加
-  * 适当的连接断掉的星轨
-  * 图像输入：更好支持各种数据类型（Raw的XMP等）
-  * 视频导出：支持导出视频【mp4编码，编码参数配置】
-
-4. 算子能力建设
-  * 自动化天地分割
-  * 流星Filter算子
-  * 鱼眼对齐
-
-5. 序列功能特性
-  * 延时自动筛片去闪
-  * 延时自动插值去闪
-  * 分组对齐叠加
-
-6. 实验性功能
-  * 简化基于亮度估算方法中对图像方差的预估函数
-  * 基于排异的混合叠加星轨算法
-  * 星轨特殊排异（灯，飞机线？）/反排异（仅保留飞机/灯）(P0)
-  * 从内存估算的并行数量，实现更高效的性能
-  * 后期防抖: 弱化拍摄过程中小幅位移导致的星轨抖动造成的影响
-
-7. 项目层面
-  * 完善的测试流程
-  * 日志系统
-  * 合理的错误
-  * 文档
-
-## 许可证
-
-HoshinoWeaver 基于 [Mozilla 公共许可证 2.0 (MPL-2.0)](https://www.mozilla.org/en-US/MPL/2.0/) 开源。您可以自由使用、修改和分发，修改后的源文件需保持同一许可证。
-
-## 致谢
-
-星点对齐功能基于 LoveDaisy 的 [star_alignment](https://github.com/LoveDaisy/star_alignment) 算法实现改进。
-
-感谢所有参与 HoshinoWeaver 测试和提出建议的用户（目前还没有就是了🤔️）。
+| 星点对齐 | 图像绝大部分区域是星空 | 自动检测并对齐星点，消除旋转误差，叠加星空图像 |
+| 天地分别对齐叠加 | 天空和地面都需要叠加降噪 | 自动分离及合并天空与地面的对齐结果，兼顾星空降噪与地面细节 |
 
 ## 附录
 
-### 为什么叫 HoshinoWeaver?
+### 许可证与致谢
 
-TO BE DONE
+* **许可证**：本项目基于 [MPL-2.0](https://www.google.com/search?q=./LICENSE) 协议开源。
+* **致谢**：
+  * 星点对齐算法改进自 [LoveDaisy/star_alignment]()。
+  * 感谢所有为本项目提供样片与建议的摄影师。
 
+### 为什么叫 HoshinoWeaver？
 
-### Stargazers
+**Hoshino** 代表我们的目标（与致敬）；**Weaver** 代表我们的方式。
+
+> [!Tip]
+> “数字时代的摄影不再仅仅是捕捉，更是对数据的重新编织。我们希望通过这个工具，让每一位摄影师都能精密地控制每一根“数据经纬”，最终织出一幅属于自己的星河长卷。”
+
+### Project Stargazers
 [![Stargazers over time](https://starchart.cc/Designerspr/HoshinoWeaver.svg?variant=adaptive)](https://starchart.cc/Designerspr/HoshinoWeaver)
-
-                    
