@@ -10,14 +10,14 @@ routes:
     widget: tabs
     options:
       fifo:
-        label: "最大值"
-        description: "逐像素取最大值，经典星轨拖尾效果"
+        label: "仅最大值"
+        description: "仅计算最大值，经典星轨效果"
       mix:
         label: "噪声均衡"
         description: "Sigma 裁剪后求均值，抑制地面噪声同时保留星轨"
-      tmax:
-        label: "阈值提取"
-        description: "阈值裁剪后最大值，减少噪声贡献"
+      #tmax:
+      #  label: "阈值提取"
+      #  description: "阈值裁剪后最大值，减少噪声贡献"
 
 configs:
   fin:
@@ -28,11 +28,12 @@ configs:
       min: 0
       max: 1.0
       step: 0.05
+      transform: {right: complement}
   fout:
       hidden: true
   enable_star_shrink:
-    label: "星点缩小"
-    description: "启用后缩小星点使星轨更细腻"
+    label: "启用缩星"
+    description: "叠加星轨时缩小星点，使星轨更细腻"
     widget: switch
   enable_satellite_clean:
     label: "卫星线去除"
@@ -70,9 +71,10 @@ route_configs:
       description: "低于/高于均值多少个标准差视为异常值"
       widget: range_slider
       bind: rej_high
-      min: 0.5
-      max: 6.0
+      min: -5.0
+      max: 5.0
       step: 0.1
+      transform: {left: abs}
     rej_high:
       hidden: true
     max_iter:
@@ -84,43 +86,43 @@ route_configs:
     buffer_mode:
       hidden: true
     mask:
-      label: "掩膜文件"
+      label: "掩模文件"
       widget: file_picker
       accept: ".tif,.tiff,.png"
     minus_only:
-      label: "仅减法"
-      description: "仅对低于均值的像素执行裁剪"
+      label: "平衡亮度"
+      description: "仅平衡最大值结果亮度，不额外执行最大值叠加的统计学还原"
       widget: switch
-  tmax:
-    rej_low:
-      label: "排异 σ 范围"
-      description: "低于/高于均值多少个标准差视为异常值"
-      widget: range_slider
-      bind: rej_high
-      min: 0.5
-      max: 6.0
-      step: 0.1
-    rej_high:
-      hidden: true
-    max_iter:
-      label: "最大迭代次数"
-      widget: slider
-      min: 1
-      max: 20
-      step: 1
-    buffer_mode:
-      hidden: true
-    mask:
-      label: "掩膜文件"
-      widget: file_picker
-      accept: ".tif,.tiff,.png"
-    n_sigma:
-      label: "阈值 σ"
-      description: "提取阈值（-1 = 自动计算）"
-      widget: slider
-      min: -1
-      max: 10.0
-      step: 0.5
+  #tmax:
+  #  rej_low:
+  #    label: "排异 σ 范围"
+  #    description: "低于/高于均值多少个标准差视为异常值"
+  #    widget: range_slider
+  #    bind: rej_high
+  #    min: 0.5
+  #    max: 6.0
+  #    step: 0.1
+  #  rej_high:
+  #    hidden: true
+  #  max_iter:
+  #    label: "最大迭代次数"
+  #    widget: slider
+  #    min: 1
+  #    max: 20
+  #    step: 1
+  #  buffer_mode:
+  #    hidden: true
+  #  mask:
+  #    label: "掩膜文件"
+  #    widget: file_picker
+  #    accept: ".tif,.tiff,.png"
+  #  n_sigma:
+  #    label: "阈值 σ"
+  #    description: "提取阈值（-1 = 自动计算）"
+  #    widget: slider
+  #    min: -1
+  #    max: 10.0
+  #    step: 0.5
 
 layout:
   groups:

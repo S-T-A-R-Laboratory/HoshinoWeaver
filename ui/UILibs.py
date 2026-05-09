@@ -4,13 +4,18 @@
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QObject, QSize, QPointF, QRect, QPoint
-from PySide6.QtWidgets import QLabel, QTreeWidget, QAbstractItemView, QMenu, QTreeWidgetItem, QDialog
-from PySide6.QtWidgets import QComboBox, QDialogButtonBox, QVBoxLayout, QPushButton, QFrame
-from PySide6.QtGui import QAction, QPixmap, QWheelEvent, QMouseEvent, QPainter, QImage, QColor, QBrush, QPolygon, QCursor
+import rawpy
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QSize, Qt, Signal
+from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QImage,
+                           QMouseEvent, QPainter, QPixmap, QPolygon,
+                           QWheelEvent)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog,
+                               QDialogButtonBox, QFrame, QLabel, QMenu,
+                               QPushButton, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout)
 
 from hoshicore.component.progress import DummyTracker
-import rawpy
+
 
 class imgDisplayQFrame(QFrame):
     def __init__(self, parent=None):
@@ -577,9 +582,12 @@ class DoubleSlider(QFrame):
 
         # 高度固定，宽度自适应容器
         self.setFixedHeight(self.height_)
-        self.setMinimumWidth(60)
+        self.setMinimumWidth(40)
         # 启用鼠标跟踪
         self.setMouseTracking(True)
+
+    def sizeHint(self):
+        return QSize(60, self.height_)
 
     def update_slider(self):
         self.width_ = self.width() if self.width() > 0 else self.width_

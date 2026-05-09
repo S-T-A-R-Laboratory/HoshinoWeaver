@@ -58,7 +58,8 @@ class BaseMerger(metaclass=ABCMeta):
 
     def merge(self,
               new_img: np.ndarray,
-              weight: Optional[Union[float, NDArray]] = None):
+              weight: Optional[Union[float, NDArray]] = None,
+              spatial_mask: Optional[np.ndarray] = None):
         """合并新图像到堆叠结果。
 
         Args:

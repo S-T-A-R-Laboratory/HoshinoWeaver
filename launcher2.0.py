@@ -17,6 +17,12 @@ def main():
     parser.add_argument("dir",
                         type=str,
                         help="Directory containing the input images.")
+    parser.add_argument(
+        "--route",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Route selection (multiple), like --route stacker=sigma_clip")
     parser.add_argument("--num-workers",
                         type=int,
                         default=1,
@@ -48,6 +54,15 @@ def main():
         os.path.join(dir_name, x) for x in img_files if is_support_format(x)
     ]
 
+    # route choices parsing
+    route_choices: dict[str, str] = {}
+    for item in args.route:
+        if "=" not in item:
+            print(f"错误：--route 格式应为 KEY=VALUE，得到：{item}", file=sys.stderr)
+            return 1
+        k, v = item.split("=", 1)
+        route_choices[k.strip()] = v.strip()
+
     global_inputs = {"fnames": img_files}
     global_configs = {
         "fin": 0.2,
@@ -61,7 +76,8 @@ def main():
         run_from_yaml(yaml_path,
                       global_inputs,
                       global_configs,
-                      num_workers=num_workers))
+                      num_workers=num_workers,
+                      route_choices=route_choices))
 
 
 if __name__ == "__main__":

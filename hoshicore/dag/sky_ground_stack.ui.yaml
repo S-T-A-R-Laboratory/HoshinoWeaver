@@ -57,10 +57,10 @@ configs:
     options: ["auto", "homography", "affine"]
   same_camera:
     label: "同一相机"
-    description: "所有帧来自同一相机（可优化对齐）"
+    description: "所有帧来自同一相机（优化对齐速度）"
     widget: switch
   mask:
-    label: "天地分离掩膜"
+    label: "天空区域掩模"
     description: "白色区域为天空，黑色区域为地面"
     widget: file_picker
     accept: ".tif,.tiff,.png"
@@ -80,16 +80,17 @@ route_configs:
       description: "低于/高于均值多少个标准差视为异常值"
       widget: range_slider
       bind: rej_high
-      min: 0.5
-      max: 6.0
+      min: -5.0
+      max: 5.0
       step: 0.1
+      transform: {left: abs}
     rej_high:
       hidden: true
     max_iter:
       label: "最大迭代次数"
       widget: slider
       min: 1
-      max: 20
+      max: 10
       step: 1
     early_converge_ratio:
       label: "早停比例"
