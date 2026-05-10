@@ -101,7 +101,7 @@ def init_logger(logger, debug_mode: bool, trace_mode:bool, log_path: Optional[st
     logger.remove()
     if trace_mode:
         logger.add(sys.stderr, level="TRACE")
-    if debug_mode:
+    elif debug_mode:
         logger.add(sys.stderr, level="DEBUG")
     else:
         logger.add(sys.stderr, level="INFO")

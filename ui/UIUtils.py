@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 from PySide6.QtCore import QPoint, QSize, Qt, Slot
-from PySide6.QtGui import QBrush, QColor, QCursor, QIcon
+from PySide6.QtGui import QCursor, QIcon
 from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QMainWindow,
                                QMenu, QPushButton, QTreeWidgetItem, QWidget)
 from qasync import asyncSlot
@@ -129,89 +129,8 @@ class SlotHandler(QMainWindow):
             QPoint(0, self.window.menu_setting.height()))
         self.menu.popup(button_pos)  # 弹出菜单，位置是按钮下方
 
-    @Slot()
-    def output_file_option_2_switch(self):
-        '''
-        响应文件类型选择
-        '''
-        # # 设置tab页
-        # 改用隐藏控件实现 不再通过tab页实现
-        output_file_type = self.window.alter_output_type_2.currentText()
-        if output_file_type == 'TIFF':
-            # 设置压缩级别隐藏 图片质量隐藏
-            self.window.frame_png_level.hide()
-            self.window.frame_png_level.setVisible(False)
-            self.window.frame_jpg_level.hide()
-            self.window.frame_jpg_level.setVisible(False)
-            # 启用色深下拉选项
-            self.window.alter_output_bits.model().item(1).setEnabled(True)
-            self.window.alter_output_bits.model().item(1).setForeground(
-                QBrush(QColor(35, 35, 35, 210)))
-            self.window.alter_output_bits.model().item(2).setEnabled(True)
-            self.window.alter_output_bits.model().item(2).setForeground(
-                QBrush(QColor(35, 35, 35, 210)))
-        elif output_file_type == 'JPG':
-            # 设置压缩级别隐藏 图片质量可见
-            self.window.frame_png_level.hide()
-            self.window.frame_png_level.setVisible(False)
-            self.window.frame_jpg_level.show()
-            self.window.frame_jpg_level.setVisible(True)
-            # 设置色深下拉选项为8bit并禁用其他选项
-            self.window.alter_output_bits.setCurrentText('8 bit')
-            self.window.alter_output_bits.model().item(1).setEnabled(False)
-            self.window.alter_output_bits.model().item(1).setForeground(
-                QBrush(QColor(35, 35, 35, 140)))
-            self.window.alter_output_bits.model().item(2).setEnabled(False)
-            self.window.alter_output_bits.model().item(2).setForeground(
-                QBrush(QColor(35, 35, 35, 140)))
-        elif output_file_type == 'PNG':
-            # 设置压缩级别可见 图片质量隐藏
-            self.window.frame_png_level.show()
-            self.window.frame_png_level.setVisible(True)
-            self.window.frame_jpg_level.hide()
-            self.window.frame_jpg_level.setVisible(False)
-            # 启用色深下拉选项
-            # 在选择32bit时，设置色深下拉选项为16bit。此外 禁用32bit选项
-            if self.window.alter_output_bits.currentText() == '32 bit':
-                self.window.alter_output_bits.setCurrentText('16 bit')
-            self.window.alter_output_bits.model().item(1).setEnabled(True)
-            self.window.alter_output_bits.model().item(1).setForeground(
-                QBrush(QColor(35, 35, 35, 210)))
-            self.window.alter_output_bits.model().item(2).setEnabled(False)
-            self.window.alter_output_bits.model().item(2).setForeground(
-                QBrush(QColor(35, 35, 35, 140)))
-        else:
-            pass
-
-        # 将所选的文件格式存入变量，根据选择的文件格式更新输出文件路径 如果新的文件格式下，此前已经填过路径，用之前的，如果之前没填过，则为空
-        # 同步更新文件路径框显示的路径和tooltip显示文字
-        self.window._output_file_type = output_file_type
-        self.window._output_file_path = self.window._output_file_path_cache[
-            output_file_type]
-        self.window.output_path_2.setText(self.window._output_file_path)
-        self.window.output_path_2.setToolTip((self.window._output_file_path))
-        self.detect_status()
-
-    # alter_fade_in_out, alter_rejection, mask_able, alter_mask_file,
-    # int_weight_able, alter_max_iter, alter_output_bits — 已移除，由动态面板接管
-
-    @Slot()
-    def alter_png_level(self, val=None):
-        if val:
-            self.window._png_compressing = val
-        else:
-            self.window._png_compressing = int(self.window.png_level.text())
-        self.window.png_level.setText(str(self.window._png_compressing))
-        self.detect_status()
-
-    @Slot()
-    def alter_jpg_level(self, val=None):
-        if val:
-            self.window._jpg_quality = int(val)
-        else:
-            self.window._jpg_quality = int(self.window.jpg_level.text())
-        self.window.jpg_level.setText(str(self.window._jpg_quality))
-        self.detect_status()
+    # output_file_option_2_switch, save_img, alter_png_level, alter_jpg_level,
+    # update_output_file_type, update_output_file_path_cache — 已移除，由 OutputPanel 接管
 
     @Slot(int, str)
     def update_progress_bar(self, percent, desc=''):
@@ -223,8 +142,9 @@ class SlotHandler(QMainWindow):
             self.window._status_n['tips'] = desc or f'当前进度{percent}%，请勿操作'
             self.window._status_n['status'] = f'处理中'
         else:
-            self.window._status_n[
-                'tips'] = f'已完成~(文件路径：{self.window._output_file_path_cache[self.window._output_file_type]})'
+            output_path = getattr(self.window, '_last_output_path', '')
+            tips = f'已完成~(文件路径：{output_path})' if output_path else '已完成'
+            self.window._status_n['tips'] = tips
             self.window._status_n['status'] = f'任务完成'
         self.update_status_display()
 
@@ -264,40 +184,6 @@ class SlotHandler(QMainWindow):
                     break
                 else:
                     pre_img = img
-
-    @Slot()
-    def save_img(self):
-        # 打开文件浏览对话框
-        options = QFileDialog.Options(0)
-        # 允许保存的文件类型
-        filter = 'JPG (*.jpg);;PNG (*.png);;TIFF (*.tif)'
-        # 根据当前已选择的文件类型选择默认类型
-        current_file_type = self.window.alter_output_type_2.currentText()
-        selectedFilter = {
-            'JPG': 'JPG (*.jpg)',
-            'PNG': 'PNG (*.png)',
-            'TIFF': 'TIFF (*.tif)'
-        }[current_file_type]
-
-        file_path, choosed_file_type = QFileDialog.getSaveFileName(
-            self,
-            "保存文件",
-            "",
-            filter=filter,
-            selectedFilter=selectedFilter,
-            options=options)
-        # 用户在该页面重新选择文件类型后，修改页面的文件格式和格式对应的额外选项tab页
-        choosed_file_type = choosed_file_type.split(' ')[0]
-        if current_file_type != choosed_file_type:
-            self.window.alter_output_type_2.setCurrentText(choosed_file_type)
-            self.update_output_file_type(choosed_file_type)
-        # 将文件路径写入output_path_2
-        if file_path:
-            self.update_output_file_path_cache(choosed_file_type, file_path)
-            # print(file_path)
-        else:
-            pass
-        self.detect_status()
 
     @Slot()
     def add_folder(self, category=None):
@@ -649,9 +535,11 @@ class SlotHandler(QMainWindow):
         global_configs = self.window.config_panel.collect_configs()
         route_choices = self.window.config_panel.collect_route_choices()
 
-        # 确保 output_filename 有值（面板可能收集到 None）
-        if not global_configs.get("output_filename"):
-            global_configs["output_filename"] = self.window._output_file_path
+        # 由 OutputPanel 提供输出相关参数（filename / dtype / 格式特定参数）
+        output_collected = self.window.output_panel.collect_outputs()
+        global_configs.update(output_collected)
+        # 缓存主输出路径供进度条完成提示使用
+        self.window._last_output_path = global_configs.get("output_filename", "")
 
         try:
             logger.info(f"Starting YAML: {yaml_path};\n"
@@ -705,25 +593,6 @@ class SlotHandler(QMainWindow):
     def display_star_trail_tips(self, text, color='red'):
         self.window.star_trial_tips.setStyleSheet("color: %s;" % color)
         self.window.star_trial_tips.setText(text)
-
-    @Slot()
-    def update_output_file_type(self, val='JPG'):
-        self.window._output_file_type = val
-        self.update_output_file_path_cache(file_type=val)
-        self.detect_status()
-
-    @Slot()
-    def update_output_file_path_cache(self, file_type, val=None):
-        # print(val)
-        # print(self.window._output_file_type)
-        # print(self.window._output_file_path_cache)
-        if val:
-            self.window._output_file_path_cache[file_type] = val
-        self.window._output_file_path = self.window._output_file_path_cache[
-            self.window._output_file_type]
-        self.window.output_path_2.setText(self.window._output_file_path)
-        self.window.output_path_2.setToolTip((self.window._output_file_path))
-        self.detect_status()
 
     @Slot()
     def update_resize(self, val=None):
@@ -853,23 +722,7 @@ class SlotHandler(QMainWindow):
                 'type': 'operable_widget'
             },
             '12': {
-                'widget': self.window.alter_output_type_2,
-                'type': 'operable_widget'
-            },
-            '13': {
-                'widget': self.window.alter_output_2,
-                'type': 'operable_widget'
-            },
-            '14': {
-                'widget': self.window.alter_png_level,
-                'type': 'operable_widget'
-            },
-            '15': {
-                'widget': self.window.alter_jpg_level,
-                'type': 'operable_widget'
-            },
-            '16': {
-                'widget': self.window.alter_output_bits,
+                'widget': self.window.output_panel,
                 'type': 'operable_widget'
             },
             '17': {
@@ -884,11 +737,11 @@ class SlotHandler(QMainWindow):
         dis_handleable_widget_content = {
             'star_trail_fast_preview': [
                 '01', '02', '03', '06', '07', '08', '09', '10', '11', '12',
-                '13', '14', '15', '16', '17', '18'
+                '17', '18'
             ],
             'star_trail': [
                 '01', '02', '03', '06', '07', '08', '09', '10', '11', '12',
-                '13', '14', '15', '16', '17', '18'
+                '17', '18'
             ]
         }
 
@@ -927,10 +780,9 @@ class SlotHandler(QMainWindow):
         elif len(self.window._input_files['亮场']) < 3:
             self.window._status_n['status'] = '未就绪'
             self.window._status_n['tips'] = '请添加3张或以上图像文件'
-        elif self.window._output_file_path_cache[
-                self.window._output_file_type] is None:
+        elif not self.window.output_panel.is_ready():
             self.window._status_n['status'] = '未就绪'
-            self.window._status_n['tips'] = '请选择存储路径'
+            self.window._status_n['tips'] = self.window.output_panel.missing_reason() or '请选择存储路径'
         else:
             self.window._status_n['status'] = '就绪'
             self.window._status_n['tips'] = '点击开始按钮进行图像处理'
