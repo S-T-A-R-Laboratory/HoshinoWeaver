@@ -170,7 +170,7 @@ def _spec_needs_meta_resolve(spec: dict[str, Any]) -> bool:
     nodes = spec.get("nodes")
     if isinstance(nodes, dict):
         for ns in nodes.values():
-            if isinstance(ns, dict) and ("route_key" in ns or "enabled" in ns):
+            if isinstance(ns, dict) and ("route_key" in ns or "enable" in ns):
                 return True
     return False
 
