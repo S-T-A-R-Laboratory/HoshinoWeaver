@@ -152,7 +152,7 @@ def _resolve_enabled_nodes(
     for node_name, node_spec in nodes.items():
         if not isinstance(node_spec, dict):
             continue
-        enabled_ref = node_spec.pop("enabled", None)
+        enabled_ref = node_spec.pop("enable", None)
         if enabled_ref is None:
             continue
 
@@ -208,7 +208,7 @@ def _resolve_enabled_value(
     """解析 enabled 引用为 bool 值。"""
     if not isinstance(ref, str) or not ref.startswith("configs."):
         raise MetaResolveError(
-            f"Node '{node_name}': 'enabled' must reference 'configs.<key>', "
+            f"Node '{node_name}': 'enable' must reference 'configs.<key>', "
             f"got '{ref}'")
     config_key = ref[len("configs."):]
 
@@ -220,7 +220,7 @@ def _resolve_enabled_value(
         return bool(cfg_def["default"])
 
     raise MetaResolveError(
-        f"Node '{node_name}': enabled references 'configs.{config_key}' "
+        f"Node '{node_name}': enable references 'configs.{config_key}' "
         f"but no value provided and no default declared")
 
 
