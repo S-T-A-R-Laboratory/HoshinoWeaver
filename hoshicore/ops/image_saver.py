@@ -48,6 +48,16 @@ class ImageSaveOp(BaseOp):
             "description": "EXIF 及色彩配置信息",
             "default": None,
         },
+        "jpg_quality": {
+            "type": "int",
+            "description": "JPG 图像质量（1-100）",
+            "default": 85,
+        },
+        "png_compressing": {
+            "type": "int",
+            "description": "PNG 压缩级别（1-9）",
+            "default": 7,
+        },
     }
     OUTPUTS: dict[str, Any] = {
         "return_code": {
@@ -64,6 +74,8 @@ class ImageSaveOp(BaseOp):
         output_dtype_str = configs.get('output_dtype')
         output_filename = configs['output_filename']
         exif = configs.get('exif')
+        jpg_quality = configs['jpg_quality']
+        png_compressing = configs['png_compressing']
 
         target_dtype = None
         # JPEG 强制要求 uint8
@@ -85,6 +97,8 @@ class ImageSaveOp(BaseOp):
             await asyncio.to_thread(save_img,
                                     output_filename,
                                     image,
+                                    png_compressing=png_compressing,
+                                    jpg_quality=jpg_quality,
                                     exif=exif)
             return_code = 0
             logger.info(f"Image saved successfully to {output_filename}")

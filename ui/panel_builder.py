@@ -22,12 +22,25 @@ from ui.widgets import (
 
 
 @dataclass
+class OutputSpec:
+    """Output declaration for OutputPanel rendering."""
+    filename_key: str
+    label: str = "输出"
+    type: str = "image"  # image | sequence | video
+    dtype_key: str | None = None
+    formats: list[str] | None = None              # workflow-allowed formats
+    dtype_options: list[str] | None = None        # workflow-allowed dtypes
+    format_params: dict[str, str] = field(default_factory=dict)  # preset_param → config_key
+
+
+@dataclass
 class PanelSchema:
     meta_yaml_path: str
     routes: dict[str, RouteSpec] = field(default_factory=dict)
     configs: list[ConfigSpec] = field(default_factory=list)
     route_configs: dict[str, dict[str, list[ConfigSpec]]] = field(default_factory=dict)
     layout: dict = field(default_factory=dict)
+    outputs: list[OutputSpec] = field(default_factory=list)
 
     @classmethod
     def from_yaml(cls, meta_path: str, ui_path: str | None = None) -> "PanelSchema":
@@ -43,8 +56,43 @@ class PanelSchema:
         schema._parse_routes(meta, ui)
         schema._parse_configs(meta, ui)
         schema._parse_route_configs(meta, ui)
+        schema._parse_outputs(ui)
         schema.layout = ui.get("layout", {})
         return schema
+
+    def _parse_outputs(self, ui: dict):
+        from ui.output_presets import IMAGE_FORMAT_PRESETS
+        for entry in ui.get("outputs", []) or []:
+            if not isinstance(entry, dict) or "filename_key" not in entry:
+                raise ValueError(
+                    f"ui.yaml 'outputs' entry must be a dict with 'filename_key': {entry!r}")
+            spec = OutputSpec(
+                filename_key=entry["filename_key"],
+                label=entry.get("label", "输出"),
+                type=entry.get("type", "image"),
+                dtype_key=entry.get("dtype_key"),
+                formats=entry.get("formats"),
+                dtype_options=entry.get("dtype_options"),
+                format_params=entry.get("format_params", {}) or {},
+            )
+            # Validate format_params keys exist in presets
+            for preset_param in spec.format_params:
+                found = any(
+                    preset_param in preset["params"]
+                    for preset in IMAGE_FORMAT_PRESETS.values()
+                )
+                if not found:
+                    raise ValueError(
+                        f"OutputSpec '{spec.filename_key}': format_params key "
+                        f"'{preset_param}' is not declared in any IMAGE_FORMAT_PRESETS entry")
+            # Validate formats list against presets
+            if spec.formats is not None:
+                for fmt in spec.formats:
+                    if fmt not in IMAGE_FORMAT_PRESETS:
+                        raise ValueError(
+                            f"OutputSpec '{spec.filename_key}': format '{fmt}' "
+                            f"is not declared in IMAGE_FORMAT_PRESETS")
+            self.outputs.append(spec)
 
     def _parse_routes(self, meta: dict, ui: dict):
         for route_key, route_def in meta.get("routes", {}).items():

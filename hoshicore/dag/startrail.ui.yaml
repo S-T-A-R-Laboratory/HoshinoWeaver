@@ -51,12 +51,9 @@ configs:
     description: "启用使用整数累加，改善精度，速度更快"
     widget: switch
   output_dtype:
-    label: "输出位深"
-    widget: select
-    options: ["uint8", "uint16", "uint32"]
+    hidden: true
   output_filename:
-    label: "输出文件名"
-    widget: input
+    hidden: true
   exif_reduce_type:
     hidden: true
   loader_type:
@@ -127,9 +124,20 @@ route_configs:
 layout:
   groups:
     - name: "星轨效果"
-      keys: [fin, fout, enable_star_shrink]
-    - name: "卫星线去除"
-      keys: [enable_satellite_clean, sat_window_size]
+      keys: [fin, fout]
+    - name: "预处理"
+      keys: [enable_star_shrink, enable_satellite_clean, sat_window_size]
     - name: "输出设置"
-      keys: [int_weight, output_dtype, output_filename]
-  order: [mode, fin, fout, enable_star_shrink, enable_satellite_clean, sat_window_size, int_weight, output_dtype, output_filename]
+      keys: [int_weight]
+  order: [mode, fin, fout, enable_star_shrink, enable_satellite_clean, sat_window_size, int_weight]
+
+outputs:
+  - filename_key: output_filename
+    label: "输出图像"
+    type: image
+    dtype_key: output_dtype
+    formats: ["JPG", "PNG", "TIFF"]
+    dtype_options: ["uint8", "uint16", "uint32"]
+    format_params:
+      jpg_quality: jpg_quality
+      png_compressing: png_compressing

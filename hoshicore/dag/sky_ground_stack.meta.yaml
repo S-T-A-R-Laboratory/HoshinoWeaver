@@ -29,6 +29,8 @@ configs:
   exif_reduce_type: { type: str,   default: "sum" }
   output_filename:  { type: str,   default: "result.tif" }
   output_dtype:     { type: str,   default: "uint16" }
+  jpg_quality:      { type: int,   default: 85 }
+  png_compressing:  { type: int,   default: 7 }
   loader_type:      { type: str,   default: "img_file_list" }
   loader_configs:   { type: dict,  default: {} }
   align_method:     { type: str,   default: "auto" }
@@ -201,6 +203,8 @@ nodes:
       exif: exif_reducer.result
       output_filename: configs.output_filename
       output_dtype: configs.output_dtype
+      jpg_quality: configs.jpg_quality
+      png_compressing: configs.png_compressing
     outputs:
       return_code: { type: int }
 
