@@ -57,8 +57,27 @@ class PanelSchema:
         schema._parse_configs(meta, ui)
         schema._parse_route_configs(meta, ui)
         schema._parse_outputs(ui)
+        schema._resolve_bind_defaults()
         schema.layout = ui.get("layout", {})
         return schema
+
+    def _resolve_bind_defaults(self):
+        """Inject `bind_default` into every range_slider-with-bind spec.
+
+        For specs where `bind` references another key in the same group,
+        copy that key's `default` into `bind_default` so the widget can
+        initialize the right handle from meta.yaml rather than from `max`.
+        """
+        def _resolve(specs: list[ConfigSpec]):
+            by_key = {s.key: s for s in specs}
+            for s in specs:
+                if s.bind and s.bind in by_key:
+                    s.bind_default = by_key[s.bind].default
+
+        _resolve(self.configs)
+        for _route, opt_map in self.route_configs.items():
+            for _opt, specs in opt_map.items():
+                _resolve(specs)
 
     def _parse_outputs(self, ui: dict):
         from ui.output_presets import IMAGE_FORMAT_PRESETS
@@ -170,35 +189,42 @@ def _build_config_spec(key: str, meta_spec: dict, ui_spec: dict) -> ConfigSpec:
         min=ui_spec.get("min"),
         max=ui_spec.get("max"),
         step=ui_spec.get("step"),
-        options=ui_spec.get("options"),
+        options=_normalize_options(ui_spec.get("options")),
         bind=ui_spec.get("bind"),
         accept=ui_spec.get("accept"),
         transform=ui_spec.get("transform"),
     )
 
 
+def _normalize_options(raw: Any) -> list[tuple[Any, str]] | None:
+    """Normalize `options` into list of (value, label) pairs.
+
+    Accepts:
+      - None
+      - list of scalars (legacy):       ["a", "b"]      → [("a","a"), ("b","b")]
+      - list of dicts (with alias):     [{value, label}, ...]
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError(f"options must be a list, got {type(raw).__name__}")
+    out: list[tuple[Any, str]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            if "value" not in item:
+                raise ValueError(f"option dict must contain 'value': {item!r}")
+            value = item["value"]
+            label = str(item.get("label", value))
+        else:
+            value = item
+            label = str(item)
+        out.append((value, label))
+    return out
+
+
 # ─── Value Transforms ────────────────────────────────────────────────────────
 
-# Named transforms applied when forwarding widget values to backend params.
-# Each transform is a callable: float -> float.
-_VALUE_TRANSFORMS: dict[str, Callable[[float], float]] = {
-    "identity": lambda x: x,
-    "negate": lambda x: -x,           # UI shows -3..5, backend needs |−x|
-    "complement": lambda x: 1 - x,    # UI right handle 0.8 → backend gets 0.2
-    "abs": lambda x: abs(x),
-}
-
-
-def _apply_transform(name: str | None, value):
-    if name is None or value is None:
-        return value
-    fn = _VALUE_TRANSFORMS.get(name)
-    if fn is None:
-        return value
-    try:
-        return fn(value)
-    except Exception:
-        return value
+from ui.transforms import apply_forward as _apply_transform  # noqa: E402
 
 
 def _infer_widget(typ: str) -> str:

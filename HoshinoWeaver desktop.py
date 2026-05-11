@@ -22,6 +22,7 @@ from ui.UI import Ui_HNW,ui_choose_mode,Ui_guide
 from ui.UIUtils import SlotHandler
 from ui.UILibs import borderFrame
 from ui.panel_builder import PanelSchema, DynamicConfigPanel
+from ui.output_panel import OutputPanel
 
 from PySide6.QtWidgets import QScrollArea
 
@@ -557,6 +558,8 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.guide_window = HNW_guide(callback=self.update_config, display_always_flag=self._CONFIG['guide_always_display'],parent=self)
         # 4 动态参数面板
         self._setup_dynamic_panel()
+        # 5 动态输出面板
+        self._setup_output_panel()
 
     def _setup_dynamic_panel(self):
         """Replace hardcoded parameter widgets with DynamicConfigPanel."""
@@ -588,6 +591,36 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         self._current_meta_yaml_path = None
 
+    def _setup_output_panel(self):
+        """Replace static output tab widgets with OutputPanel."""
+        layout = self.star_trail_output.layout()
+        if layout:
+            while layout.count():
+                item = layout.takeAt(0)
+                w = item.widget()
+                if w:
+                    w.hide()
+                    w.deleteLater()
+
+        scroll = QScrollArea(self.star_trail_output)
+        scroll.setObjectName("output_scroll_area")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            "QScrollBar:vertical { background-color: rgba(190,190,190,0); border: 0px; width: 6px; }"
+            "QScrollBar::handle:vertical { background-color: rgba(190,190,190,190); border-radius: 3px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+        )
+
+        self.output_panel = OutputPanel()
+        scroll.setWidget(self.output_panel)
+        layout.addWidget(scroll)
+
+        # Re-evaluate readiness whenever an output value changes
+        self.output_panel.values_changed.connect(
+            lambda: self.slot_handler.detect_status() if hasattr(self, 'slot_handler') else None)
+
     def load_mode_panel(self, mode: str):
         """Load the dynamic panel for a given mode name."""
         if mode not in MODE_MAP:
@@ -596,6 +629,7 @@ class HNW_window(QMainWindow, Ui_HNW):
         self._current_meta_yaml_path = meta_path
         schema = PanelSchema.from_yaml(meta_path, ui_path)
         self.config_panel.load_schema(schema)
+        self.output_panel.load_specs(schema.outputs)
 
     def initial_attr(self, workspace='星轨叠加'):
         '''
@@ -669,14 +703,9 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.star_trail_option_box.setCurrentIndex(0)
 
         # 2 设置按钮默认选中状态
-        # 默认输出jpg
-        # 更改setCurrentText为png再改回jpg确保槽函数触发
-        self.alter_output_type_2.setCurrentText('PNG')
-        self.alter_output_type_2.setCurrentText('JPG')
+        # 输出选项卡已由 OutputPanel 接管，无需手动初始化静态 widget
 
-        # 3 设置图像质量滑块默认值
-        self.alter_jpg_level.setValue(85)
-        self.alter_png_level.setValue(8)
+        # 3 输出尺寸滑块默认值
         self.alter_resize.setValue(100)
 
         # 4 文件列表初始化
@@ -710,9 +739,6 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 7 设置文件列表允许允许多选
         self.star_trail_file_tree.setSelectionMode(
             QAbstractItemView.ExtendedSelection)
-
-        # s设置输出文件路径框为不可修改
-        self.output_path_2.setReadOnly(True)
 
         # 旧的硬编码参数初始化已移除 — 由动态面板接管
 
@@ -761,22 +787,7 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 叠加选项 — 动态面板接管，旧绑定已移除
 
         # 输出选项 选项卡
-        # 2 星轨页面的文件格式下拉框
-        self.alter_output_type_2.currentTextChanged.connect(
-            self.slot_handler.output_file_option_2_switch)
-        # 4 输出文件选择框
-        self.alter_output_2.clicked.connect(self.slot_handler.save_img)
-        # 5 图像质量值显示
-        self.alter_png_level.valueChanged.connect(
-            lambda value: self.slot_handler.alter_png_level(int(value)))
-        self.alter_jpg_level.valueChanged.connect(
-            lambda value: self.slot_handler.alter_jpg_level(int(value)))
-
-        # self.alter_png_level.valueChanged.connect(lambda value: self.slot_handler.update_png_compressing(int(value)))
-        # self.alter_jpg_level.valueChanged.connect(lambda value: self.slot_handler.update_jpg_quality(int(value)))
-        # self.alter_png_level.valueChanged.connect(lambda value: self.png_level.setText(str(value)))
-        # self.alter_jpg_level.valueChanged.connect(lambda value: self.jpg_level.setText(str(value)))
-        # 色深 — 由 output_file_option_2_switch 统一管理，无需额外绑定
+        # 输出选项 — 由 OutputPanel 接管，原静态绑定已移除
         # 输出尺寸
         self.alter_resize.valueChanged.connect(
             lambda value: self.slot_handler.update_resize(int(value)))
