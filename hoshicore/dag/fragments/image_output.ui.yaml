@@ -1,0 +1,9 @@
+filename_key: output_filename
+label: "输出图像"
+type: image
+dtype_key: output_dtype
+formats: ["JPG", "PNG", "TIFF"]
+dtype_options: ["uint8", "uint16","uint32"]
+format_params:
+  jpg_quality: jpg_quality
+  png_compressing: png_compressing

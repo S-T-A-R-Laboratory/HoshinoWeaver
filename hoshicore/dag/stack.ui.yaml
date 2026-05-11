@@ -43,42 +43,7 @@ configs:
     hidden: true
     
 route_configs:
-  sigma_clip:
-    rej_low:
-      label: "低亮度排异 σ 阈值"
-      description: "低于均值多少个标准差视为异常值"
-      widget: slider
-      min: 0
-      max: 5.0
-      step: 0.1
-    rej_high:
-      label: "高亮度排异 σ 阈值"
-      description: "高于均值多少个标准差视为异常值"
-      widget: slider
-      min: 0
-      max: 5.0
-      step: 0.1
-    max_iter:
-      label: "最大迭代次数"
-      widget: slider
-      min: 1
-      max: 10
-      step: 1
-    early_converge_ratio:
-      label: "早停比例"
-      description: "连续两轮保留像素比例超过此值时提前终止"
-      widget: slider
-      min: 0.9
-      max: 1.0
-      step: 0.01
-  huber_mean:
-    huber_c:
-      label: "Huber 常数 c"
-      description: "越小越稳健（更多像素被降权），越大越接近普通均值"
-      widget: slider
-      min: 0.1
-      max: 5.0
-      step: 0.05
+  "!include": fragments/stacker_route_configs.ui.yaml
 
 layout:
   groups:
@@ -87,12 +52,4 @@ layout:
   order: [stacker, int_weight]
 
 outputs:
-  - filename_key: output_filename
-    label: "输出图像"
-    type: image
-    dtype_key: output_dtype
-    formats: ["JPG", "PNG", "TIFF"]
-    dtype_options: ["uint8", "uint16"]
-    format_params:
-      jpg_quality: jpg_quality
-      png_compressing: png_compressing
+  - "!include": fragments/image_output.ui.yaml

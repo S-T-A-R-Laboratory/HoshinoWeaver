@@ -7,11 +7,14 @@ from typing import Any, Callable
 
 import yaml
 from PySide6.QtCore import Qt, Signal
+
+from ui.yaml_loader import load_ui_yaml
 from PySide6.QtWidgets import (
     QFrame, QLabel, QLayout, QScrollArea, QSizePolicy,
     QVBoxLayout, QWidget,
 )
 
+from ui.styles import GROUP_BOX_STYLE, GROUP_HEADER_STYLE
 from ui.widgets import (
     ConfigSpec, RouteOptionSpec, RouteSpec,
     create_config_row, create_route_selector,
@@ -49,8 +52,7 @@ class PanelSchema:
 
         ui: dict = {}
         if ui_path and os.path.isfile(ui_path):
-            with open(ui_path, "r", encoding="utf-8") as f:
-                ui = yaml.safe_load(f) or {}
+            ui = load_ui_yaml(ui_path)
 
         schema = cls(meta_yaml_path=meta_path)
         schema._parse_routes(meta, ui)
@@ -142,33 +144,17 @@ class PanelSchema:
     def _parse_route_configs(self, meta: dict, ui: dict):
         meta_rc = meta.get("route_configs", {})
         ui_rc = ui.get("route_configs", {})
-
-        if meta_rc:
-            for route_key, options_dict in meta_rc.items():
-                self.route_configs[route_key] = {}
-                for option_key, params in options_dict.items():
-                    specs: list[ConfigSpec] = []
-                    ui_option = ui_rc.get(option_key, {})
-                    for param_key, param_spec in params.items():
-                        ui_param = ui_option.get(param_key, {})
-                        specs.append(_build_config_spec(param_key, param_spec, ui_param))
-                    self.route_configs[route_key][option_key] = specs
-        elif ui_rc:
-            # meta has no top-level route_configs but ui.yaml defines them.
-            # Map ui route_configs (keyed by option_key) to route_keys.
-            for route_key in self.routes:
-                route_spec = self.routes[route_key]
-                self.route_configs[route_key] = {}
-                for option_key in route_spec.options:
-                    ui_option = ui_rc.get(option_key, {})
-                    if not ui_option:
-                        continue
-                    specs: list[ConfigSpec] = []
-                    for param_key, ui_param in ui_option.items():
-                        meta_spec = {"type": ui_param.get("type", "float"),
-                                     "default": ui_param.get("default")}
-                        specs.append(_build_config_spec(param_key, meta_spec, ui_param))
-                    self.route_configs[route_key][option_key] = specs
+        if not meta_rc:
+            return
+        for route_key, options_dict in meta_rc.items():
+            self.route_configs[route_key] = {}
+            for option_key, params in options_dict.items():
+                specs: list[ConfigSpec] = []
+                ui_option = ui_rc.get(option_key, {})
+                for param_key, param_spec in params.items():
+                    ui_param = ui_option.get(param_key, {})
+                    specs.append(_build_config_spec(param_key, param_spec, ui_param))
+                self.route_configs[route_key][option_key] = specs
 
 
 def _build_config_spec(key: str, meta_spec: dict, ui_spec: dict) -> ConfigSpec:
@@ -258,9 +244,9 @@ class DynamicConfigPanel(QWidget):
         self._schema: PanelSchema | None = None
         self._config_getters: dict[str, Callable] = {}
         self._route_getters: dict[str, Callable] = {}
-        self._route_config_getters: dict[str, Callable] = {}
+        self._route_config_getters: dict[tuple[str, str], Callable] = {}
         self._route_config_container: dict[str, QWidget] = {}
-        self._bound_pairs: dict[str, str] = {}
+        self._bound_pairs: dict[str | tuple[str, str], str] = {}
 
     def load_schema(self, schema: PanelSchema):
         self._schema = schema
@@ -360,7 +346,7 @@ class DynamicConfigPanel(QWidget):
         _clear_layout(container.layout())
 
         old_keys = [k for k in list(self._route_config_getters.keys())
-                    if k.startswith(f"_rc_{route_key}_")]
+                    if k[0] == route_key]
         for k in old_keys:
             del self._route_config_getters[k]
             self._bound_pairs.pop(k, None)
@@ -375,7 +361,6 @@ class DynamicConfigPanel(QWidget):
         if not visible_specs:
             return
 
-        # Resolve group header: "{route_label} · {option_label}"
         route_spec = self._schema.routes.get(route_key)
         route_label = (route_spec.label or route_key) if route_spec else route_key
         if route_spec and option in route_spec.options:
@@ -396,7 +381,7 @@ class DynamicConfigPanel(QWidget):
                 on_change=self.values_changed.emit,
             )
             group_layout.addWidget(row)
-            getter_key = f"_rc_{route_key}_{spec.key}"
+            getter_key = (route_key, spec.key)
             self._route_config_getters[getter_key] = getter
             if spec.bind:
                 self._bound_pairs[getter_key] = spec.bind
@@ -426,45 +411,18 @@ class DynamicConfigPanel(QWidget):
         outer = QFrame(parent)
         outer.setObjectName("groupBox")
         outer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        outer.setStyleSheet(
-            "QFrame#groupBox {"
-            "  border: 1px solid rgba(160,160,160,160);"
-            "  border-radius: 4px;"
-            "  background-color: rgba(245,245,245,80);"
-            "  margin-top: 4px;"
-            "}"
-            "QFrame#groupBox > QLabel#groupHeader {"
-            "  border: none;"
-            "  border-radius: 0px;"
-            "}"
-        )
+        outer.setStyleSheet(GROUP_BOX_STYLE)
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(0, 0, 0, 4)
         outer_layout.setSpacing(0)
 
         header = QLabel(name, outer)
         header.setObjectName("groupHeader")
-        header.setStyleSheet(
-            "font-weight: bold; font-size: 11px;"
-            "color: rgba(255,255,255,220);"
-            "background-color: rgba(90,90,90,200);"
-            "border: none;"
-            "border-top-left-radius: 3px;"
-            "border-top-right-radius: 3px;"
-            "padding: 3px 6px;"
-        )
+        header.setStyleSheet(GROUP_HEADER_STYLE)
         outer_layout.addWidget(header)
         layout = target_layout if target_layout is not None else self._main_layout
         layout.addWidget(outer)
         return outer_layout
-
-    def _add_group_header(self, name: str):
-        # kept for backward compat, not used when groups are present
-        header = QLabel(name, self)
-        header.setStyleSheet(
-            "font-weight: bold; font-size: 11px; color: rgba(80,80,80,200); "
-            "padding: 8px 5px 2px 5px;")
-        self._main_layout.addWidget(header)
 
     # ── collect_configs override for range_slider bound pairs ─────────────
 
@@ -490,36 +448,21 @@ class DynamicConfigPanel(QWidget):
                     val = _apply_transform(spec.transform, val)
                 result[spec.key] = val
 
-        for getter_key, getter in self._route_config_getters.items():
-            # getter_key format: "_rc_{route_key}_{param_key}"
-            # route_key may contain underscores, so we use known route_keys to parse
-            route_key = None
-            param_key = None
-            for rk in self._schema.route_configs:
-                prefix = f"_rc_{rk}_"
-                if getter_key.startswith(prefix):
-                    route_key = rk
-                    param_key = getter_key[len(prefix):]
-                    break
-            if param_key is None:
-                continue
-
-            # Locate the spec for this active route option to read its transform
-            spec = None
-            current_option = self._route_getters[route_key]() if route_key else None
-            if current_option is not None:
-                option_specs = self._schema.route_configs.get(route_key, {}).get(current_option, [])
-                spec = next((s for s in option_specs if s.key == param_key), None)
+        for (route_key, param_key), getter in self._route_config_getters.items():
+            current_option = self._route_getters[route_key]()
+            option_specs = self._schema.route_configs.get(route_key, {}).get(current_option, [])
+            spec = next((s for s in option_specs if s.key == param_key), None)
 
             val = getter()
-            if getter_key in self._bound_pairs:
+            bound_key = (route_key, param_key)
+            if bound_key in self._bound_pairs:
                 if isinstance(val, (list, tuple)):
                     left, right = val[0], val[1]
                     if spec and isinstance(spec.transform, dict):
                         left = _apply_transform(spec.transform.get("left"), left)
                         right = _apply_transform(spec.transform.get("right"), right)
                     result[param_key] = left
-                    result[self._bound_pairs[getter_key]] = right
+                    result[self._bound_pairs[bound_key]] = right
                 continue
             if spec and isinstance(spec.transform, str):
                 val = _apply_transform(spec.transform, val)

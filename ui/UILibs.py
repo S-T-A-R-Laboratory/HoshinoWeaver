@@ -78,13 +78,7 @@ class imgDisplayQFrame(QFrame):
     def centerImage(self):
         """Centers the image based on the current scale."""
         if self.pixmap:
-            scaled_pixmap_size = self.pixmap.size() * self.scale_factor
             self.offset = QPointF(0, 0)
-            print(self.width(), scaled_pixmap_size.width())
-            print(self.height(), scaled_pixmap_size.height())
-            self.offset.setX(0)
-            self.offset.setY(0)
-            print(self.offset)
     
     def updateScaleLimits(self):
         if self.pixmap:
@@ -437,64 +431,6 @@ class borderFrame(QFrame):
         """ 当鼠标离开 Frame 时，恢复鼠标样式为默认的箭头光标 """
         self.setCursor(QCursor(Qt.ArrowCursor))
         super().leaveEvent(event)
-
-class borderFrame_N():
-    def __init__(self, window_width, window_height, border_width, parent=None):
-
-        # 保存窗口宽度，高度和边框宽度
-        self.window_width = window_width
-        self.window_height = window_height
-        self.border_width = border_width
-
-        # 创建四个QFrame（上下左右边框）
-        self.top_border = QFrame(parent)
-        self.bottom_border = QFrame(parent)
-        self.left_border = QFrame(parent)
-        self.right_border = QFrame(parent)
-        self.top_left_corner = QFrame(parent)
-        self.top_right_corner = QFrame(parent)
-        self.bottom_left_corner = QFrame(parent)
-        self.bottom_right_corner = QFrame(parent)
-
-        # 设置边框的样式，可以自定义颜色和样式
-        self.set_frame_style(self.top_border)
-        self.set_frame_style(self.bottom_border)
-        self.set_frame_style(self.left_border)
-        self.set_frame_style(self.right_border)
-        self.set_frame_style(self.top_left_corner)
-        self.set_frame_style(self.top_right_corner)
-        self.set_frame_style(self.bottom_left_corner)
-        self.set_frame_style(self.bottom_right_corner)
-
-        # 调整边框位置和大小
-        self.update_frames()
-
-    def set_frame_style(self, frame):
-        """ 设置边框的外观 """
-        frame.setStyleSheet("background-color: red;")  # 红色背景
-        frame.setFrameShape(QFrame.Box)  # 可选：添加边框效果
-
-    def update_frames(self):
-        """ 根据窗口的宽度、高度和边框宽度更新四个边框的位置和大小 """
-        # 顶部 QFrame: 在窗口上边缘
-        self.top_border.setGeometry(self.border_width, 0, self.window_width - 2 * self.border_width, self.border_width)
-        # 底部 QFrame: 在窗口下边缘
-        self.bottom_border.setGeometry(self.border_width, self.window_height - self.border_width, self.window_width - 2 * self.border_width, self.border_width)
-        # 左侧 QFrame: 在窗口左边缘
-        self.left_border.setGeometry(0, self.border_width, self.border_width, self.window_height - 2 * self.border_width)
-        # 右侧 QFrame: 在窗口右边缘
-        self.right_border.setGeometry(self.window_width - self.border_width, self.border_width, self.border_width, self.window_height - 2 * self.border_width)
-        self.top_left_corner.setGeometry(0, 0, self.border_width, self.border_width)
-        self.top_right_corner.setGeometry(self.window_width - self.border_width, 0, self.border_width, self.border_width)
-        self.bottom_left_corner.setGeometry(0, self.window_height - self.border_width, self.border_width, self.border_width)
-        self.bottom_right_corner.setGeometry(self.window_width - self.border_width, self.window_height - self.border_width, self.border_width, self.border_width)
-
-    def resizeEvent(self, event):
-        """ 当窗口大小改变时，自动调整四个边框的大小和位置 """
-        self.window_width = self.width()
-        self.window_height = self.height()
-        self.update_frames()
-        super().resizeEvent(event)
 
 class DoubleSlider(QFrame):
     valueChanged = Signal(int, int)
