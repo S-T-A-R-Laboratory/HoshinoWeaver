@@ -650,40 +650,7 @@ class HNW_window(QMainWindow, Ui_HNW):
             '偏置场': list(),
             '蒙版': list()
         }
-        # 文件格式及文件路径
-        self._output_file_type = 'JPG'
-        # 缓存数据 用于在切换格式后保存之前输入的数据 切换回来之后不用重新输入
-        self._output_file_path_cache = {
-            'JPG': None,
-            'PNG': None,
-            'TIFF': None,
-        }
-        self._output_file_path = self._output_file_path_cache[
-            self._output_file_type]
-        # 算法
-        self._mode = 'max'
-        # 最大迭代次数 1-10 默认5
-        self._max_iter = 5
-        # 蒙版是否可用 可用的前提下 传入参数self._input_files['蒙版']
-        self._mask_able = False
-        self._mask_able = True
-        # 渐入渐出
-        self._fade_in = 0
-        self._fade_out = 0
-        # 拒绝域
-        self._rej_low = 3
-        self._rej_high = 3
-        # int weight选项
-        self._int_weight = False
-        self._jpg_quality = 85
-        self._png_compressing = 0
-        # 色深
-        self._output_bits = 8
-        # 预览是否可用
         self._preview_useable = True
-
-        self._resize = None
-        self._input_size = [0, 0]
 
         # 进度条定义
         self.star_trail_process_bar.setValue(0)
@@ -705,8 +672,6 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 2 设置按钮默认选中状态
         # 输出选项卡已由 OutputPanel 接管，无需手动初始化静态 widget
 
-        # 3 输出尺寸滑块默认值
-        self.alter_resize.setValue(100)
 
         # 4 文件列表初始化
         # 减少缩进
@@ -745,9 +710,6 @@ class HNW_window(QMainWindow, Ui_HNW):
         # 设置初始模式为星轨（使用新的动态面板）
         self.slot_handler.change_mode(self._workspace)
 
-        # 隐藏resize选项
-        self.frame_resize.hide()
-        self.frame_resize.setVisible(False)
 
         # 设置进度条颜色
         self.star_trail_process_bar.setStyleSheet("#star_trail_process_bar {background-color: rgb(96, 200, 120);}")
@@ -756,9 +718,6 @@ class HNW_window(QMainWindow, Ui_HNW):
         '''
         绑定槽函数
         '''
-        # 0 激活SlotHandler
-        self.slot_handler = SlotHandler(self)
-
         # 模式切换按钮
         self.label_current_mode.clicked.connect(
             self.slot_handler.show_choose_mode_window)
@@ -788,9 +747,6 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # 输出选项 选项卡
         # 输出选项 — 由 OutputPanel 接管，原静态绑定已移除
-        # 输出尺寸
-        self.alter_resize.valueChanged.connect(
-            lambda value: self.slot_handler.update_resize(int(value)))
 
         # 开始按钮
         self.btn_star_trail_start.clicked.connect(

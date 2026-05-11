@@ -25,36 +25,9 @@ from ui.output_presets import (
     IMAGE_FORMAT_PRESETS, all_format_keys, detect_format_by_path,
 )
 from ui.panel_builder import OutputSpec
-
-
-# ─── Styles (align with existing output tab look) ───────────────────────────
-
-_LINEEDIT_STYLE = (
-    "QLineEdit {"
-    "  border: 1px solid rgba(220,220,220,200);"
-    "  border-radius: 3px;"
-    "  background-color: rgba(250,250,250,200);"
-    "  padding: 2px 4px;"
-    "  font-size: 11px;"
-    "}"
+from ui.styles import (
+    COMBOBOX_STYLE, GROUP_HEADER_STYLE, LABEL_STYLE, LINEEDIT_STYLE,
 )
-
-_COMBOBOX_STYLE = (
-    "QComboBox {"
-    "  border: 0px solid rgba(199,199,199,100);"
-    "  padding: 3px;"
-    "  border-radius: 3px;"
-    "  font-size: 11px;"
-    "  color: rgba(30,30,30,200);"
-    "}"
-    "QComboBox::hover { background-color: rgba(0, 212, 254, 10); }"
-    "QComboBox QAbstractItemView {"
-    "  background-color: rgba(255,255,255,1);"
-    "  border: 0px solid rgba(199,199,199,100);"
-    "}"
-)
-
-_LABEL_STYLE = "font-size: 11px; color: rgba(30,30,30,200);"
 
 
 # ─── Single output region ────────────────────────────────────────────────────
@@ -80,14 +53,7 @@ class _OutputRegion(QFrame):
         # Label header
         if spec.label:
             header = QLabel(spec.label, self)
-            header.setStyleSheet(
-                "font-weight: bold; font-size: 11px;"
-                "color: rgba(255,255,255,220);"
-                "background-color: rgba(90,90,90,200);"
-                "border-top-left-radius: 3px;"
-                "border-top-right-radius: 3px;"
-                "padding: 3px 6px;"
-            )
+            header.setStyleSheet(GROUP_HEADER_STYLE)
             outer.addWidget(header)
 
         # Resolve allowed formats
@@ -110,10 +76,10 @@ class _OutputRegion(QFrame):
         fmt_label = QLabel("文件格式", row_fmt)
         fmt_label.setMinimumWidth(60)
         fmt_label.setMaximumWidth(80)
-        fmt_label.setStyleSheet(_LABEL_STYLE)
+        fmt_label.setStyleSheet(LABEL_STYLE)
         row_fmt_l.addWidget(fmt_label)
         self._format_combo = QComboBox(row_fmt)
-        self._format_combo.setStyleSheet(_COMBOBOX_STYLE)
+        self._format_combo.setStyleSheet(COMBOBOX_STYLE)
         for fmt in self._allowed_formats:
             self._format_combo.addItem(fmt)
         self._format_combo.currentTextChanged.connect(self._on_format_changed)
@@ -128,11 +94,11 @@ class _OutputRegion(QFrame):
         path_label = QLabel("输出路径", row_path)
         path_label.setMinimumWidth(60)
         path_label.setMaximumWidth(80)
-        path_label.setStyleSheet(_LABEL_STYLE)
+        path_label.setStyleSheet(LABEL_STYLE)
         row_path_l.addWidget(path_label)
         self._path_edit = QLineEdit(row_path)
         self._path_edit.setReadOnly(True)
-        self._path_edit.setStyleSheet(_LINEEDIT_STYLE)
+        self._path_edit.setStyleSheet(LINEEDIT_STYLE)
         row_path_l.addWidget(self._path_edit, 1)
         browse_btn = QPushButton("...", row_path)
         browse_btn.setMaximumWidth(28)
@@ -150,10 +116,10 @@ class _OutputRegion(QFrame):
             dtype_label = QLabel("输出位深", row_dtype)
             dtype_label.setMinimumWidth(60)
             dtype_label.setMaximumWidth(80)
-            dtype_label.setStyleSheet(_LABEL_STYLE)
+            dtype_label.setStyleSheet(LABEL_STYLE)
             row_dtype_l.addWidget(dtype_label)
             self._dtype_combo = QComboBox(row_dtype)
-            self._dtype_combo.setStyleSheet(_COMBOBOX_STYLE)
+            self._dtype_combo.setStyleSheet(COMBOBOX_STYLE)
             self._dtype_combo.currentTextChanged.connect(lambda _: self.changed.emit())
             row_dtype_l.addWidget(self._dtype_combo, 1)
             outer.addWidget(row_dtype)
@@ -205,7 +171,7 @@ class _OutputRegion(QFrame):
         label = QLabel(param_def.get("label", preset_param), row)
         label.setMinimumWidth(60)
         label.setMaximumWidth(80)
-        label.setStyleSheet(_LABEL_STYLE)
+        label.setStyleSheet(LABEL_STYLE)
         layout.addWidget(label)
 
         widget = param_def.get("widget", "slider")

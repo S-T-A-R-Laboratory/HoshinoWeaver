@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.UILibs import DoubleSlider
+from ui.styles import COMBOBOX_STYLE, LABEL_STYLE, LINEEDIT_STYLE
 from ui.transforms import apply_inverse
 
 
@@ -60,34 +61,6 @@ class RouteSpec:
     default: str = ""
 
 
-# ─── Shared Styles ──────────────────────────────────────────────────────────
-
-_LINEEDIT_STYLE = (
-    "QLineEdit {"
-    "  border: 1px solid rgba(220,220,220,200);"
-    "  border-radius: 3px;"
-    "  background-color: rgba(250,250,250,200);"
-    "  padding: 2px 4px;"
-    "  font-size: 11px;"
-    "}"
-)
-
-_COMBOBOX_STYLE = (
-    "QComboBox {"
-    "  border: 0px solid rgba(199,199,199,100);"
-    "  padding: 3px;"
-    "  border-radius: 3px;"
-    "  font-size: 11px;"
-    "  color: rgba(30,30,30,200);"
-    "}"
-    "QComboBox::hover {"
-    "  background-color: rgba(0, 212, 254, 10);"
-    "}"
-    "QComboBox QAbstractItemView {"
-    "  background-color: rgba(255,255,255,1);"
-    "  border: 0px solid rgba(199,199,199,100);"
-    "}"
-)
 
 
 # ─── Widget Factory ──────────────────────────────────────────────────────────
@@ -112,7 +85,7 @@ def create_config_row(
     label = QLabel(spec.label or spec.key, row)
     label.setMinimumWidth(60)
     label.setMaximumWidth(80)
-    label.setStyleSheet("font-size: 11px; color: rgba(30,30,30,200);")
+    label.setStyleSheet(LABEL_STYLE)
     label.setToolTip(spec.description)
     layout.addWidget(label)
 
@@ -142,7 +115,7 @@ def create_config_row(
 
     elif spec.widget == "select":
         combo = QComboBox(row)
-        combo.setStyleSheet(_COMBOBOX_STYLE)
+        combo.setStyleSheet(COMBOBOX_STYLE)
         items: list[tuple[Any, str]] = spec.options or []
         for value, label in items:
             combo.addItem(label, value)
@@ -159,7 +132,7 @@ def create_config_row(
         line = QLineEdit(row)
         line.setReadOnly(True)
         line.setPlaceholderText("点击浏览...")
-        line.setStyleSheet(_LINEEDIT_STYLE)
+        line.setStyleSheet(LINEEDIT_STYLE)
         if spec.default:
             line.setText(str(spec.default))
         btn = QPushButton("...", row)
@@ -211,7 +184,7 @@ def create_config_row(
 
     else:
         line = QLineEdit(row)
-        line.setStyleSheet(_LINEEDIT_STYLE)
+        line.setStyleSheet(LINEEDIT_STYLE)
         if spec.default is not None:
             line.setText(str(spec.default))
         if on_change:
@@ -246,7 +219,7 @@ def create_route_selector(
     layout.addWidget(title)
 
     combo = QComboBox(frame)
-    combo.setStyleSheet(_COMBOBOX_STYLE)
+    combo.setStyleSheet(COMBOBOX_STYLE)
     for opt_key, opt_spec in spec.options.items():
         combo.addItem(opt_spec.label or opt_key, opt_key)
         idx = combo.count() - 1

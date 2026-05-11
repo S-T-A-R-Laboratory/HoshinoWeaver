@@ -456,32 +456,6 @@ class SlotHandler(QMainWindow):
         category_item.setText(0, new_categore)
 
     @Slot()
-    def star_trail_start_process_bak(self):
-        if self.window._input_files['亮场'] == []:
-            self.display_star_trail_tips('请添加星空图像文件！', color='red')
-        elif self.window._output_file_path is None:
-            self.display_star_trail_tips('请设置输出路径！', color='red')
-        else:
-            continue_flag = True
-            # 调用检查api
-            exif_check_result = scan_all_exif(self.window._input_files['亮场'])
-            # print(exif_check_result)
-            if all([
-                    True if item['other_dist'] == [] else False
-                    for item in exif_check_result
-            ]):
-                continue_flag = True
-            else:
-                exif_check_dialog = exifCheckDialog(self, exif_check_result)
-                if exif_check_dialog.exec_() == QDialog.Accepted:
-                    continue_flag = True
-                else:
-                    continue_flag = False
-            if continue_flag:
-                self.display_star_trail_tips('正在叠加>>>>', color='red')
-                self.window._task = asyncio.ensure_future(self.start_task())
-
-    @Slot()
     def star_trail_start_process(self):
         if self.window._status_n['status'] == '未就绪':
             self.window.status_text.setStyleSheet(
@@ -593,35 +567,6 @@ class SlotHandler(QMainWindow):
     def display_star_trail_tips(self, text, color='red'):
         self.window.star_trial_tips.setStyleSheet("color: %s;" % color)
         self.window.star_trial_tips.setText(text)
-
-    @Slot()
-    def update_resize(self, val=None):
-        if val:
-            self.window._resize = val
-        else:
-            self.window._png_compressing = int(self.window.png_level.text())
-
-    @Slot()
-    def update_qua_speed_option(self, val='speed'):
-        self.window._qua_speed_option = val
-        self.window._int_weight = {
-            'speed': True,
-            'quality': False
-        }[self.window._qua_speed_option]
-
-    @Slot()
-    def update_fade_out(self, val=None):
-        if val:
-            self.window._fade_out = val
-        else:
-            self.window._fade_out = int(self.window.fade_out.text())
-
-    @Slot()
-    def update_fade_in(self, val: int = None):
-        if val:
-            self.window._fade_in = val
-        else:
-            self.window._fade_in = int(self.window.fade_in.text())
 
     @Slot()
     def trigger_file_tree_item_menu(self, menu_text: str,
