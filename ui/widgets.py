@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.UILibs import DoubleSlider
+from ui.transforms import apply_inverse
 
 
 # ─── Data Specs ──────────────────────────────────────────────────────────────
@@ -37,6 +38,10 @@ class ConfigSpec:
     # For range_slider: dict like {"left": "negate", "right": "complement"}.
     # For other numeric widgets: a single string like "negate".
     transform: Any = None
+    # For range_slider: backend default of the bind partner (right-handle key).
+    # Populated by PanelSchema after parsing so the widget can initialize the
+    # right handle from meta.yaml rather than a hard-coded max.
+    bind_default: Any = None
 
 
 @dataclass
@@ -138,15 +143,16 @@ def create_config_row(
     elif spec.widget == "select":
         combo = QComboBox(row)
         combo.setStyleSheet(_COMBOBOX_STYLE)
-        items = spec.options or []
-        for item in items:
-            combo.addItem(str(item))
-        if spec.default is not None and str(spec.default) in [str(o) for o in items]:
-            combo.setCurrentText(str(spec.default))
+        items: list[tuple[Any, str]] = spec.options or []
+        for value, label in items:
+            combo.addItem(label, value)
+        values = [v for v, _ in items]
+        if spec.default is not None and spec.default in values:
+            combo.setCurrentIndex(values.index(spec.default))
         if on_change:
-            combo.currentTextChanged.connect(lambda _: on_change())
-        getter = combo.currentText
-        setter = lambda v: combo.setCurrentText(str(v))
+            combo.currentIndexChanged.connect(lambda _: on_change())
+        getter = lambda: combo.currentData()
+        setter = lambda v: combo.setCurrentIndex(values.index(v) if v in values else 0)
         layout.addWidget(combo, 1)
 
     elif spec.widget == "file_picker":
@@ -315,13 +321,35 @@ def _make_range_slider(
     step = spec.step if spec.step else 1
     default = spec.default if spec.default is not None else mn
 
+    # Resolve UI-domain initial values via transform inverses, so meta.yaml
+    # defaults (backend domain) drive both handles. Non-invertible transforms
+    # (e.g. abs) on a range_slider are unsupported: split into two sliders
+    # with their own defaults instead.
+    tr = spec.transform if isinstance(spec.transform, dict) else {}
+    left_ui = apply_inverse(tr.get("left"), default)
+    if left_ui is None:
+        raise ValueError(
+            f"range_slider '{spec.key}': transform.left={tr.get('left')!r} is not invertible; "
+            "split this into separate sliders instead of using a range_slider."
+        )
+    if spec.bind:
+        right_backend = spec.bind_default if spec.bind_default is not None else mx
+        right_ui = apply_inverse(tr.get("right"), right_backend)
+        if right_ui is None:
+            raise ValueError(
+                f"range_slider '{spec.key}': transform.right={tr.get('right')!r} is not invertible; "
+                "split this into separate sliders instead of using a range_slider."
+            )
+    else:
+        right_ui = left_ui
+
     ds = DoubleSlider(parent)
     ds.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     multiplier = int(1.0 / step) if step < 1 else 1
     ds.min_value = int(mn * multiplier)
     ds.max_value = int(mx * multiplier)
-    ds.left_value = int(default * multiplier)
-    ds.right_value = int(mx * multiplier) if spec.bind else int(default * multiplier)
+    ds.left_value = int(left_ui * multiplier)
+    ds.right_value = int(right_ui * multiplier)
     ds.update_slider()
 
     _val_style = "font-size: 10px; color: rgba(60,60,60,200); min-width: 20px;"
