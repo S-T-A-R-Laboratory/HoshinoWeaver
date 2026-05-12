@@ -2,7 +2,6 @@
 
 <h1><center>HoshinoWeaver | 织此星辰</center></h1>
 
-基于 DAG 算子的天文摄影预处理工作站
 
 [![GitHub release](https://img.shields.io/github/release/Designerspr/HoshinoWeaver.svg)](https://github.com/Designerspr/HoshinoWeaver/releases/latest) [![GitHub Release Date](https://img.shields.io/github/release-date/Designerspr/HoshinoWeaver.svg)](https://github.com/Designerspr/HoshinoWeaver/releases/latest) [![Github All Releases](https://img.shields.io/github/downloads/Designerspr/HoshinoWeaver/total.svg)](https://github.com/Designerspr/HoshinoWeaver/releases) 
 
@@ -14,13 +13,9 @@
 
 ## 简介
 
-**HoshinoWeaver (织此星辰)** 是一款专为天文摄影设计的通用图像预处理工具。它不仅是一个合成软件，更是一个灵活的**计算图编织机**。
+**HoshinoWeaver (织此星辰)** 是一款为天文摄影设计的通用图像预处理工具。无论是简单的星轨还是复杂的星空地景分离堆栈合成，HoshinoWeaver 都能通过其独有的算子编排引擎，为你织就理想的星辰影像。
 
-无论是壮丽的星轨、纯净的星空堆栈，还是复杂的天地分离堆栈合成，HoshinoWeaver 都能通过其独有的算子编排引擎，为你织就理想的星辰影像。
-
-> [!TIP]
-> **为什么要用它？**
-> 如果你的电脑配置不高，却想处理上千张星轨；或者你厌倦了“黑盒”软件，想要精确控制堆栈的数学逻辑，HoshinoWeaver 就是为你准备的。
+它是一个合成软件，也是一个灵活的**计算图编织机**：你可以针对自己的后期场景自定义计算流程，并通过 HoshinoWeaver 实现一键式出图，而不必在多个软件之间流转。
 
 访问 [官网](https://hoshinoweaver.springcitystudio.top/) 以了解更多最新信息。
 
@@ -44,7 +39,7 @@
 
 ### 运行发行版本
 
-目前的最新版本是 v1.0.0 "Vega"。从 [官方网站](https://hoshinoweaver.springcitystudio.top/) 或 [Github的Release页](https://github.com/Designerspr/HoshinoWeaver/releases) 获取 HoshinoWeaver 的发行版本。当下载并安装完毕后， 双击运行 `HoshinoWeaver.exe` 即可。
+目前的最新版本是 `v1.0.0 "Vega"`。从 [官方网站](https://hoshinoweaver.springcitystudio.top/) 或 [Github的Release页](https://github.com/Designerspr/HoshinoWeaver/releases) 获取 HoshinoWeaver 的发行版本。当下载并安装完毕后， 双击运行 `HoshinoWeaver.exe` 即可。
 
 > [!NOTE]
 > 首次启动将进入引导模式，帮助你快速上手图形界面。
