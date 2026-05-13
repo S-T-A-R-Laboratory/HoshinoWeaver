@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────
-# EasyStacker / hoshicore 全局默认设置
+# HoshiNoWeaver / hoshicore 全局默认设置
 # ──────────────────────────────────────────────────────────────
 #
 # 持久化配置，适用于跨管线共享的默认值。
@@ -26,7 +26,7 @@ int_weight: true
 
 # 临时文件目录（磁盘缓冲、文件缓存队列等）
 # 不设置时使用系统默认临时目录 (tempfile.gettempdir())
-# temp_path: "/tmp/easystacker"
+# temp_path: "/tmp/HoshiNoWeaver"
 
 # CPU 工作进程数量
 # 不设置时自动单进程

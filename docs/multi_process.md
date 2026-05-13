@@ -2,7 +2,7 @@
 
 ## 概述
 
-EasyStacker 的多进程执行采用**数据并行**（Data Parallelism）架构：将 DAG 中可并行的完整管段（I/O + Map 链 + 多终端 Reduce / DiskBuffer + 迭代式 Reduce）整体复制到 N 个 worker 进程，每个 worker 处理 1/N 帧并独立完成解码 → 处理 → 局部归约 → 迭代 Reduce 的全流程。主进程仅做轻量的路径分发、partial merge 和收敛判断。
+HoshiNoWeaver 的多进程执行采用**数据并行**（Data Parallelism）架构：将 DAG 中可并行的完整管段（I/O + Map 链 + 多终端 Reduce / DiskBuffer + 迭代式 Reduce）整体复制到 N 个 worker 进程，每个 worker 处理 1/N 帧并独立完成解码 → 处理 → 局部归约 → 迭代 Reduce 的全流程。主进程仅做轻量的路径分发、partial merge 和收敛判断。
 
 与传统的 Op 粒度多进程方案（将各 Op 分配到不同进程，跨进程边界传输图像数据）不同，数据并行方案的 IPC 开销极低：
 

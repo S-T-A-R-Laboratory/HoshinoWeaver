@@ -5,6 +5,9 @@ from __future__ import annotations
 import sys
 import os
 
+if getattr(sys, 'frozen', False):
+    os.chdir(sys._MEIPASS)
+
 import time
 import json
 import ctypes
