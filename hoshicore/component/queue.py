@@ -39,10 +39,7 @@ class CancellationToken:
 
 
 class BaseQueue:
-    """队列接口基类。RichContextQueue 和 IPCQueue 的公共协议。
-
-    所有 Op 通过此接口与队列交互，不直接依赖具体实现。
-    """
+    """队列接口基类。所有 Op 通过此接口与队列交互，不直接依赖具体实现。"""
     _SENTINEL = object()  # 正常结束信号（所有子类共享）
 
     active: bool

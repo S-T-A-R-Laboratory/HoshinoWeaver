@@ -9,18 +9,14 @@ dtype 基础设施 + 管线数据容器。
     - _UINT_DTYPES 为唯一真值源，所有 dtype 常量表由其派生
     - 节点间传递裸 np.ndarray，约定"值域填满容器 dtype 的范围"
     - 需要跨 dtype 对齐或保存时使用 rescale_array
-    - ShmTransportable 子类支持跨进程 SharedMemory 高效传输
 """
 from __future__ import annotations
 
-import pickle
 from dataclasses import dataclass
 from typing import Optional, Union
 
 import numpy as np
 from loguru import logger
-
-from .ipc_queue import ShmTransportable
 
 # ────────────────────────────────────────────────────────────────
 # dtype 基础设施（唯一真值源：_UINT_DTYPES）
@@ -151,7 +147,7 @@ def rdtype_detector(data: np.ndarray) -> Union[np.dtype, type]:
 
 
 @dataclass(slots=True)
-class FloatImage(ShmTransportable):
+class FloatImage:
     """轻量级的Float矩阵包装器，包含原始数据范围dtype。"""
     data: np.ndarray
     dtype: np.dtype
@@ -161,32 +157,6 @@ class FloatImage(ShmTransportable):
         if target_dtype is None:
             target_dtype = self.dtype
         return rescale_array(self.data, self.dtype, target_dtype)
-
-    def shm_nbytes(self) -> int:
-        return self.data.nbytes
-
-    def shm_pack_into(self, buf) -> bytes:
-        raw = self.data.ravel().view(np.uint8)
-        np.ndarray(len(raw), np.uint8, buffer=buf)[:] = raw
-        return pickle.dumps({
-            "dtype": str(self.dtype),
-            "arr_shape": self.data.shape,
-            "arr_dtype": str(self.data.dtype),
-        })
-
-    @classmethod
-    def shm_unpack_from(cls, buf, meta: bytes, shm_handle=None) -> FloatImage:
-        m = pickle.loads(meta)
-        raw = np.ndarray(np.prod(m["arr_shape"]) *
-                         np.dtype(m["arr_dtype"]).itemsize,
-                         np.uint8,
-                         buffer=buf)
-        data = raw.view(np.dtype(m["arr_dtype"])).reshape(
-            m["arr_shape"]).copy()
-        if shm_handle is not None:
-            shm_handle.close()
-            shm_handle.unlink()
-        return cls(data=data, dtype=np.dtype(m["dtype"]))
 
 
 class GaussianParam(object):
@@ -229,14 +199,11 @@ class GaussianParam(object):
         return GaussianParam(mu=new_mu, var=new_var, n=g1.n - g2.n, ddof=ddof)
 
 
-class FastGaussianParam(ShmTransportable):
+class FastGaussianParam:
     """GaussianParam 的高速版本。
 
     通过 INT 量化 + 优化数据储存提速，仅在输出时换算为浮点数。
     Streaming mean and variance.
-
-    支持跨进程 SharedMemory 高效传输，
-    避免 pickle 序列化 3 个大型 ndarray 时的内存放大问题。
     """
 
     def __init__(self,
@@ -378,87 +345,15 @@ class FastGaussianParam(ShmTransportable):
     def shape(self):
         return self.sum_mu.shape
 
-    # ── ShmTransportable ──
-
-    def _shm_meta(self) -> dict:
-        return {
-            "sum_mu_shape": self.sum_mu.shape,
-            "sum_mu_dtype": str(self.sum_mu.dtype),
-            "sum_mu_nbytes": self.sum_mu.nbytes,
-            "sq_shape": self.square_sum.shape,
-            "sq_dtype": str(self.square_sum.dtype),
-            "sq_nbytes": self.square_sum.nbytes,
-            "n_shape": self.n.shape,
-            "n_dtype": str(self.n.dtype),
-            "n_nbytes": self.n.nbytes,
-            "ddof": self.ddof,
-            "source_dtype": str(self.source_dtype),
-            "inplace_calc": self.inplace_calc,
-            "max_n": self.max_n,
-        }
-
-    def shm_nbytes(self) -> int:
-        return self.sum_mu.nbytes + self.square_sum.nbytes + self.n.nbytes
-
-    def shm_pack_into(self, buf) -> bytes:
-        off = 0
-        for arr in (self.sum_mu, self.square_sum, self.n):
-            raw = arr.ravel().view(np.uint8)
-            np.ndarray(len(raw), np.uint8, buffer=buf, offset=off)[:] = raw
-            off += arr.nbytes
-        return pickle.dumps(self._shm_meta())
-
-    @classmethod
-    def _shm_rebuild(cls, m: dict, sum_mu, square_sum, n) -> FastGaussianParam:
-        obj = cls.__new__(cls)
-        obj.sum_mu = sum_mu
-        obj.square_sum = square_sum
-        obj.n = n
-        obj.ddof = m["ddof"]
-        obj.source_dtype = np.dtype(m["source_dtype"])
-        obj.inplace_calc = m["inplace_calc"]
-        obj.max_n = m["max_n"]
-        return obj
-
-    @classmethod
-    def shm_unpack_from(cls, buf, meta: bytes,
-                        shm_handle=None) -> FastGaussianParam:
-        m = pickle.loads(meta)
-        off = 0
-        sum_mu = np.ndarray(m["sum_mu_shape"], np.dtype(m["sum_mu_dtype"]),
-                            buffer=buf, offset=off)
-        off += m["sum_mu_nbytes"]
-        square_sum = np.ndarray(m["sq_shape"], np.dtype(m["sq_dtype"]),
-                                buffer=buf, offset=off)
-        off += m["sq_nbytes"]
-        n = np.ndarray(m["n_shape"], np.dtype(m["n_dtype"]),
-                       buffer=buf, offset=off)
-        obj = cls._shm_rebuild(m, sum_mu, square_sum, n)
-        obj._shm_owner = shm_handle  # 持有 handle，防止 shm 被提前销毁
-        return obj
-
-    def _force_copy_from_shm(self) -> None:
-        """broadcast 场景：将 shm view 数组 copy 为独立内存。"""
-        logger.trace("Force copy FastGaussianParam arrays from shared memory.")
-        self.sum_mu = self.sum_mu.copy()
-        self.square_sum = self.square_sum.copy()
-        self.n = self.n.copy()
-
-    def __del__(self):
-        shm = getattr(self, '_shm_owner', None)
-        if shm is not None:
-            self._shm_owner = None
-            from .ipc_queue import _safe_close_shm
-            _safe_close_shm(shm, unlink=True)
 
 
-class HuberMeanParam(ShmTransportable):
+class HuberMeanParam:
     """Huber 加权均值的流式累加器。
 
     存储加权和 weighted_sum = Σ(w_i · x_i) 和权重总和 weight_total = Σ(w_i)，
     最终结果 μ = weighted_sum / weight_total。
 
-    两者均为逐像素数组，支持 __add__ 用于分布式归约（merge_partial）。
+    两者均为逐像素数组，支持 __add__ 用于归约。
     """
 
     def __init__(
@@ -497,62 +392,3 @@ class HuberMeanParam(ShmTransportable):
     def shape(self):
         return self.weighted_sum.shape
 
-    # ── ShmTransportable ──
-
-    def _shm_meta(self) -> dict:
-        return {
-            "ws_shape": self.weighted_sum.shape,
-            "ws_dtype": str(self.weighted_sum.dtype),
-            "ws_nbytes": self.weighted_sum.nbytes,
-            "wt_shape": self.weight_total.shape,
-            "wt_dtype": str(self.weight_total.dtype),
-            "wt_nbytes": self.weight_total.nbytes,
-            "source_dtype":
-            str(self.source_dtype) if self.source_dtype else None,
-        }
-
-    def shm_nbytes(self) -> int:
-        return self.weighted_sum.nbytes + self.weight_total.nbytes
-
-    def shm_pack_into(self, buf) -> bytes:
-        off = 0
-        for arr in (self.weighted_sum, self.weight_total):
-            raw = arr.ravel().view(np.uint8)
-            np.ndarray(len(raw), np.uint8, buffer=buf, offset=off)[:] = raw
-            off += arr.nbytes
-        return pickle.dumps(self._shm_meta())
-
-    @classmethod
-    def _shm_rebuild(cls, m: dict, weighted_sum,
-                     weight_total) -> HuberMeanParam:
-        source_dtype = np.dtype(
-            m["source_dtype"]) if m["source_dtype"] else None
-        return cls(weighted_sum=weighted_sum,
-                   weight_total=weight_total,
-                   source_dtype=source_dtype)
-
-    @classmethod
-    def shm_unpack_from(cls, buf, meta: bytes,
-                        shm_handle=None) -> HuberMeanParam:
-        m = pickle.loads(meta)
-        off = 0
-        weighted_sum = np.ndarray(m["ws_shape"], np.dtype(m["ws_dtype"]),
-                                  buffer=buf, offset=off)
-        off += m["ws_nbytes"]
-        weight_total = np.ndarray(m["wt_shape"], np.dtype(m["wt_dtype"]),
-                                  buffer=buf, offset=off)
-        obj = cls._shm_rebuild(m, weighted_sum, weight_total)
-        obj._shm_owner = shm_handle
-        return obj
-
-    def _force_copy_from_shm(self) -> None:
-        """broadcast 场景：将 shm view 数组 copy 为独立内存。"""
-        self.weighted_sum = self.weighted_sum.copy()
-        self.weight_total = self.weight_total.copy()
-
-    def __del__(self):
-        shm = getattr(self, '_shm_owner', None)
-        if shm is not None:
-            self._shm_owner = None
-            from .ipc_queue import _safe_close_shm
-            _safe_close_shm(shm, unlink=True)

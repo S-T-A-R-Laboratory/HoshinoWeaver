@@ -148,10 +148,6 @@ def main():
     parser.add_argument("--inspect",
                         action="store_true",
                         help="Show parameter schema and exit.")
-    parser.add_argument("--num-workers",
-                        type=int,
-                        default=1,
-                        help="Number of worker processes (default: 1).")
     log_group = parser.add_mutually_exclusive_group()
     log_group.add_argument("--debug",
                            action="store_true",
@@ -219,7 +215,6 @@ def main():
         run_from_yaml(yaml_path,
                       global_inputs,
                       global_configs,
-                      num_workers=args.num_workers,
                       route_choices=route_choices))
 
 

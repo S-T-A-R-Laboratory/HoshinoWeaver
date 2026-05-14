@@ -24,7 +24,6 @@ class ImgDataLoaderOp(BaseOp):
             ...
         dataloader.stop()
     """
-    DATA_PARALLEL = True
     INPUTS: dict[str, Any] = {
         "src": {
             "type": "sequence",
