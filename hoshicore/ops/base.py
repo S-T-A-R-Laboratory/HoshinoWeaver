@@ -18,8 +18,6 @@ class BaseOp(object):
     OUTPUTS: dict[str, Any] = {}
     MAX_SIZE: int = 1
     VARIABLE_OUTPUT: bool = False  # True 时标记为变长输出（Filter 类）
-    DATA_PARALLEL: bool = False   # True 时允许被 SegmentAdapter 纳入数据并行段
-    DECOMPOSABLE: bool = False    # True 时支持分布式归约（merge_partial）
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -185,13 +183,10 @@ class BaseOp(object):
         """传播取消令牌（上游异常）。
 
         从输入队列中提取 CancellationToken 并转发到所有输出队列。
-        对于 IPCQueue 等无法同步提取 token 的实现，创建新的
-        CancellationToken 确保下游能收到取消信号。
         """
         token = None
         for input_queue in self.inputs.values():
             try:
-                # RichContextQueue 有内部 asyncio.Queue，可以同步检查
                 if hasattr(input_queue, 'queue'):
                     while not input_queue.queue.empty():
                         item = input_queue.queue.get_nowait()
@@ -204,7 +199,6 @@ class BaseOp(object):
                 pass
 
         if token is None:
-            # IPCQueue 或无法提取 token：创建通用 cancel token 确保传播不中断
             token = CancellationToken(
                 CancellationError("Upstream cancellation"), self.name)
 
@@ -231,22 +225,6 @@ class BaseOp(object):
                 tasks.append(queue.put(value))
         if tasks:
             await asyncio.gather(*tasks)
-
-    @classmethod
-    def merge_partial(cls, partial_results: list[dict[str, Any]]) -> dict[str, Any]:
-        """将多个 worker 的局部归约结果合并为最终结果。
-
-        仅当 DECOMPOSABLE=True 时需要实现。每个 partial_result 是一个字典，
-        格式与 _async_execute 中 _broadcast_outputs 的参数一致。
-
-        Args:
-            partial_results: 每个 worker 的局部结果字典列表。
-
-        Returns:
-            合并后的最终结果字典，格式与正常单进程执行相同。
-        """
-        raise NotImplementedError(
-            f"{cls.__name__} declares DECOMPOSABLE=True but does not implement merge_partial()")
 
     async def _run_cpu(self, fn, *args, **kwargs):
         """将 CPU 密集型同步函数卸载到线程池执行，释放事件循环。
@@ -278,7 +256,6 @@ class ParallelBaseOp(BaseOp):
     CONCURRENCY > 1: 并发执行，使用滑动窗口保证输出有序
     WINDOW_SIZE: 滑动窗口大小，默认为 CONCURRENCY * 2
     """
-    DATA_PARALLEL: bool = True  # ParallelBaseOp 默认允许数据并行
     CONCURRENCY = 1
     WINDOW_SIZE: Optional[int] = None
 
@@ -397,7 +374,5 @@ class FilterBaseOp(BaseOp):
                         await self._broadcast_outputs({"result": item})
     """
     VARIABLE_OUTPUT = True
-    DATA_PARALLEL: bool = False  # Phase 2 启用；Filter 类帧间依赖性使得数据并行更复杂
-
     def _infer_output_length(self, input_lengths):
         return None

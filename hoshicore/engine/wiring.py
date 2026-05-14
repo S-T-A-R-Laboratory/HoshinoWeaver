@@ -434,7 +434,6 @@ async def run_from_yaml(
     dag_search_paths: Optional[list[Path]] = None,
     tracker: Optional[DummyTracker] = None,
     cancel_event: Optional[asyncio.Event] = None,
-    num_workers: Optional[int] = 1,
     route_choices: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """
@@ -468,7 +467,6 @@ async def run_from_yaml(
     """
     from .build import _load_yaml, validate_and_build_order
     from .flatten import flatten_sub_dags
-    from .multiprocess import run_dag_multiprocess
     spec = _load_yaml(yaml_path)
 
     # 合并全局默认设置（优先级：用户显式 > 全局默认 > YAML default > Op default）
@@ -483,15 +481,14 @@ async def run_from_yaml(
 
     spec = flatten_sub_dags(spec, dag_search_paths=dag_search_paths)
     dag = validate_and_build_order(spec)
-    return await run_dag_multiprocess(dag,
-                                      global_inputs,
-                                      global_configs,
-                                      op_registry,
-                                      progress=progress,
-                                      dag_search_paths=dag_search_paths,
-                                      tracker=tracker,
-                                      cancel_event=cancel_event,
-                                      num_workers=num_workers)
+    return await run_dag(dag,
+                         global_inputs,
+                         global_configs,
+                         op_registry,
+                         progress=progress,
+                         dag_search_paths=dag_search_paths,
+                         tracker=tracker,
+                         cancel_event=cancel_event)
 
 
 # ────────────────────────────────────────────────────────────────

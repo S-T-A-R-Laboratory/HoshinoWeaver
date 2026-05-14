@@ -28,9 +28,6 @@ int_weight: true
 # 不设置时使用系统默认临时目录 (tempfile.gettempdir())
 # temp_path: "/tmp/HoshiNoWeaver"
 
-# CPU 工作进程数量
-# 不设置时自动单进程
-# num_workers: 4
 
 # 日志级别：DEBUG / INFO / WARNING / ERROR
 # log_level: "INFO"
