@@ -270,8 +270,8 @@ class SigmaClipIteratorOp(BaseOp):
                         empty_mask = np.all(raw[..., :3] == 0, axis=-1)
                         if empty_mask.any():
                             spatial_mask = ~empty_mask
-                    await self._run_cpu(clip_merger.merge, raw, weight,
-                                        spatial_mask=spatial_mask)
+                    await self._run_numba(clip_merger.merge, raw, weight,
+                                          spatial_mask=spatial_mask)
                     self.tracker.update(self.name)
 
                 self.tracker.close_bar(self.name)

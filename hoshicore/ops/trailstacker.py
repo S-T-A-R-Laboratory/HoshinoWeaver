@@ -117,7 +117,7 @@ class TrailStackerOp(BaseOp):
                         spatial_mask = spatial_mask & (~empty_mask)
                 
                 try:
-                    await self._run_cpu(
+                    await self._run_numba(
                         merger.merge, cur_img, weight,
                         spatial_mask=spatial_mask)
                 except AssertionError as e:
