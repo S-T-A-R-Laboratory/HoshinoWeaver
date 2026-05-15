@@ -11,7 +11,8 @@ from loguru import logger
 from PySide6.QtCore import QPoint, QSize, Qt, Slot
 from PySide6.QtGui import QCursor, QIcon
 from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QMainWindow,
-                               QMenu, QPushButton, QTreeWidgetItem, QWidget)
+                               QMenu, QMessageBox, QPushButton, QTreeWidgetItem,
+                               QWidget)
 from qasync import asyncSlot
 
 from hoshicore.component.image_io import scan_all_exif
@@ -22,6 +23,16 @@ from ui import resource
 # 导入自定义组件
 from ui.UILibs import (CategoryDialog, ClickableLabel, QtSignalTracker,
                        exifCheckDialog)
+
+
+def _format_exception_chain(exc: BaseException) -> str:
+    """沿 __cause__ 链格式化异常信息，不包含 traceback。"""
+    lines: list[str] = []
+    current: BaseException | None = exc
+    while current is not None:
+        lines.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__
+    return "\n← ".join(lines)
 
 
 class SlotHandler(QMainWindow):
@@ -537,6 +548,7 @@ class SlotHandler(QMainWindow):
         except asyncio.CancelledError:
             pass
         except Exception as e:
+            logger.error(f"任务执行失败: {e}")
             self.window.status_text.setStyleSheet(
                 "#status_text {color:rgba(200,0,0,200)}")
             self.window.star_trial_tips.setStyleSheet(
@@ -545,6 +557,14 @@ class SlotHandler(QMainWindow):
             self.window._status = 'failed'
             self.window._status_n['tips_2'] = ''
             self.window._status_n['status'] = '任务失败'
+            root = e.__cause__ if e.__cause__ is not None else e
+            msg_box = QMessageBox(self.window)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setWindowTitle("任务失败")
+            msg_box.setText(f"{type(root).__name__}: {root}")
+            msg_box.setDetailedText(
+                f"完整异常链:\n{_format_exception_chain(e)}")
+            msg_box.exec()
         finally:
             self.set_widget_handleable(handleable=True)
             self.update_status_display()

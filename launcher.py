@@ -211,11 +211,21 @@ def main():
                 f"Use positional dir argument or --input {inp.name}=<path>")
             sys.exit(1)
 
-    asyncio.run(
-        run_from_yaml(yaml_path,
-                      global_inputs,
-                      global_configs,
-                      route_choices=route_choices))
+    try:
+        asyncio.run(
+            run_from_yaml(yaml_path,
+                          global_inputs,
+                          global_configs,
+                          route_choices=route_choices))
+    except KeyboardInterrupt:
+        print("\n已中止", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        root = e.__cause__ if e.__cause__ is not None else e
+        logger.error(f"{type(root).__name__}: {root}")
+        if args.debug or args.trace:
+            raise
+        sys.exit(1)
 
 
 if __name__ == "__main__":
