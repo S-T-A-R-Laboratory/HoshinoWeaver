@@ -1,5 +1,6 @@
 import asyncio
 import itertools
+import sys
 from typing import Any, Awaitable, Mapping, Optional, Sequence
 
 from loguru import logger
@@ -234,6 +235,22 @@ class BaseOp(object):
         设计为统一入口：后续阶段可无缝替换为 ProcessPoolExecutor 以实现真正多核并行。
         """
         result = await asyncio.to_thread(fn, *args, **kwargs)
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            raise CancellationError("Cancelled during CPU execution")
+        return result
+
+    async def _run_numba(self, fn, *args, **kwargs):
+        """执行 numba parallel 加速的函数。
+
+        Workaround: numba_parallel_for 在 Windows frozen 环境的非主线程中
+        会死锁（Python 3.12+, PyInstaller）。此时退回主线程同步执行。
+        numba 内部仍通过 prange 并行，不影响计算性能。
+        非 frozen 环境正常卸载到线程池。
+        """
+        if getattr(sys, 'frozen', False) and sys.platform == 'win32':
+            result = fn(*args, **kwargs)
+        else:
+            result = await asyncio.to_thread(fn, *args, **kwargs)
         if self._cancel_event is not None and self._cancel_event.is_set():
             raise CancellationError("Cancelled during CPU execution")
         return result
