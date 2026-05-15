@@ -21,6 +21,8 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QHeaderView, QTreeWidge
 from PySide6.QtGui import QFont, QMouseEvent, QCursor, QColor, QIcon
 
 from hoshicore.component.utils import ORG_NAME, SOFTWARE_NAME, VERSION
+from hoshicore.component.utils import init_logger as _init_logger
+from loguru import logger as _logger
 from ui.UI import Ui_HNW,ui_choose_mode,Ui_guide
 from ui.UIUtils import SlotHandler
 from ui.UILibs import borderFrame
@@ -799,6 +801,8 @@ if __name__ == '__main__':
     if platform.system() == 'Windows':
         myappid = '.'.join(['org', ORG_NAME, SOFTWARE_NAME, VERSION.replace(".","_")])
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+
+    _init_logger(_logger, debug_mode=False, trace_mode=False, log_path=None, task="gui")
 
     app = QApplication()
     app.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))
