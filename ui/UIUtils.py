@@ -541,6 +541,7 @@ class SlotHandler(QMainWindow):
 
             # 执行成功
             output_path = global_configs.get("output_filename", "")
+            self.window._preview_useable = True
             self.view_file(output_path)
             self.window._status = 'successed'
             self.window._status_n['status'] = '任务完成'

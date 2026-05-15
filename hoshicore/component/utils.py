@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import multiprocessing as mp
+import os
+import platform
 import sys
 import time
 from functools import wraps
@@ -28,7 +31,7 @@ SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
 VERSION = "1.0.0"
-RELEASE_NAME = "Lyra"
+RELEASE_NAME = "Vega"
 ORG_NAME = f"STARLab"
 SOFTWARE_NAME = f"HoshinoWeaver"
 
@@ -96,8 +99,29 @@ def time_cost_warpper(func: Callable) -> Callable:
     return do_func
 
 
-def init_logger(logger, debug_mode: bool, trace_mode:bool, log_path: Optional[str]):
-    """用于初始化Loguru的logger"""
+def _make_log_filename(task: str) -> str:
+    """构造日志文件路径：logs/hnw_版本_平台_任务_时间戳.log"""
+    os_name = platform.system().lower()  # windows / darwin / linux
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    fname = f"hnw_{VERSION}_{os_name}_{task}_{ts}.log"
+    log_dir = os.path.join(
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    return os.path.join(log_dir, fname)
+
+
+def init_logger(logger,
+                debug_mode: bool,
+                trace_mode: bool,
+                log_path: Optional[str],
+                task: str = "unknown"):
+    """用于初始化Loguru的logger。
+
+    始终向 logs/ 目录写入 TRACE 级别日志文件，文件名含版本、平台、任务和时间戳。
+    log_path 若显式传入则使用该路径，否则自动生成。
+    """
     logger.remove()
     if trace_mode:
         logger.add(sys.stderr, level="TRACE")
@@ -105,6 +129,6 @@ def init_logger(logger, debug_mode: bool, trace_mode:bool, log_path: Optional[st
         logger.add(sys.stderr, level="DEBUG")
     else:
         logger.add(sys.stderr, level="INFO")
-    if log_path:
-        logger.add(log_path, level="TRACE")
+    file_path = log_path if log_path else _make_log_filename(task)
+    logger.add(file_path, level="TRACE", encoding="utf-8")
     return logger

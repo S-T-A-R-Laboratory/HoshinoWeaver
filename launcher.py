@@ -159,7 +159,8 @@ def main():
 
     args = parser.parse_args()
 
-    logger = init_logger(default_logger, args.debug, args.trace, None)
+    logger = init_logger(default_logger, args.debug, args.trace, None,
+                         task=os.path.splitext(os.path.basename(args.config))[0])
 
     yaml_path = args.config
     if not os.path.isfile(yaml_path):

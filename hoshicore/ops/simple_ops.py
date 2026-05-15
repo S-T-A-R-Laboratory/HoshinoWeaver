@@ -506,7 +506,6 @@ class ApplyMaskOp(BaseOp):
                         mask.astype(np.float32), dsize=(w, h),
                         interpolation=cv2.INTER_NEAREST) > 0.5
                 result_arr = np.multiply(img_arr, runtime_mask)
-                cv2.imwrite(f"debug_mask_{i}.tif", result_arr)
                 if isinstance(img, FloatImage):
                     result = FloatImage(data=result_arr, dtype=img.dtype)
                 else:
