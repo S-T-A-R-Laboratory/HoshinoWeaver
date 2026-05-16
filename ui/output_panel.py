@@ -192,16 +192,18 @@ class _OutputRegion(QFrame):
             layout.addWidget(slider, 1)
             layout.addWidget(val_label)
             getter = slider.value
+            setter = lambda v, s=slider: s.setValue(int(v))
         else:
             # Fallback: label + value only (YAGNI — other widgets not needed yet)
             lbl = QLabel(str(default), row)
             layout.addWidget(lbl, 1)
             getter = lambda v=default: v
+            setter = lambda v: None
 
         # Attach owner format so we can toggle visibility
         row.setProperty("owner_fmt", owner_fmt)
         row.setProperty("config_key", config_key)
-        self._format_param_widgets[preset_param] = (row, getter)
+        self._format_param_widgets[preset_param] = (row, getter, setter)
         return row
 
     # ── Event handlers ───────────────────────────────────────────────────────
@@ -228,7 +230,7 @@ class _OutputRegion(QFrame):
             self._dtype_combo.blockSignals(False)
 
         # Toggle format-specific param rows
-        for preset_param, (row, _getter) in self._format_param_widgets.items():
+        for preset_param, (row, _getter, _setter) in self._format_param_widgets.items():
             owner_fmt = row.property("owner_fmt")
             row.setVisible(owner_fmt == fmt)
 
@@ -288,7 +290,7 @@ class _OutputRegion(QFrame):
             if dtype:
                 result[self.spec.dtype_key] = dtype
 
-        for preset_param, (row, getter) in self._format_param_widgets.items():
+        for preset_param, (row, getter, _setter) in self._format_param_widgets.items():
             if row.property("owner_fmt") != fmt:
                 continue
             config_key = row.property("config_key")
@@ -303,6 +305,28 @@ class _OutputRegion(QFrame):
         if not self._path_edit.text():
             return f"请选择{self.spec.label}路径"
         return None
+
+    def apply_defaults(self, defaults: dict[str, Any]):
+        """Apply output initialization defaults to this region's controls.
+
+        Keys recognised:
+          output_format — format combo (e.g. "TIFF")
+          output_dtype  — dtype combo (e.g. "uint16")
+          jpg_quality, png_compressing — format-specific param sliders
+        """
+        fmt = defaults.get("output_format")
+        if fmt and fmt in self._allowed_formats:
+            self._format_combo.setCurrentText(fmt)
+
+        dtype = defaults.get("output_dtype")
+        if dtype and self._dtype_combo is not None:
+            effective = self._effective_dtypes(self._format_combo.currentText())
+            if dtype in effective:
+                self._dtype_combo.setCurrentText(dtype)
+
+        for preset_param, (row, _getter, setter) in self._format_param_widgets.items():
+            if preset_param in defaults:
+                setter(defaults[preset_param])
 
 
 # ─── OutputPanel (container) ─────────────────────────────────────────────────
@@ -355,3 +379,8 @@ class OutputPanel(QWidget):
             if reason:
                 return reason
         return None
+
+    def apply_defaults(self, defaults: dict[str, Any]):
+        """Apply output initialization defaults to all regions."""
+        for region in self._regions:
+            region.apply_defaults(defaults)

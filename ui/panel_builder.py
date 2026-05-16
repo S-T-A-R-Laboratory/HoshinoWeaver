@@ -3,23 +3,18 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 import yaml
 from PySide6.QtCore import Qt, Signal
-
-from ui.yaml_loader import load_ui_yaml
-from PySide6.QtWidgets import (
-    QFrame, QLabel, QLayout, QScrollArea, QSizePolicy,
-    QVBoxLayout, QWidget,
-)
+from PySide6.QtWidgets import (QFrame, QLabel, QLayout, QScrollArea,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from ui.styles import GROUP_BOX_STYLE, GROUP_HEADER_STYLE
-from ui.widgets import (
-    ConfigSpec, RouteOptionSpec, RouteSpec,
-    create_config_row, create_route_selector,
-)
-
+from ui.widgets import (ConfigSpec, RouteOptionSpec, RouteSpec,
+                        create_config_row, create_route_selector)
+from ui.yaml_loader import load_ui_yaml
 
 # ─── PanelSchema ─────────────────────────────────────────────────────────────
 
@@ -46,7 +41,7 @@ class PanelSchema:
     outputs: list[OutputSpec] = field(default_factory=list)
 
     @classmethod
-    def from_yaml(cls, meta_path: str, ui_path: str | None = None) -> "PanelSchema":
+    def from_yaml(cls, meta_path: str | Path , ui_path: str | Path | None = None) -> "PanelSchema":
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = yaml.safe_load(f)
 
@@ -54,7 +49,7 @@ class PanelSchema:
         if ui_path and os.path.isfile(ui_path):
             ui = load_ui_yaml(ui_path)
 
-        schema = cls(meta_yaml_path=meta_path)
+        schema = cls(meta_yaml_path=str(meta_path))
         schema._parse_routes(meta, ui)
         schema._parse_configs(meta, ui)
         schema._parse_route_configs(meta, ui)
