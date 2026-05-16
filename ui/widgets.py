@@ -155,6 +155,31 @@ def create_config_row(
         layout.addWidget(line, 1)
         layout.addWidget(btn)
 
+    elif spec.widget == "dir_picker":
+        line = QLineEdit(row)
+        line.setReadOnly(True)
+        line.setPlaceholderText("留空使用系统默认...")
+        line.setStyleSheet(LINEEDIT_STYLE)
+        if spec.default:
+            line.setText(str(spec.default))
+        btn = QPushButton("...", row)
+        btn.setMaximumWidth(28)
+        btn.setMinimumWidth(28)
+
+        def _browse_dir():
+            path = QFileDialog.getExistingDirectory(
+                row, spec.label or "选择目录", line.text() or "")
+            if path:
+                line.setText(path)
+                if on_change:
+                    on_change()
+
+        btn.clicked.connect(_browse_dir)
+        getter = line.text
+        setter = lambda v: line.setText(str(v) if v else "")
+        layout.addWidget(line, 1)
+        layout.addWidget(btn)
+
     elif spec.widget == "input" and spec.type == "int":
         spin = QSpinBox(row)
         spin.setMinimum(int(spec.min) if spec.min is not None else -999999)

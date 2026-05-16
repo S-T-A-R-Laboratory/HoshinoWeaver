@@ -1,17 +1,15 @@
 import os
 import sys
 
-if getattr(sys, 'frozen', False):
-    os.chdir(sys._MEIPASS)
-
-from hoshicore.engine.wiring import run_from_yaml
-import asyncio
 import argparse
+import asyncio
 import json
 
 from loguru import logger as default_logger
-from hoshicore.component.utils import is_support_format, init_logger
-from hoshicore.engine.inspect import inspect_yaml, InspectResult
+
+from hoshicore.component.utils import init_logger, is_support_format
+from hoshicore.engine.inspect import InspectResult, inspect_yaml
+from hoshicore.engine.wiring import run_from_yaml
 
 
 def _parse_kv_list(items: list[str], flag_name: str) -> dict[str, str]:

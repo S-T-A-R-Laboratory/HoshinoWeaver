@@ -2,39 +2,42 @@
 
 '''
 from __future__ import annotations
-import sys
+
 import os
+import sys
+from pathlib import Path
 
-if getattr(sys, 'frozen', False):
-    os.chdir(sys._MEIPASS)
-
-import time
-import json
-import ctypes
-import platform
-
-from qasync import QEventLoop
 import asyncio
+import ctypes
+import json
+import platform
+import time
 
-from PySide6.QtCore import Qt, QPoint, QTimer
-from PySide6.QtWidgets import QApplication, QMainWindow, QHeaderView, QTreeWidgetItem, QAbstractItemView, QDialog, QFrame
-from PySide6.QtGui import QFont, QMouseEvent, QCursor, QColor, QIcon
+from loguru import logger as _logger
+from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QMouseEvent
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
+                               QFrame, QHeaderView, QMainWindow, QScrollArea,
+                               QTreeWidgetItem)
+from qasync import QEventLoop
 
 from hoshicore.component.utils import ORG_NAME, SOFTWARE_NAME, VERSION
 from hoshicore.component.utils import init_logger as _init_logger
-from loguru import logger as _logger
-from ui.UI import Ui_HNW,ui_choose_mode,Ui_guide
-from ui.UIUtils import SlotHandler
-from ui.UILibs import borderFrame
-from ui.panel_builder import PanelSchema, DynamicConfigPanel
 from ui.output_panel import OutputPanel
+from ui.panel_builder import DynamicConfigPanel, PanelSchema
+from ui.UI import Ui_guide, Ui_HNW, ui_choose_mode
+from ui.UILibs import borderFrame
+from ui.UIUtils import SlotHandler
 
-from PySide6.QtWidgets import QScrollArea
+_BASE_DIR = Path(getattr(sys, '_MEIPASS', '')) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 
 MODE_MAP = {
-    "星轨叠加": ("hoshicore/dag/startrail.meta.yaml", "hoshicore/dag/startrail.ui.yaml"),
-    "堆栈降噪": ("hoshicore/dag/stack.meta.yaml", "hoshicore/dag/stack.ui.yaml"),
-    "天地分离": ("hoshicore/dag/sky_ground_stack.meta.yaml", "hoshicore/dag/sky_ground_stack.ui.yaml"),
+    "星轨叠加": (_BASE_DIR / "hoshicore/dag/startrail.meta.yaml",
+             _BASE_DIR / "hoshicore/dag/startrail.ui.yaml"),
+    "堆栈降噪": (_BASE_DIR / "hoshicore/dag/stack.meta.yaml",
+             _BASE_DIR / "hoshicore/dag/stack.ui.yaml"),
+    "天地分离": (_BASE_DIR / "hoshicore/dag/sky_ground_stack.meta.yaml",
+             _BASE_DIR / "hoshicore/dag/sky_ground_stack.ui.yaml"),
 }
 
 class HNW_guide(QDialog, Ui_guide):
@@ -635,6 +638,10 @@ class HNW_window(QMainWindow, Ui_HNW):
         schema = PanelSchema.from_yaml(meta_path, ui_path)
         self.config_panel.load_schema(schema)
         self.output_panel.load_specs(schema.outputs)
+        from hoshicore.engine.wiring import load_output_defaults
+        output_defaults = load_output_defaults()
+        if output_defaults:
+            self.output_panel.apply_defaults(output_defaults)
 
     def initial_attr(self, workspace='星轨叠加'):
         '''

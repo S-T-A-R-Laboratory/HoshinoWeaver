@@ -132,6 +132,7 @@ class SlotHandler(QMainWindow):
     @Slot()
     def show_setting_menu(self):
         self.menu = QMenu(self)
+        self.menu.addAction("全局设置").triggered.connect(self.show_global_settings)
         self.menu_show_guide = self.menu.addAction("使用指南")
         self.menu_show_guide.triggered.connect(self.show_guide_window)
 
@@ -139,6 +140,12 @@ class SlotHandler(QMainWindow):
         button_pos = self.window.menu_setting.mapToGlobal(
             QPoint(0, self.window.menu_setting.height()))
         self.menu.popup(button_pos)  # 弹出菜单，位置是按钮下方
+
+    @Slot()
+    def show_global_settings(self):
+        from ui.global_settings_dialog import GlobalSettingsDialog
+        dlg = GlobalSettingsDialog(self.window)
+        dlg.exec()
 
     # output_file_option_2_switch, save_img, alter_png_level, alter_jpg_level,
     # update_output_file_type, update_output_file_path_cache — 已移除，由 OutputPanel 接管
