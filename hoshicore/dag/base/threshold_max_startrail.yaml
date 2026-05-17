@@ -1,0 +1,73 @@
+description: "Threshold-Max 星轨子图：sigma-clip 估计背景后，逐帧提取亮信号叠入均值"
+version: "1"
+
+# ── 全局输入 ──
+inputs:
+  data: { type: sequence }
+  weight: { type: sequence, required: false }
+  fnames: { type: sequence, required: false }
+
+# ── 全局配置 ──
+configs:
+  int_weight: { type: bool, default: true }
+  rej_high: { type: float, default: 3.0 }
+  rej_low: { type: float, default: 3.0 }
+  max_iter: { type: int, default: 5 }
+  buffer_mode: { type: str, default: "auto" }
+  n_sigma: { type: float, default: -1 }
+
+# ── 节点 ──
+#
+#                    ┌──► mean_stacker ──────────┐
+#  inputs.data ──────┤                           ├──► sigma_clip_iter ──┐
+#                    ├──► disk_buffer ───────────┤                      │
+#                    │                    │      └──► threshold_max ────► result
+#  inputs.weight ────┘                   └─────────────────┘
+#  inputs.fnames ────┘
+
+nodes:
+  mean_stacker:
+    op: MeanStackerOp
+    inputs:
+      data: inputs.data
+    configs:
+      int_weight: configs.int_weight
+    outputs:
+      result: { type: image }
+      statistics: { type: image }
+
+  disk_buffer:
+    op: DiskBufferWriterOp
+    inputs:
+      data: inputs.data
+      weight: inputs.weight
+      fnames: inputs.fnames
+    configs:
+      buffer_mode: configs.buffer_mode
+    outputs:
+      buffer_handle: { type: image }
+
+  sigma_clip_iter:
+    op: SigmaClipIteratorOp
+    configs:
+      fgp_total: mean_stacker.statistics
+      buffer_handle: disk_buffer.buffer_handle
+      rej_high: configs.rej_high
+      rej_low: configs.rej_low
+      max_iter: configs.max_iter
+    outputs:
+      result: { type: image }
+      statistics: { type: image }
+
+  threshold_max:
+    op: ThresholdMaxIteratorOp
+    configs:
+      fgp_total: sigma_clip_iter.statistics
+      buffer_handle: disk_buffer.buffer_handle
+      n_sigma: configs.n_sigma
+    outputs:
+      result: { type: image }
+
+# ── 全局输出 ──
+outputs:
+  result: threshold_max.result

@@ -1,0 +1,21 @@
+description: "卫星线去除（滑动窗口对齐中位数法）"
+version: "1"
+
+inputs:
+  data: { type: sequence, required: true }
+
+configs:
+  window_size: { type: int, default: 2 }
+
+nodes:
+  sat_clean:
+    op: SatelliteCleanOp
+    inputs:
+      data: inputs.data
+    configs:
+      window_size: configs.window_size
+    outputs:
+      result: { type: sequence }
+
+outputs:
+  result: sat_clean.result

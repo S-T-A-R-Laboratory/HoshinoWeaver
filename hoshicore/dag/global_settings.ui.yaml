@@ -1,0 +1,61 @@
+# UI 描述文件：全局设置面板
+# 与 hoshicore/default_settings.yaml 中的条目对应
+# 供 GlobalSettingsDialog 渲染每行控件使用
+
+int_weight:
+  label: "整数权重"
+  description: "启用整数累加权重，改善精度且速度更快（全局覆盖管线默认值）"
+  widget: switch
+
+buffer_mode:
+  label: "中间帧缓冲模式"
+  description: "auto=自动选择，disk=强制使用磁盘缓冲，replay=源重放缓冲"
+  widget: select
+  options:
+    - {value: "auto",   label: "自动"}
+    - {value: "disk",   label: "磁盘缓冲"}
+    - {value: "memory", label: "源重放缓冲"}
+
+temp_path:
+  label: "临时文件目录"
+  description: "磁盘缓冲的临时文件存放路径，留空使用系统默认 (tempfile.gettempdir())"
+  widget: dir_picker
+
+log_level:
+  label: "日志级别"
+  description: "控制台和文件日志的最低输出级别"
+  widget: select
+  options: ["DEBUG", "INFO", "WARNING", "ERROR"]
+
+# ── 输出面板初始化 ─────────────────────────────────────────────────────────────
+_group_output:
+  type: group_header
+  label: "输出面板初始化默认值"
+
+output_format:
+  label: "默认格式"
+  description: "新建任务时输出面板的初始格式选择"
+  widget: select
+  options: ["JPG", "PNG", "TIFF"]
+
+output_dtype:
+  label: "输出数据类型"
+  description: "所有管线的默认输出位深"
+  widget: select
+  options: ["uint8", "uint16", "uint32"]
+
+jpg_quality:
+  label: "JPG 图像质量"
+  description: "JPG 格式的默认图像质量（1–100）"
+  widget: slider
+  min: 1
+  max: 100
+  step: 1
+
+png_compressing:
+  label: "PNG 压缩级别"
+  description: "PNG 格式的默认压缩级别（1–9）"
+  widget: slider
+  min: 1
+  max: 9
+  step: 1
