@@ -65,17 +65,6 @@ def _cumscale_factor(level: int, exp_base: int = 0) -> int:
     return factor
 
 
-def get_scale_x(time: int, base: int = 256) -> int:
-    """单步放缩因子：base^time + 1。
-
-    注意与 _cumscale_factor 的区别：
-        _cumscale_factor(n) = (base+1)^n  （多步累积）
-        get_scale_x(n)      = base^n + 1  （单步公式）
-    两者仅在 n=1 时相等（均为 257）。
-    """
-    return base**time + 1
-
-
 def rescale_array(
     data: np.ndarray,
     from_dtype: np.dtype,
