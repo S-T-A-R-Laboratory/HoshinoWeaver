@@ -741,6 +741,7 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # setting按钮
         self.menu_setting.clicked.connect(self.slot_handler.show_setting_menu)
+        self.menu_about.clicked.connect(self.slot_handler.show_about_dialog)
 
         # 图像列表选项卡
         # 6 添加文件
