@@ -15,7 +15,7 @@ from ui import resource  # noqa: F401  — registers Qt icon resources
 from ui.UILibs import uQDialog
 
 _LICENSE_PATH = Path(__file__).parent.parent / "LICENSE"
-_GITHUB_URL = "https://github.com/PLACEHOLDER/HoshinoWeaver"
+_GITHUB_URL = "https://github.com/Designerspr/HoshinoWeaver"
 
 
 def _read_license_first_line() -> str:
@@ -54,7 +54,7 @@ class AboutDialog(uQDialog):
         top.setSpacing(14)
 
         icon_label = QLabel(self)
-        px = QPixmap(":/icons/resource/icon/about.png").scaled(
+        px = QPixmap(u":/icons/resource/icon/HNW.jpg").scaled(
             64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         icon_label.setPixmap(px)
         icon_label.setFixedSize(64, 64)
@@ -87,7 +87,7 @@ class AboutDialog(uQDialog):
 
         # Description
         desc_lbl = QLabel(
-            "天文图像堆叠预处理工具，支持星轨、天地分离、降噪等工作流。", self)
+            "天文图像堆叠预处理工具，支持星轨、星点对齐等复杂工作流。", self)
         desc_lbl.setWordWrap(True)
         desc_lbl.setStyleSheet("font-size: 12px;")
         root.addWidget(desc_lbl)
