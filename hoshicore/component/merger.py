@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 
 from .data_container import (DTYPE_LEVEL, DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP,
                              _SCALE_BASE, FloatImage, FastGaussianParam,
-                             HuberMeanParam)
+                             HuberMeanParam, _cumscale_factor)
 from .numba_kernels import (fgp_masked_mean_merge, fgp_mean_merge,
                             fgp_weighted_mean_merge, sigma_clip_fused_merge,
                             sigma_clip_fused_masked_merge)
@@ -96,17 +96,17 @@ class BaseMerger(metaclass=ABCMeta):
 
         规则：
             source_dtype 在 DTYPE_UPSCALE_MAP 中时，
-            图像 upscale 一级（如 uint8→uint16），
-            权重从 [0,1] 映射到 [0, 256^1+1] 的整型范围。
+            图像 upscale 一级（如 uint8→uint16）。
         """
         src = self._source_dtype
+        assert src is not None
         if src in DTYPE_UPSCALE_MAP and DTYPE_UPSCALE_MAP[src] != float:
             upscaled_dtype = DTYPE_UPSCALE_MAP[src]
             src_level = DTYPE_LEVEL.get(src, 0)
             up_level = DTYPE_LEVEL.get(upscaled_dtype, src_level)
             diff = up_level - src_level
             if diff > 0:
-                scale = _SCALE_BASE**diff + 1
+                scale = _cumscale_factor(diff, exp_base=src_level)
                 raw = raw.astype(upscaled_dtype)
                 if isinstance(weight, np.ndarray):
                     weight = np.array(weight * scale, dtype=upscaled_dtype)

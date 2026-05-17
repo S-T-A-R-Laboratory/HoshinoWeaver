@@ -10,7 +10,6 @@ from hoshicore.component.data_container import (
     HuberMeanParam,
     _cumscale_factor,
     align_dtype_pair,
-    get_scale_x,
     rdtype_detector,
     rescale_array,
 )
@@ -94,7 +93,7 @@ class TestRdtypeDetector:
         assert rdtype_detector(arr) == float
 
 
-# ── _cumscale_factor / get_scale_x ──
+# ── _cumscale_factor  ──
 
 
 class TestScaleHelpers:
@@ -102,8 +101,6 @@ class TestScaleHelpers:
         f = _cumscale_factor(1)
         assert f == 257
 
-    def test_get_scale_x_1(self):
-        assert get_scale_x(1) == 257
 
 
 # ── FloatImage ──
