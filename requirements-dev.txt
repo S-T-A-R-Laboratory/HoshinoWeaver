@@ -1,0 +1,5 @@
+pytest>=8.0
+pytest-asyncio>=0.23
+pytest-cov>=5.0
+pyinstaller>=6.10.0
+pyinstaller-hooks-contrib>=2026.1

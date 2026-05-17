@@ -1,0 +1,139 @@
+inputs:
+  light_fnames:
+    label: "亮场文件"
+    widget: file_picker
+    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+  bias_fnames:
+    label: "偏置场文件"
+    description: "Bias 帧（可选，用于减去读出噪声）"
+    widget: file_picker
+    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+  dark_fnames:
+    label: "暗场文件"
+    description: "Dark 帧（可选，用于减去暗电流）"
+    widget: file_picker
+    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+  flat_fnames:
+    label: "平场文件"
+    description: "Flat 帧（可选，用于校正暗角/灰尘）"
+    widget: file_picker
+    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+
+routes:
+  bias_stacker:
+    label: "偏置场来源"
+    widget: tabs
+    options:
+      none:
+        label: "不使用"
+        description: "跳过偏置场校准"
+      master:
+        label: "主帧文件"
+        description: "从已有 Master Bias 文件加载"
+      mean:
+        label: "均值合成"
+        description: "从多张 Bias 帧求平均合成"
+      median:
+        label: "中位数合成"
+        description: "从多张 Bias 帧取中位数合成"
+  dark_stacker:
+    label: "暗场来源"
+    widget: tabs
+    options:
+      none:
+        label: "不使用"
+        description: "跳过暗场校准"
+      master:
+        label: "主帧文件"
+        description: "从已有 Master Dark 文件加载"
+      mean:
+        label: "均值合成"
+        description: "从多张 Dark 帧求平均合成"
+      median:
+        label: "中位数合成"
+        description: "从多张 Dark 帧取中位数合成"
+  flat_stacker:
+    label: "平场来源"
+    widget: tabs
+    options:
+      none:
+        label: "不使用"
+        description: "跳过平场校准"
+      master:
+        label: "主帧文件"
+        description: "从已有 Master Flat 文件加载"
+      mean:
+        label: "均值合成"
+        description: "从多张 Flat 帧求平均合成"
+      median:
+        label: "中位数合成"
+        description: "从多张 Flat 帧取中位数合成"
+  main_stacker:
+    label: "叠加算法"
+    widget: tabs
+    options:
+      mean:
+        label: "均值"
+        description: "高信噪比平均叠加"
+      median:
+        label: "中位数"
+        description: "逐像素取中位数，天然抗异常值"
+      sigma_clip:
+        label: "Sigma 裁剪"
+        description: "迭代剔除异常像素后求均值"
+      huber_mean:
+        label: "Huber 均值"
+        description: "基于 Huber 损失的稳健均值估计"
+
+configs:
+  int_weight:
+    label: "整数权重"
+    description: "启用使用整数累加，改善精度，速度更快"
+    widget: switch
+  output_dtype:
+    hidden: true
+  output_filename:
+    hidden: true
+  bias_master_path:
+    label: "Bias 主帧路径"
+    description: "已有 Master Bias 文件路径"
+    widget: file_picker
+    accept: ".tif,.tiff,.fits"
+  dark_master_path:
+    label: "Dark 主帧路径"
+    description: "已有 Master Dark 文件路径"
+    widget: file_picker
+    accept: ".tif,.tiff,.fits"
+  flat_master_path:
+    label: "Flat 主帧路径"
+    description: "已有 Master Flat 文件路径"
+    widget: file_picker
+    accept: ".tif,.tiff,.fits"
+  exif_reduce_type:
+    hidden: true
+  loader_type:
+    hidden: true
+  loader_configs:
+    hidden: true
+  jpg_quality:
+    hidden: true
+  png_compressing:
+    hidden: true
+
+route_configs:
+  "!include": fragments/stacker_route_configs.ui.yaml
+  sigma_clip:
+    max_iter:
+      max: 20
+    early_converge_ratio: null
+
+layout:
+  groups:
+    - name: "校准帧"
+      keys: [bias_master_path, dark_master_path, flat_master_path]
+    - name: "输出设置"
+      keys: [int_weight]
+  order: [bias_stacker, dark_stacker, flat_stacker, main_stacker, bias_master_path, dark_master_path, flat_master_path, int_weight]
+
+outputs:
+  - "!include": fragments/image_output.ui.yaml

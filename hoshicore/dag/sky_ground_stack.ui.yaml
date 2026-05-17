@@ -1,0 +1,97 @@
+inputs:
+  fnames:
+    label: "图像文件"
+    widget: file_picker
+    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+
+routes:
+  sky_stacker:
+    label: "天空叠加算法"
+    widget: tabs
+    options:
+      mean:
+        label: "均值"
+        description: "高信噪比平均叠加"
+      sigma_clip:
+        label: "Sigma 裁剪"
+        description: "迭代剔除异常像素后求均值"
+      huber_mean:
+        label: "Huber 均值"
+        description: "基于 Huber 损失的稳健均值估计"
+      median:
+        label: "中位数"
+        description: "逐像素取中位数，天然抗异常值"
+  ground_stacker:
+    label: "地面叠加算法"
+    widget: tabs
+    options:
+      mean:
+        label: "均值"
+        description: "高信噪比平均叠加"
+      sigma_clip:
+        label: "Sigma 裁剪"
+        description: "迭代剔除异常像素后求均值"
+      huber_mean:
+        label: "Huber 均值"
+        description: "基于 Huber 损失的稳健均值估计"
+      median:
+        label: "中位数"
+        description: "逐像素取中位数，天然抗异常值"
+
+configs:
+  int_weight:
+    label: "整数权重"
+    description: "启用使用整数累加，改善精度，速度更快"
+    widget: switch
+  output_dtype:
+    hidden: true
+  output_filename:
+    hidden: true
+  align_method:
+    label: "对齐方式"
+    description: "星点对齐算法（auto = 自动选择）"
+    widget: select
+    options:
+      - { value: "auto",       label: "自动" }
+      - { value: "homography", label: "透视变换" }
+      - { value: "distortion",     label: "畸变优化" }
+  same_camera:
+    label: "同一相机"
+    description: "所有帧来自同一相机（优化对齐速度）"
+    widget: switch
+  mask:
+    label: "天空区域掩模"
+    description: "白色区域为天空，黑色区域为地面"
+    widget: file_picker
+    accept: ".tif,.tiff,.png,.jpg"
+  align_base:
+    label: "对齐基准图像"
+    description: "天空对齐基准图像。空缺默认使用第一张"
+    widget: file_picker
+    accept: ".tif,.tiff,.png,.jpg"
+  distortion:
+    hidden: true
+  exif_reduce_type:
+    hidden: true
+  loader_type:
+    hidden: true
+  loader_configs:
+    hidden: true
+  jpg_quality:
+    hidden: true
+  png_compressing:
+    hidden: true
+
+route_configs:
+  "!include": fragments/stacker_route_configs.ui.yaml
+
+layout:
+  groups:
+    - name: "对齐设置"
+      keys: [align_method, align_base, same_camera, mask]
+    - name: "输出设置"
+      keys: [int_weight]
+  order: [sky_stacker, ground_stacker, align_method, same_camera, mask, int_weight]
+
+outputs:
+  - "!include": fragments/image_output.ui.yaml

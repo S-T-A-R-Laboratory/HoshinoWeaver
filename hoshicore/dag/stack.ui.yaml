@@ -1,0 +1,55 @@
+inputs:
+  fnames:
+    label: "图像文件"
+    widget: file_picker
+    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+
+routes:
+  stacker:
+    label: "叠加算法"
+    widget: tabs
+    options:
+      mean:
+        label: "均值"
+        description: "高信噪比平均叠加"
+      sigma_clip:
+        label: "Sigma 裁剪"
+        description: "迭代剔除异常像素后求均值"
+      median:
+        label: "中位数"
+        description: "逐像素取中位数，天然抗异常值"
+      huber_mean:
+        label: "Huber 均值"
+        description: "基于 Huber 损失的稳健均值估计"
+
+configs:
+  int_weight:
+    label: "整数权重"
+    description: "启用使用整数累加，改善精度，速度更快"
+    widget: switch
+  output_dtype:
+    hidden: true
+  output_filename:
+    hidden: true
+  exif_reduce_type:
+    hidden: true
+  loader_type:
+    hidden: true
+  loader_configs:
+    hidden: true
+  jpg_quality:
+    hidden: true
+  png_compressing:
+    hidden: true
+    
+route_configs:
+  "!include": fragments/stacker_route_configs.ui.yaml
+
+layout:
+  groups:
+    - name: "基础设置"
+      keys: [int_weight]
+  order: [stacker, int_weight]
+
+outputs:
+  - "!include": fragments/image_output.ui.yaml

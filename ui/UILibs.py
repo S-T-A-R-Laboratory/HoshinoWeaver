@@ -4,13 +4,18 @@
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QObject, QSize, QPointF, QRect, QPoint
-from PySide6.QtWidgets import QLabel, QTreeWidget, QAbstractItemView, QMenu, QTreeWidgetItem, QDialog
-from PySide6.QtWidgets import QComboBox, QDialogButtonBox, QVBoxLayout, QPushButton, QFrame
-from PySide6.QtGui import QAction, QPixmap, QWheelEvent, QMouseEvent, QPainter, QImage, QColor, QBrush, QPolygon, QCursor
-
-from ezlib.progressbar import QueueProgressbar
 import rawpy
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QSize, Qt, Signal
+from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QImage,
+                           QMouseEvent, QPainter, QPixmap, QPolygon,
+                           QWheelEvent)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog,
+                               QDialogButtonBox, QFrame, QLabel, QMenu,
+                               QPushButton, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout)
+
+from hoshicore.component.progress import DummyTracker
+
 
 class imgDisplayQFrame(QFrame):
     def __init__(self, parent=None):
@@ -73,13 +78,7 @@ class imgDisplayQFrame(QFrame):
     def centerImage(self):
         """Centers the image based on the current scale."""
         if self.pixmap:
-            scaled_pixmap_size = self.pixmap.size() * self.scale_factor
             self.offset = QPointF(0, 0)
-            print(self.width(), scaled_pixmap_size.width())
-            print(self.height(), scaled_pixmap_size.height())
-            self.offset.setX(0)
-            self.offset.setY(0)
-            print(self.offset)
     
     def updateScaleLimits(self):
         if self.pixmap:
@@ -284,28 +283,50 @@ class ImgTreeWidget(QTreeWidget):
             else:
                 pass
 
-class qtProgressBar(QueueProgressbar,QObject):
-    progress_signal = Signal(int)
+class QtSignalTracker(DummyTracker, QObject):
+    """将 DAG 多节点进度聚合为单一百分比，通过 Qt Signal 通知 UI。"""
+    progress_updated = Signal(int, str)   # (percent, active_op_desc)
+    finished = Signal()
 
-    def __init__(self, tot_num: int, desc: str = "") -> None:
+    def __init__(self):
         QObject.__init__(self)
-        QueueProgressbar.__init__(self, tot_num, desc)
+        DummyTracker.__init__(self)
+        self._bars: dict[str, dict] = {}
+        self._total_items: int = 0
+        self._completed_items: int = 0
 
-    def reset(self, tot_num: Optional[int] = 0, desc: str = "") -> None:
-        super().reset(tot_num, desc)
-        self.progress_signal.emit(0)
+    def create_bar(self, name, total, desc=None, unit="imgs"):
+        if name in self._bars:
+            old = self._bars[name]
+            self._total_items -= old['total']
+            self._completed_items -= old['progress']
+        self._bars[name] = {'total': total, 'progress': 0, 'desc': desc or name}
+        self._total_items += total
+        self._emit()
 
-    def update(self):
-        val = round(self.progress/self.tot_num*100,0)
-        if val == 100:
-            val = 99.9
-        self.progress_signal.emit(val)
-        
-        # QApplication.processEvents()
-        # time.sleep(1)
+    def update(self, name, n=1):
+        bar = self._bars.get(name)
+        if bar:
+            bar['progress'] += n
+            self._completed_items += n
+            self._emit()
 
-    def finish(self):
-        self.progress_signal.emit(100)
+    def close_bar(self, name):
+        pass  # 保留已完成的贡献，不减进度
+
+    def close_all(self):
+        self._bars.clear()
+        self._total_items = 0
+        self._completed_items = 0
+        self.finished.emit()
+
+    def reset_bar(self, name, total, desc=None):
+        self.create_bar(name, total, desc)
+
+    def _emit(self):
+        pct = min(int(self._completed_items / self._total_items * 100), 99) if self._total_items > 0 else 0
+        active = next((b['desc'] for b in self._bars.values() if b['progress'] < b['total']), "")
+        self.progress_updated.emit(pct, active)
 
 class uQDialog(QDialog):
     def __init__(self, parent=None):
@@ -411,64 +432,6 @@ class borderFrame(QFrame):
         self.setCursor(QCursor(Qt.ArrowCursor))
         super().leaveEvent(event)
 
-class borderFrame_N():
-    def __init__(self, window_width, window_height, border_width, parent=None):
-
-        # 保存窗口宽度，高度和边框宽度
-        self.window_width = window_width
-        self.window_height = window_height
-        self.border_width = border_width
-
-        # 创建四个QFrame（上下左右边框）
-        self.top_border = QFrame(parent)
-        self.bottom_border = QFrame(parent)
-        self.left_border = QFrame(parent)
-        self.right_border = QFrame(parent)
-        self.top_left_corner = QFrame(parent)
-        self.top_right_corner = QFrame(parent)
-        self.bottom_left_corner = QFrame(parent)
-        self.bottom_right_corner = QFrame(parent)
-
-        # 设置边框的样式，可以自定义颜色和样式
-        self.set_frame_style(self.top_border)
-        self.set_frame_style(self.bottom_border)
-        self.set_frame_style(self.left_border)
-        self.set_frame_style(self.right_border)
-        self.set_frame_style(self.top_left_corner)
-        self.set_frame_style(self.top_right_corner)
-        self.set_frame_style(self.bottom_left_corner)
-        self.set_frame_style(self.bottom_right_corner)
-
-        # 调整边框位置和大小
-        self.update_frames()
-
-    def set_frame_style(self, frame):
-        """ 设置边框的外观 """
-        frame.setStyleSheet("background-color: red;")  # 红色背景
-        frame.setFrameShape(QFrame.Box)  # 可选：添加边框效果
-
-    def update_frames(self):
-        """ 根据窗口的宽度、高度和边框宽度更新四个边框的位置和大小 """
-        # 顶部 QFrame: 在窗口上边缘
-        self.top_border.setGeometry(self.border_width, 0, self.window_width - 2 * self.border_width, self.border_width)
-        # 底部 QFrame: 在窗口下边缘
-        self.bottom_border.setGeometry(self.border_width, self.window_height - self.border_width, self.window_width - 2 * self.border_width, self.border_width)
-        # 左侧 QFrame: 在窗口左边缘
-        self.left_border.setGeometry(0, self.border_width, self.border_width, self.window_height - 2 * self.border_width)
-        # 右侧 QFrame: 在窗口右边缘
-        self.right_border.setGeometry(self.window_width - self.border_width, self.border_width, self.border_width, self.window_height - 2 * self.border_width)
-        self.top_left_corner.setGeometry(0, 0, self.border_width, self.border_width)
-        self.top_right_corner.setGeometry(self.window_width - self.border_width, 0, self.border_width, self.border_width)
-        self.bottom_left_corner.setGeometry(0, self.window_height - self.border_width, self.border_width, self.border_width)
-        self.bottom_right_corner.setGeometry(self.window_width - self.border_width, self.window_height - self.border_width, self.border_width, self.border_width)
-
-    def resizeEvent(self, event):
-        """ 当窗口大小改变时，自动调整四个边框的大小和位置 """
-        self.window_width = self.width()
-        self.window_height = self.height()
-        self.update_frames()
-        super().resizeEvent(event)
-
 class DoubleSlider(QFrame):
     valueChanged = Signal(int, int)
 
@@ -553,12 +516,18 @@ class DoubleSlider(QFrame):
         self.left_handdle_pos = self.valueToPixel(self.left_value)
         self.right_handle_pos = self.valueToPixel(self.right_value)
 
-        # 设置固定大小
-        self.setFixedSize(self.width_, self.height_)
+        # 高度固定，宽度自适应容器
+        self.setFixedHeight(self.height_)
+        self.setMinimumWidth(40)
         # 启用鼠标跟踪
         self.setMouseTracking(True)
 
+    def sizeHint(self):
+        return QSize(60, self.height_)
+
     def update_slider(self):
+        self.width_ = self.width() if self.width() > 0 else self.width_
+        self.track_width = self.width_ - self.track_width_margin_left - self.track_width_margin_right
         self.track_center_height = self.track_height/2
         self.track_center_height += self.track_height_margin_top
         self.track_left_able_height = self.track_height
@@ -568,6 +537,10 @@ class DoubleSlider(QFrame):
         self.left_handdle_pos = self.valueToPixel(self.left_value)
         self.right_handle_pos = self.valueToPixel(self.right_value)
         self.update()
+
+    def resizeEvent(self, event):
+        self.update_slider()
+        super().resizeEvent(event)
 
 
     def paintEvent(self, event):

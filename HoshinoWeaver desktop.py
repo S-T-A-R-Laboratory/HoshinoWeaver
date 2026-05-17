@@ -2,25 +2,43 @@
 
 '''
 from __future__ import annotations
-import sys
+
 import os
+import sys
+from pathlib import Path
 
-import time
-import json
-import ctypes
-import platform
-
-from qasync import QEventLoop
 import asyncio
+import ctypes
+import json
+import platform
+import time
 
-from PySide6.QtCore import Qt, QPoint, QTimer
-from PySide6.QtWidgets import QApplication, QMainWindow, QHeaderView,QTreeWidgetItem, QAbstractItemView, QDialog
-from PySide6.QtGui import QFont, QMouseEvent, QCursor, QColor, QIcon
+from loguru import logger as _logger
+from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QMouseEvent
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
+                               QFrame, QHeaderView, QMainWindow, QScrollArea,
+                               QTreeWidgetItem)
+from qasync import QEventLoop
 
-from ezlib.utils import ORG_NAME, PROJECT_NAME, SOFTWARE_NAME, VERSION
-from ui.UI import Ui_HNW,ui_choose_mode,Ui_guide
+from hoshicore.component.utils import ORG_NAME, SOFTWARE_NAME, VERSION
+from hoshicore.component.utils import init_logger as _init_logger
+from ui.output_panel import OutputPanel
+from ui.panel_builder import DynamicConfigPanel, PanelSchema
+from ui.UI import Ui_guide, Ui_HNW, ui_choose_mode
+from ui.UILibs import borderFrame
 from ui.UIUtils import SlotHandler
-from ui.UILibs import qtProgressBar,borderFrame
+
+_BASE_DIR = Path(getattr(sys, '_MEIPASS', '')) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+
+MODE_MAP = {
+    "星轨叠加": (_BASE_DIR / "hoshicore/dag/startrail.meta.yaml",
+             _BASE_DIR / "hoshicore/dag/startrail.ui.yaml"),
+    "堆栈降噪": (_BASE_DIR / "hoshicore/dag/stack.meta.yaml",
+             _BASE_DIR / "hoshicore/dag/stack.ui.yaml"),
+    "天地分离": (_BASE_DIR / "hoshicore/dag/sky_ground_stack.meta.yaml",
+             _BASE_DIR / "hoshicore/dag/sky_ground_stack.ui.yaml"),
+}
 
 class HNW_guide(QDialog, Ui_guide):
     def __init__(self, callback, display_always_flag=True,parent=None):
@@ -107,14 +125,26 @@ class ui_choose_mode_window(QMainWindow, ui_choose_mode):
         self.img_avg.clicked.connect(self.avg_clicked)
         # self.back.clicked.connect(self.close)   去掉了关闭按钮
 
+        # 天地分离模式按钮（动态添加）
+        from ui.UILibs import ClickableLabel
+        self.label_sky_ground = ClickableLabel(self)
+        self.label_sky_ground.setText("天地分离")
+        self.label_sky_ground.setStyleSheet(
+            "font-size: 14px; color: rgba(45,45,45,220); padding: 8px;")
+        self.label_sky_ground.clicked.connect(self.sky_ground_clicked)
+        if hasattr(self, 'verticalLayout'):
+            self.verticalLayout.addWidget(self.label_sky_ground)
+
     def startrail_clicked(self):
-        # 当按钮点击时，调用传递的回调函数
         self.callback('星轨叠加')
         self.close()
 
     def avg_clicked(self):
-        # 当按钮点击时，调用传递的回调函数
         self.callback('堆栈降噪')
+        self.close()
+
+    def sky_ground_clicked(self):
+        self.callback('天地分离')
         self.close()
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -534,6 +564,84 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.hover_border_frame()
         # 3 guide页面
         self.guide_window = HNW_guide(callback=self.update_config, display_always_flag=self._CONFIG['guide_always_display'],parent=self)
+        # 4 动态参数面板
+        self._setup_dynamic_panel()
+        # 5 动态输出面板
+        self._setup_output_panel()
+
+    def _setup_dynamic_panel(self):
+        """Replace hardcoded parameter widgets with DynamicConfigPanel."""
+        # Remove all children from self.frame (the settings container)
+        layout = self.frame.layout()
+        if layout:
+            while layout.count():
+                item = layout.takeAt(0)
+                w = item.widget()
+                if w:
+                    w.hide()
+                    w.deleteLater()
+
+        # Create scroll area inside the existing frame
+        scroll = QScrollArea(self.frame)
+        scroll.setObjectName("config_scroll_area")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            "QScrollBar:vertical { background-color: rgba(190,190,190,0); border: 0px; width: 6px; }"
+            "QScrollBar::handle:vertical { background-color: rgba(190,190,190,190); border-radius: 3px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+        )
+
+        self.config_panel = DynamicConfigPanel()
+        scroll.setWidget(self.config_panel)
+        layout.addWidget(scroll)
+
+        self._current_meta_yaml_path = None
+
+    def _setup_output_panel(self):
+        """Replace static output tab widgets with OutputPanel."""
+        layout = self.star_trail_output.layout()
+        if layout:
+            while layout.count():
+                item = layout.takeAt(0)
+                w = item.widget()
+                if w:
+                    w.hide()
+                    w.deleteLater()
+
+        scroll = QScrollArea(self.star_trail_output)
+        scroll.setObjectName("output_scroll_area")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            "QScrollBar:vertical { background-color: rgba(190,190,190,0); border: 0px; width: 6px; }"
+            "QScrollBar::handle:vertical { background-color: rgba(190,190,190,190); border-radius: 3px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+        )
+
+        self.output_panel = OutputPanel()
+        scroll.setWidget(self.output_panel)
+        layout.addWidget(scroll)
+
+        # Re-evaluate readiness whenever an output value changes
+        self.output_panel.values_changed.connect(
+            lambda: self.slot_handler.detect_status() if hasattr(self, 'slot_handler') else None)
+
+    def load_mode_panel(self, mode: str):
+        """Load the dynamic panel for a given mode name."""
+        if mode not in MODE_MAP:
+            return
+        meta_path, ui_path = MODE_MAP[mode]
+        self._current_meta_yaml_path = meta_path
+        schema = PanelSchema.from_yaml(meta_path, ui_path)
+        self.config_panel.load_schema(schema)
+        self.output_panel.load_specs(schema.outputs)
+        from hoshicore.engine.wiring import load_output_defaults
+        output_defaults = load_output_defaults()
+        if output_defaults:
+            self.output_panel.apply_defaults(output_defaults)
 
     def initial_attr(self, workspace='星轨叠加'):
         '''
@@ -554,44 +662,10 @@ class HNW_window(QMainWindow, Ui_HNW):
             '偏置场': list(),
             '蒙版': list()
         }
-        # 文件格式及文件路径
-        self._output_file_type = 'JPG'
-        # 缓存数据 用于在切换格式后保存之前输入的数据 切换回来之后不用重新输入
-        self._output_file_path_cache = {
-            'JPG': None,
-            'PNG': None,
-            'TIFF': None,
-        }
-        self._output_file_path = self._output_file_path_cache[
-            self._output_file_type]
-        # 算法
-        self._mode = 'max'
-        # 最大迭代次数 1-10 默认5
-        self._max_iter = 5
-        # 蒙版是否可用 可用的前提下 传入参数self._input_files['蒙版']
-        self._mask_able = False
-        self._mask_able = True
-        # 渐入渐出
-        self._fade_in = 0
-        self._fade_out = 0
-        # 拒绝域
-        self._rej_low = 3
-        self._rej_high = 3
-        # int weight选项
-        self._int_weight = False
-        self._jpg_quality = 85
-        self._png_compressing = 0
-        # 色深
-        self._output_bits = 8
-        # 预览是否可用
         self._preview_useable = True
-
-        self._resize = None
-        self._input_size = [0, 0]
 
         # 进度条定义
         self.star_trail_process_bar.setValue(0)
-        self.qtbar_star_trail = qtProgressBar(tot_num=0)
 
         self._preview_img = ['', None]
 
@@ -608,15 +682,8 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.star_trail_option_box.setCurrentIndex(0)
 
         # 2 设置按钮默认选中状态
-        # 默认输出jpg
-        # 更改setCurrentText为png再改回jpg确保槽函数触发
-        self.alter_output_type_2.setCurrentText('PNG')
-        self.alter_output_type_2.setCurrentText('JPG')
+        # 输出选项卡已由 OutputPanel 接管，无需手动初始化静态 widget
 
-        # 3 设置图像质量滑块默认值
-        self.alter_jpg_level.setValue(85)
-        self.alter_png_level.setValue(8)
-        self.alter_resize.setValue(100)
 
         # 4 文件列表初始化
         # 减少缩进
@@ -650,57 +717,11 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.star_trail_file_tree.setSelectionMode(
             QAbstractItemView.ExtendedSelection)
 
-        # s设置输出文件路径框为不可修改
-        self.output_path_2.setReadOnly(True)
+        # 旧的硬编码参数初始化已移除 — 由动态面板接管
 
-        # s设置蒙版路径框为不可修改
-        self.mask_file_path.setReadOnly(True)
-
-        # 初始化fade in out 显示 以及双滑块显示
-        self.alter_fade_in_out.left_value = self._fade_in
-        self.alter_fade_in_out.right_value = 100 - self._fade_out
-        self.alter_fade_in_out.track_width_margin_left = 20
-        self.alter_fade_in_out.width_ = 160
-        self.alter_fade_in_out.track_width = 120
-        self.alter_fade_in_out.update_slider()
-        self.slot_handler.alter_fade_in_out()
-
-        # 初始化alter_rejection显示 以及双滑块显示
-        self.alter_rejection.left_value = int(0 - self._rej_low * 10)
-        self.alter_rejection.right_value = int(self._rej_high * 10)
-        self.alter_rejection.width_ = 160
-        self.alter_rejection.track_width_margin_left = 20
-        self.alter_rejection.track_width = 120
-        self.alter_rejection.track_color = QColor("#66cc66")
-        self.alter_rejection.track_left_able_color = QColor(190, 190, 190, 190)
-        self.alter_rejection.track_right_able_color = QColor(
-            190, 190, 190, 190)
-        self.alter_rejection.min_value = -60
-        self.alter_rejection.max_value = 60
-        self.alter_rejection.left_handdle_min_value = None
-        self.alter_rejection.left_handdle_max_value = 0
-        self.alter_rejection.right_handdle_min_value = 0
-        self.alter_rejection.right_handdle_max_value = None
-        self.alter_rejection.update_slider()
-        self.slot_handler.alter_rejection()
-
-        # 初始化蒙版选项卡
-        # self.slot_handler.mask_able()
-        # 隐藏蒙版选项开启按钮 不需要这个按钮
-        self.mask_able.hide()
-        # 初始化int_weight选项
-        self.slot_handler.int_weight_able()
-        # 初始化max_iter、
-        self.slot_handler.alter_max_iter()
-        # 初始化_output_bits
-        self.slot_handler.alter_output_bits()
-
-        # 设置初始模式为星轨
+        # 设置初始模式为星轨（使用新的动态面板）
         self.slot_handler.change_mode(self._workspace)
 
-        # 隐藏resize选项
-        self.frame_resize.hide()
-        self.frame_resize.setVisible(False)
 
         # 设置进度条颜色
         self.star_trail_process_bar.setStyleSheet("#star_trail_process_bar {background-color: rgb(96, 200, 120);}")
@@ -709,9 +730,6 @@ class HNW_window(QMainWindow, Ui_HNW):
         '''
         绑定槽函数
         '''
-        # 0 激活SlotHandler
-        self.slot_handler = SlotHandler(self)
-
         # 模式切换按钮
         self.label_current_mode.clicked.connect(
             self.slot_handler.show_choose_mode_window)
@@ -723,6 +741,7 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # setting按钮
         self.menu_setting.clicked.connect(self.slot_handler.show_setting_menu)
+        self.menu_about.clicked.connect(self.slot_handler.show_about_dialog)
 
         # 图像列表选项卡
         # 6 添加文件
@@ -737,60 +756,14 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.star_trail_file_tree.menu_action_triggered_signal.connect(
             self.slot_handler.trigger_file_tree_item_menu)
 
-        # 叠加选项 选项卡
-        # 算法选择切换
-        self.alter_algorithm_startrail.currentTextChanged.connect(
-            lambda: self.slot_handler.choose_algorithm_max())
-        self.alter_algorithm_mean.currentTextChanged.connect(
-            lambda: self.slot_handler.choose_algorithm_mean())
-        self.alter_algorithm_min.currentTextChanged.connect(
-            lambda: self.slot_handler.choose_algorithm_min())
-        # 3 fade in out双滑块
-        self.alter_fade_in_out.valueChanged.connect(
-            self.slot_handler.alter_fade_in_out)
-        # rej low、high双滑块
-        self.alter_rejection.valueChanged.connect(
-            self.slot_handler.alter_rejection)
-        # 9 质量与速度选项
-        self.int_weight_able.stateChanged.connect(
-            self.slot_handler.int_weight_able)
-        # 启用蒙版
-        self.mask_able.stateChanged.connect(self.slot_handler.mask_able)
-        # 选择蒙版
-        self.alter_mask_file.clicked.connect(self.slot_handler.alter_mask_file)
-        # 最大迭代次数
-        self.alter_max_iter.valueChanged.connect(
-            self.slot_handler.alter_max_iter)
+        # 叠加选项 — 动态面板接管，旧绑定已移除
 
         # 输出选项 选项卡
-        # 2 星轨页面的文件格式下拉框
-        self.alter_output_type_2.currentTextChanged.connect(
-            self.slot_handler.output_file_option_2_switch)
-        # 4 输出文件选择框
-        self.alter_output_2.clicked.connect(self.slot_handler.save_img)
-        # 5 图像质量值显示
-        self.alter_png_level.valueChanged.connect(
-            lambda value: self.slot_handler.alter_png_level(int(value)))
-        self.alter_jpg_level.valueChanged.connect(
-            lambda value: self.slot_handler.alter_jpg_level(int(value)))
-
-        # self.alter_png_level.valueChanged.connect(lambda value: self.slot_handler.update_png_compressing(int(value)))
-        # self.alter_jpg_level.valueChanged.connect(lambda value: self.slot_handler.update_jpg_quality(int(value)))
-        # self.alter_png_level.valueChanged.connect(lambda value: self.png_level.setText(str(value)))
-        # self.alter_jpg_level.valueChanged.connect(lambda value: self.jpg_level.setText(str(value)))
-        # 色深
-        self.alter_output_bits.currentTextChanged.connect(
-            self.slot_handler.alter_output_bits)
-        # 输出尺寸
-        self.alter_resize.valueChanged.connect(
-            lambda value: self.slot_handler.update_resize(int(value)))
+        # 输出选项 — 由 OutputPanel 接管，原静态绑定已移除
 
         # 开始按钮
         self.btn_star_trail_start.clicked.connect(
             self.slot_handler.star_trail_start_process)
-        # 进度条
-        self.qtbar_star_trail.progress_signal.connect(
-            self.slot_handler.update_progress_bar)
 
         # 分隔条拖动 先不用了
         # self.splitter.splitterMoved.connect(self.img_view_label.setImage)
@@ -834,8 +807,10 @@ class HNW_window(QMainWindow, Ui_HNW):
 
 if __name__ == '__main__':
     if platform.system() == 'Windows':
-        myappid = f'{ORG_NAME}.{PROJECT_NAME}.{SOFTWARE_NAME}.{VERSION.replace(".","_")}'
+        myappid = '.'.join(['org', ORG_NAME, SOFTWARE_NAME, VERSION.replace(".","_")])
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+
+    _init_logger(_logger, debug_mode=False, trace_mode=False, log_path=None, task="gui")
 
     app = QApplication()
     app.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))

@@ -1,0 +1,64 @@
+description: "通用叠加子图（纯叠加，无 loader/saver，可被父图复用）"
+version: "1"
+
+# ── 全局输入 ──
+inputs:
+  data: { type: sequence, required: true }
+
+# ── 路由定义 ──
+routes:
+  stacker:
+    options:
+      mean:       MeanStackerOp
+      sigma_clip: sigma_clip.yaml
+      median:     median_stack_core.yaml
+      huber_mean: huber_mean.yaml
+    default: mean
+
+# ── 全局配置 ──
+configs:
+  int_weight: { type: bool,  default: true }
+  mask:       { type: image, required: false, default: null }
+
+# ── 路由专属配置 ──
+route_configs:
+  stacker:
+    sigma_clip:
+      rej_high:             { type: float, default: 3.0 }
+      rej_low:              { type: float, default: 3.0 }
+      max_iter:             { type: int,   default: 5 }
+      early_converge_ratio: { type: float, default: 0.99 }
+    median:
+      chunk_rows: { type: int, default: 32 }
+    huber_mean:
+      huber_c: { type: float, default: 1.345 }
+
+# ── 节点 ──
+#
+#  inputs.data ──► stacker ──► result
+
+nodes:
+  stacker:
+    route_key: stacker
+    inputs:
+      data: inputs.data
+    route_configs:
+      mean:
+        int_weight: configs.int_weight
+        mask: configs.mask
+      sigma_clip:
+        int_weight: configs.int_weight
+        mask: configs.mask
+        # rej_high, rej_low, max_iter, early_converge_ratio — auto-wired
+      median: {}
+        # chunk_rows — auto-wired；median 不使用 int_weight / mask
+      huber_mean:
+        int_weight: configs.int_weight
+        mask: configs.mask
+        # huber_c — auto-wired
+    outputs:
+      result: { type: image }
+
+# ── 全局输出 ──
+outputs:
+  result: stacker.result

@@ -1,0 +1,55 @@
+description: "Huber Mean sub-DAG: MeanStacker (Phase 1) + DiskBuffer + HuberMeanIterator (Phase 2)"
+version: "1"
+
+# ── 全局输入 ──
+inputs:
+  data: { type: sequence }
+  fnames: { type: sequence, required: false }  # 可选：提供时启用 replay 模式
+
+# ── 全局配置 ──
+configs:
+  int_weight: { type: bool, default: true }
+  mask: { type: image, required: false, default: null }  # 可选空间掩码，传入 MeanStackerOp
+  huber_c: { type: float, default: 1.345 }
+  buffer_mode: { type: str, default: "auto" }  # auto/disk/replay
+
+# ── 节点 ──
+#
+#  inputs.data ──────┬──► disk_buffer  ─────┐
+#                    │                      ├──► huber_mean_iter ──► result
+#                    └──► mean_stacker ─────┘
+
+nodes:
+  mean_stacker:
+    op: MeanStackerOp
+    inputs:
+      data: inputs.data
+    configs:
+      int_weight: configs.int_weight
+      mask: configs.mask
+    outputs:
+      result: { type: image }
+      statistics: { type: image }
+
+  disk_buffer:
+    op: DiskBufferWriterOp
+    inputs:
+      data: inputs.data
+      fnames: inputs.fnames
+    configs:
+      buffer_mode: configs.buffer_mode
+    outputs:
+      buffer_handle: { type: image }
+
+  huber_mean_iter:
+    op: HuberMeanIteratorOp
+    configs:
+      fgp_total: mean_stacker.statistics
+      buffer_handle: disk_buffer.buffer_handle
+      huber_c: configs.huber_c
+    outputs:
+      result: { type: image }
+
+# ── 全局输出 ──
+outputs:
+  result: huber_mean_iter.result

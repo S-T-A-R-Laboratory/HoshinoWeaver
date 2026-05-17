@@ -1,8 +1,17 @@
-easydict>=1.11
-loguru>=0.7.2
-numpy<2.0
-opencv_python>=4.9.0.80
-pyexiv2==2.12.0
-rawpy>=0.20.0
-qasync>=0.27.0
+av>=16.0.0
+loguru>=0.7.0
+networkx>=3.6.0
+numba>=0.58
+numpy>=2.4.0
+opencv-python>=4.12.0.0
+pillow>=12.0.0
+psutil>=7.0.0
+pyexiv2>=2.15.0
 pyside6>=6.4.3
+PyWavelets>=1.9.0
+PyYAML >=6.0.0
+qasync>=0.28.0
+rawpy>=0.20.0
+scipy>=1.10.0
+tifffile>=2026.3
+tqdm>=4.40.0

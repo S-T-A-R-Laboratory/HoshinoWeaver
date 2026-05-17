@@ -1,0 +1,39 @@
+# ──────────────────────────────────────────────────────────────
+# HoshiNoWeaver / hoshicore 全局默认设置
+# ──────────────────────────────────────────────────────────────
+#
+# 持久化配置，适用于跨管线共享的默认值。
+# 配置优先级（高 → 低）：
+#   1. 用户运行时显式传入的 global_configs（UI 面板收集）
+#   2. 本文件中 enabled: true 的条目
+#   3. YAML 管线定义中的 default
+#   4. Op CONFIGS 声明中的 default
+#
+# 格式说明：每个条目包含 enabled（是否生效）和 value（实际值）。
+# 通过"全局设置"面板可视化管理，也可直接编辑本文件。
+# ──────────────────────────────────────────────────────────────
+
+int_weight:
+  enabled: true
+  value: true
+buffer_mode:
+  enabled: true
+  value: auto
+temp_path:
+  enabled: false
+  value: null
+log_level:
+  enabled: false
+  value: DEBUG
+output_format:
+  enabled: true
+  value: TIFF
+output_dtype:
+  enabled: true
+  value: uint16
+jpg_quality:
+  enabled: true
+  value: 85
+png_compressing:
+  enabled: true
+  value: 7
