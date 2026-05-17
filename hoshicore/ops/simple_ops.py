@@ -33,7 +33,9 @@ class LoadSingleImageOp(BaseOp):
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         path = configs['path']
-        result = load_img(path)
+        result = None
+        if path is not None:
+            result = load_img(path)
         await self._broadcast_outputs({"result": result})
 
 
@@ -501,7 +503,7 @@ class ApplyMaskOp(BaseOp):
             else:
                 img_arr = img.data if isinstance(img, FloatImage) else img
                 if runtime_mask.shape != img_arr.shape:
-                    h, w = img_arr.shape
+                    h, w, _ = img_arr.shape
                     runtime_mask = cv2.resize(
                         mask.astype(np.float32), dsize=(w, h),
                         interpolation=cv2.INTER_NEAREST) > 0.5

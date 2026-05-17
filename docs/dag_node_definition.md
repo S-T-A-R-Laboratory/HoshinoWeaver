@@ -464,7 +464,6 @@ routes:
 configs:
   int_weight:       { type: bool, default: true }
   exif_reduce_type: { type: str,  default: "sum" }
-  output_filename:  { type: str,  default: "result.tif" }
   output_dtype:     { type: str,  default: "uint8" }
   loader_type:      { type: str,  default: "img_file_list" }
   loader_configs:   { type: dict, default: {} }

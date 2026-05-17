@@ -55,6 +55,8 @@ class DiskBufferWriterOp(BaseOp):
         - "auto"（默认）：有 fnames 输入 → replay，否则 → disk
         - "disk"：强制使用 DiskFrameBuffer
         - "replay"：强制使用 SourceReplayBuffer（需要 fnames 输入）
+        
+    # TODO: 支持内存缓冲（MemoryFrameBuffer），适用于小规模帧数且内存充足的场景，提供更快访问但占用 RAM。
     """
 
     EXECUTOR = "cpu"
@@ -78,6 +80,10 @@ class DiskBufferWriterOp(BaseOp):
             "type": "str",
             "default": "auto",
         },
+        "temp_path": {
+            "type": "str",
+            "default": None,
+        }
     }
     OUTPUTS = {
         "buffer_handle": {
@@ -91,10 +97,10 @@ class DiskBufferWriterOp(BaseOp):
         has_weight = self.inputs['weight'].active
         has_fnames = self.inputs['fnames'].active
         buffer_mode = configs.get("buffer_mode", "auto")
+        temp_path = configs.get("temp_path", None)
 
         # 确定缓冲策略
-        use_replay = (buffer_mode == "replay" or
-                      (buffer_mode == "auto" and has_fnames))
+        use_replay = (buffer_mode == "replay")
         if use_replay and not has_fnames:
             raise ValueError(
                 f"{self.name}: replay mode requires 'fnames' input, "
@@ -104,7 +110,7 @@ class DiskBufferWriterOp(BaseOp):
             frame_buffer = SourceReplayBuffer()
             mode_label = "Replay"
         else:
-            frame_buffer = DiskFrameBuffer()
+            frame_buffer = DiskFrameBuffer(temp_path=temp_path)
             mode_label = "Buffer"
 
         stacked_num = 0

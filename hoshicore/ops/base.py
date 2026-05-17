@@ -41,7 +41,8 @@ class BaseOp(object):
         self.length: Optional[int] = None
         self.name = name
         self.tracker = DummyTracker()
-        self._cancel_event: Optional[Any] = None  # asyncio.Event 或 mp.Event，由 wiring 注入
+        self._cancel_event: Optional[
+            Any] = None  # asyncio.Event 或 mp.Event，由 wiring 注入
 
     async def pre_execute(self) -> dict[str, Any]:
         """
@@ -58,11 +59,13 @@ class BaseOp(object):
 
         # ── 2. 分类：哪些序列输入长度已知，哪些未知 ──
         known_seq = {
-            name: length for name, length in input_lengths.items()
-            if self.INPUTS[name].get("type") == "sequence" and length is not None
+            name: length
+            for name, length in input_lengths.items() if
+            self.INPUTS[name].get("type") == "sequence" and length is not None
         }
         none_seq = {
-            name: length for name, length in input_lengths.items()
+            name: length
+            for name, length in input_lengths.items()
             if self.INPUTS[name].get("type") == "sequence" and length is None
         }
 
@@ -73,12 +76,12 @@ class BaseOp(object):
                 f"sequence inputs — known: {list(known_seq.keys())} "
                 f"(lengths: {list(known_seq.values())}), "
                 f"unknown: {list(none_seq.keys())}. "
-                f"Use FilterGate pattern to align sequences before merging."
-            )
+                f"Use FilterGate pattern to align sequences before merging.")
 
         # ── 4. 等长校验（仅对已知长度）──
         if len(set(known_seq.values())) > 1:
-            raise ValueError(f"Input sequence length mismatch: {dict(known_seq)}")
+            raise ValueError(
+                f"Input sequence length mismatch: {dict(known_seq)}")
 
         # ── 5. self.length = 输入序列长度（用于迭代）──
         if known_seq:
@@ -99,7 +102,8 @@ class BaseOp(object):
         # ── 7. 等待配置就绪 ──
         return {x: await self.config[x].get() for x in self.config.keys()}
 
-    def _infer_output_length(self, input_lengths: dict[str, Optional[int]]) -> Optional[int]:
+    def _infer_output_length(
+            self, input_lengths: dict[str, Optional[int]]) -> Optional[int]:
         """推断输出序列长度。
 
         返回 int: 已知长度，在 pre_execute 中立即广播。
@@ -153,10 +157,13 @@ class BaseOp(object):
             raise cancel_err
         except Exception as e:
             # 本节点异常：创建取消令牌并传播
-            logger.error(f"{self.name} failed: {e}")
+            import traceback
+            logger.error(
+                f"{self.name} failed: {e.__repr__()}\n{traceback.format_exc()}"
+            )
             await self._propagate_cancellation(e)
             raise
-    
+
     def _async_convert_inputs(self):
         # NOTE: queue.get() returns an awaitable; subclasses may `await` each value.
         # 跳过非活跃队列（未布线的可选输入），避免产生永远不会被 await 的 coroutine。
@@ -166,7 +173,7 @@ class BaseOp(object):
                 continue
             converted_inputs[key] = queue.get()
         return converted_inputs
-    
+
     async def _send_sentinel(self) -> None:
         """发送正常结束信号"""
         for queue_list in self.outputs.values():
@@ -337,7 +344,8 @@ class ParallelBaseOp(BaseOp):
                 async with semaphore:
                     data = self._async_convert_inputs()
                     try:
-                        result = await self._async_execute_single(data, configs)
+                        result = await self._async_execute_single(
+                            data, configs)
                     except StreamExhausted:
                         for awaitable in data.values():
                             if hasattr(awaitable, 'close'):
@@ -391,5 +399,6 @@ class FilterBaseOp(BaseOp):
                         await self._broadcast_outputs({"result": item})
     """
     VARIABLE_OUTPUT = True
+
     def _infer_output_length(self, input_lengths):
         return None
