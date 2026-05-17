@@ -227,7 +227,6 @@ CUDA 算子沿用同样流程，但额外需要：
 2. 保持 CPU fallback 语义不变
 3. 先补 focused correctness，再补最窄 benchmark
 
-## 说明
+## 参考
 
-- 上层统一通过 `hoshicore._custom_op` 调用，不直接依赖 `_C`
-- 如需了解迁移设计细节，见 [CMAKE_MIGRATION.md](./CMAKE_MIGRATION.md)
+- 构建架构与多平台策略详见 [CMAKE_MIGRATION.md](./CMAKE_MIGRATION.md)
