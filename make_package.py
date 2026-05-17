@@ -64,12 +64,14 @@ import os as _os, sys as _sys, pyexiv2 as _pyexiv2
 _plib = _os.path.join(_os.path.dirname(_pyexiv2.__file__), 'lib')
 _pyver = '{{}}.{{}}'.format(_sys.version_info.major, _sys.version_info.minor)
 _plat = {{'darwin': 'darwin', 'linux': 'linux', 'win32': 'win'}}[_sys.platform]
-_ext_dir = _os.path.join(_plib, 'py{{}}-{{}}'.format(_pyver, _plat))
-shared_datas.append((_ext_dir, _os.path.join('pyexiv2', 'lib', 'py{{}}-{{}}'.format(_pyver, _plat))))
+#if _plat != 'win':
+#    _ext_dir = _os.path.join(_plib, 'py{{}}-{{}}'.format(_pyver, _plat))
+#    shared_datas.append((_ext_dir, _os.path.join('pyexiv2', 'lib', 'py{{}}-{{}}'.format(_pyver, _plat))))
 
-# Static resource files (user-modifiable DAG yamls + default settings)
+# Static resource files (user-modifiable DAG yamls + default settings + LICENSE)
 shared_datas.append(({join_path(work_path, 'hoshicore', 'dag')!r}, 'hoshicore/dag'))
 shared_datas.append(({join_path(work_path, 'hoshicore', 'default_settings.yaml')!r}, 'hoshicore'))
+shared_datas.append(({join_path(work_path, 'LICENSE')!r}, '.'))
 
 _shared_excludes = ['tensorflow', 'keras', 'torch', 'PyQt5', 'PyQt6']
 
