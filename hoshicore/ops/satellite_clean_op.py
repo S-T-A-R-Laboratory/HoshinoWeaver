@@ -36,7 +36,7 @@ class SatelliteCleanOp(BaseOp):
         "data": {"type": "sequence", "required": True},
     }
     CONFIGS: dict[str, Any] = {
-        "window_size": {"type": "int", "default": 2},
+        "window_size": {"type": "int", "default": 3},
     }
     OUTPUTS: dict[str, Any] = {
         "result": {"type": "sequence"},
@@ -49,6 +49,9 @@ class SatelliteCleanOp(BaseOp):
         W: int = configs['window_size']
         tot_num = self.length
 
+        assert W >= 1 and W % 2 == 1, "window_size must be an odd integer >= 1"
+        half_W = (W - 1) // 2
+        
         if tot_num is not None:
             self.tracker.create_bar(self.name, tot_num)
 
@@ -72,32 +75,31 @@ class SatelliteCleanOp(BaseOp):
                         self._compute_homography, buffer[-1].geo, geo)
                     buffer[-1].H_to_next = H
 
+                # only pop when next frame is ready and buffer is full 
+                # this ensures the residual frames in buffer to be enough, and can still be processed after input is exhausted
+                if len(buffer) >= W:
+                    buffer.popleft()
+                    
                 buffer.append(slot)
+                
 
-                if len(buffer) == 2 * W + 1:
+                if len(buffer) == W:
                     cleaned = await self._run_cpu(
-                        self._process_center, buffer, W)
+                        self._process_center, buffer, half_W)
                     out = self._wrap_output(cleaned, frame)
                     await self._broadcast_outputs({"result": out})
-                    buffer.popleft()
                     output_count += 1
                     if tot_num is not None:
                         self.tracker.update(self.name)
 
             # Flush remaining frames in buffer
-            while buffer:
-                actual_W = (len(buffer) - 1) // 2
-                if actual_W >= 1:
-                    center_pos = actual_W
-                    cleaned = await self._run_cpu(
-                        self._process_center, buffer, center_pos)
-                    out = self._wrap_output(cleaned, frame)
-                else:
-                    out = buffer[0].original
-                    if isinstance(frame, FloatImage):
-                        out = FloatImage(data=out, dtype=frame.dtype)
+            res_center_pos = (len(buffer) - 1) // 2
+            while res_center_pos < len(buffer):
+                cleaned = await self._run_cpu(
+                    self._process_center, buffer, res_center_pos)
+                out = self._wrap_output(cleaned, frame)
                 await self._broadcast_outputs({"result": out})
-                buffer.popleft()
+                res_center_pos += 1
                 output_count += 1
                 if tot_num is not None:
                     self.tracker.update(self.name)
@@ -121,11 +123,8 @@ class SatelliteCleanOp(BaseOp):
         h, w = center.original.shape[:2]
 
         aligned_all = [center.original]
-        for offset in range(-center_pos, len(buffer) - center_pos):
-            if offset == 0:
-                continue
-            pos = center_pos + offset
-            if pos < 0 or pos >= len(buffer):
+        for pos in range(len(buffer)):
+            if pos == center_pos:
                 continue
             H = SatelliteCleanOp._chain_homography(buffer, pos, center_pos)
             if H is None:
