@@ -147,6 +147,12 @@ class SlotHandler(QMainWindow):
         dlg = GlobalSettingsDialog(self.window)
         dlg.exec()
 
+    @Slot()
+    def show_about_dialog(self):
+        from ui.about_dialog import AboutDialog
+        dlg = AboutDialog(self.window)
+        dlg.exec()
+
     # output_file_option_2_switch, save_img, alter_png_level, alter_jpg_level,
     # update_output_file_type, update_output_file_path_cache — 已移除，由 OutputPanel 接管
 
