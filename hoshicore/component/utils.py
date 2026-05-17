@@ -7,6 +7,7 @@ import os
 import platform
 import sys
 import time
+from pathlib import Path
 from functools import wraps
 from math import floor, sqrt
 from typing import Callable, Optional, Union
@@ -34,6 +35,11 @@ VERSION = "1.0.0-alpha0"
 RELEASE_NAME = "Vega"
 ORG_NAME = f"STARLab"
 SOFTWARE_NAME = f"HoshinoWeaver"
+
+if getattr(sys, 'frozen', False):
+    _EXE_ROOT = Path(sys._MEIPASS)
+else:
+    _EXE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def is_support_format(fname: str) -> bool:
@@ -104,10 +110,7 @@ def _make_log_filename(task: str) -> str:
     os_name = platform.system().lower()  # windows / darwin / linux
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     fname = f"hnw_{VERSION}_{os_name}_{task}_{ts}.log"
-    log_dir = os.path.join(
-        os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "logs")
+    log_dir = str(_EXE_ROOT / "logs")
     os.makedirs(log_dir, exist_ok=True)
     return os.path.join(log_dir, fname)
 
@@ -123,12 +126,13 @@ def init_logger(logger,
     log_path 若显式传入则使用该路径，否则自动生成。
     """
     logger.remove()
-    if trace_mode:
-        logger.add(sys.stderr, level="TRACE")
-    elif debug_mode:
-        logger.add(sys.stderr, level="DEBUG")
-    else:
-        logger.add(sys.stderr, level="INFO")
+    if sys.stderr is not None:
+        if trace_mode:
+            logger.add(sys.stderr, level="TRACE")
+        elif debug_mode:
+            logger.add(sys.stderr, level="DEBUG")
+        else:
+            logger.add(sys.stderr, level="INFO")
     file_path = log_path if log_path else _make_log_filename(task)
     logger.add(file_path, level="TRACE", encoding="utf-8")
     return logger

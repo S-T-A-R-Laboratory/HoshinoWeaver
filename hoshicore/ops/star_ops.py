@@ -79,7 +79,7 @@ class StarShrinkOp(ParallelBaseOp):
         "data": {"type": "sequence", "required": True},
     }
     CONFIGS: dict[str, Any] = {
-        "detect_method":    {"type": "str",   "default": "dog"},
+        "detect_method":    {"type": "str",   "default": "threshold"},
         "detect_ksize":     {"type": "int",   "default": 13},
         "detect_threshold": {"type": "float", "default": 5.0},
         "detect_open":      {"type": "int",   "default": 3},
@@ -93,7 +93,7 @@ class StarShrinkOp(ParallelBaseOp):
         "deringing":        {"type": "bool",  "default": False},
         "deringing_algo":   {"type": "str",   "default": "median"},
         "deringing_ksize":  {"type": "int",   "default": 25},
-        "blend_method":     {"type": "str",   "default": "guided"},
+        "blend_method":     {"type": "str",   "default": "hard"},
         "guided_radius":    {"type": "int",   "default": 8},
         "guided_eps":       {"type": "float", "default": 0.01},
     }
