@@ -26,9 +26,10 @@ class OutputSpec:
     label: str = "输出"
     type: str = "image"  # image | sequence | video
     dtype_key: str | None = None
-    formats: list[str] | None = None              # workflow-allowed formats
-    dtype_options: list[str] | None = None        # workflow-allowed dtypes
-    format_params: dict[str, str] = field(default_factory=dict)  # preset_param → config_key
+    formats: list[str] | None = None  # workflow-allowed formats
+    dtype_options: list[str] | None = None  # workflow-allowed dtypes
+    format_params: dict[str, str] = field(
+        default_factory=dict)  # preset_param → config_key
 
 
 @dataclass
@@ -36,12 +37,16 @@ class PanelSchema:
     meta_yaml_path: str
     routes: dict[str, RouteSpec] = field(default_factory=dict)
     configs: list[ConfigSpec] = field(default_factory=list)
-    route_configs: dict[str, dict[str, list[ConfigSpec]]] = field(default_factory=dict)
+    route_configs: dict[str,
+                        dict[str,
+                             list[ConfigSpec]]] = field(default_factory=dict)
     layout: dict = field(default_factory=dict)
     outputs: list[OutputSpec] = field(default_factory=list)
 
     @classmethod
-    def from_yaml(cls, meta_path: str | Path , ui_path: str | Path | None = None) -> "PanelSchema":
+    def from_yaml(cls,
+                  meta_path: str | Path,
+                  ui_path: str | Path | None = None) -> "PanelSchema":
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = yaml.safe_load(f)
 
@@ -65,6 +70,7 @@ class PanelSchema:
         copy that key's `default` into `bind_default` so the widget can
         initialize the right handle from meta.yaml rather than from `max`.
         """
+
         def _resolve(specs: list[ConfigSpec]):
             by_key = {s.key: s for s in specs}
             for s in specs:
@@ -81,7 +87,8 @@ class PanelSchema:
         for entry in ui.get("outputs", []) or []:
             if not isinstance(entry, dict) or "filename_key" not in entry:
                 raise ValueError(
-                    f"ui.yaml 'outputs' entry must be a dict with 'filename_key': {entry!r}")
+                    f"ui.yaml 'outputs' entry must be a dict with 'filename_key': {entry!r}"
+                )
             spec = OutputSpec(
                 filename_key=entry["filename_key"],
                 label=entry.get("label", "输出"),
@@ -93,14 +100,13 @@ class PanelSchema:
             )
             # Validate format_params keys exist in presets
             for preset_param in spec.format_params:
-                found = any(
-                    preset_param in preset["params"]
-                    for preset in IMAGE_FORMAT_PRESETS.values()
-                )
+                found = any(preset_param in preset["params"]
+                            for preset in IMAGE_FORMAT_PRESETS.values())
                 if not found:
                     raise ValueError(
                         f"OutputSpec '{spec.filename_key}': format_params key "
-                        f"'{preset_param}' is not declared in any IMAGE_FORMAT_PRESETS entry")
+                        f"'{preset_param}' is not declared in any IMAGE_FORMAT_PRESETS entry"
+                    )
             # Validate formats list against presets
             if spec.formats is not None:
                 for fmt in spec.formats:
@@ -128,7 +134,8 @@ class PanelSchema:
                 label=ui_route.get("label", route_key),
                 widget=ui_route.get("widget", "tabs"),
                 options=options,
-                default=route_def.get("default", option_keys[0] if option_keys else ""),
+                default=route_def.get("default",
+                                      option_keys[0] if option_keys else ""),
             )
 
     def _parse_configs(self, meta: dict, ui: dict):
@@ -148,7 +155,8 @@ class PanelSchema:
                 ui_option = ui_rc.get(option_key, {})
                 for param_key, param_spec in params.items():
                     ui_param = ui_option.get(param_key, {})
-                    specs.append(_build_config_spec(param_key, param_spec, ui_param))
+                    specs.append(
+                        _build_config_spec(param_key, param_spec, ui_param))
                 self.route_configs[route_key][option_key] = specs
 
 
@@ -267,8 +275,10 @@ class DynamicConfigPanel(QWidget):
     def _render_routes(self):
         for route_key, route_spec in self._schema.routes.items():
             frame, getter, setter = create_route_selector(
-                route_spec, parent=self,
-                on_changed=lambda opt, rk=route_key: self._on_route_changed(rk, opt),
+                route_spec,
+                parent=self,
+                on_changed=lambda opt, rk=route_key: self._on_route_changed(
+                    rk, opt),
             )
             self._main_layout.addWidget(frame)
             self._route_getters[route_key] = getter
@@ -297,8 +307,8 @@ class DynamicConfigPanel(QWidget):
                 group_name = group.get("name", "")
                 group_keys = group.get("keys", [])
                 specs_in_group = [
-                    s for s in self._schema.configs
-                    if s.key in group_keys and not s.hidden and s.key not in route_keys
+                    s for s in self._schema.configs if s.key in group_keys
+                    and not s.hidden and s.key not in route_keys
                 ]
                 if not specs_in_group:
                     continue
@@ -308,12 +318,13 @@ class DynamicConfigPanel(QWidget):
                     rendered_keys.add(spec.key)
 
         remaining = [
-            s for s in self._schema.configs
-            if s.key not in rendered_keys and not s.hidden and s.key not in route_keys
+            s for s in self._schema.configs if s.key not in rendered_keys
+            and not s.hidden and s.key not in route_keys
         ]
         if order:
             key_order = [k for k in order if k not in route_keys]
-            remaining.sort(key=lambda s: key_order.index(s.key) if s.key in key_order else 999)
+            remaining.sort(key=lambda s: key_order.index(s.key)
+                           if s.key in key_order else 999)
 
         for spec in remaining:
             self._add_config_widget(spec)
@@ -340,8 +351,10 @@ class DynamicConfigPanel(QWidget):
         container = self._route_config_container[route_key]
         _clear_layout(container.layout())
 
-        old_keys = [k for k in list(self._route_config_getters.keys())
-                    if k[0] == route_key]
+        old_keys = [
+            k for k in list(self._route_config_getters.keys())
+            if k[0] == route_key
+        ]
         for k in old_keys:
             del self._route_config_getters[k]
             self._bound_pairs.pop(k, None)
@@ -352,12 +365,15 @@ class DynamicConfigPanel(QWidget):
             if spec.bind:
                 bound_targets.add(spec.bind)
 
-        visible_specs = [s for s in specs if not s.hidden and s.key not in bound_targets]
+        visible_specs = [
+            s for s in specs if not s.hidden and s.key not in bound_targets
+        ]
         if not visible_specs:
             return
 
         route_spec = self._schema.routes.get(route_key)
-        route_label = (route_spec.label or route_key) if route_spec else route_key
+        route_label = (route_spec.label
+                       or route_key) if route_spec else route_key
         if route_spec and option in route_spec.options:
             option_label = route_spec.options[option].label or option
         else:
@@ -372,7 +388,8 @@ class DynamicConfigPanel(QWidget):
 
         for spec in visible_specs:
             row, getter, setter = create_config_row(
-                spec, parent=container,
+                spec,
+                parent=container,
                 on_change=self.values_changed.emit,
             )
             group_layout.addWidget(row)
@@ -386,14 +403,16 @@ class DynamicConfigPanel(QWidget):
             self._bound_pairs[spec.key] = spec.bind
         layout = target_layout if target_layout is not None else self._main_layout
         row, getter, setter = create_config_row(
-            spec, parent=self,
+            spec,
+            parent=self,
             on_change=self.values_changed.emit,
         )
         layout.addWidget(row)
         self._config_getters[spec.key] = getter
 
     def _add_group_box(
-        self, name: str,
+        self,
+        name: str,
         target_layout=None,
         parent_widget: QWidget | None = None,
     ) -> QVBoxLayout:
@@ -423,7 +442,10 @@ class DynamicConfigPanel(QWidget):
 
     def collect_configs(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
+        _bound_pair_targets = set(self._bound_pairs.values())
         for spec in self._schema.configs:
+            if spec.key in _bound_pair_targets:
+                continue
             if spec.hidden:
                 if spec.default is not None:
                     result[spec.key] = spec.default
@@ -434,18 +456,23 @@ class DynamicConfigPanel(QWidget):
                     if isinstance(val, (list, tuple)):
                         left, right = val[0], val[1]
                         if isinstance(spec.transform, dict):
-                            left = _apply_transform(spec.transform.get("left"), left)
-                            right = _apply_transform(spec.transform.get("right"), right)
+                            left = _apply_transform(spec.transform.get("left"),
+                                                    left)
+                            right = _apply_transform(
+                                spec.transform.get("right"), right)
                         result[spec.key] = left
                         result[self._bound_pairs[spec.key]] = right
                     continue
                 if isinstance(spec.transform, str):
                     val = _apply_transform(spec.transform, val)
+                if val == "": val = None
                 result[spec.key] = val
 
-        for (route_key, param_key), getter in self._route_config_getters.items():
+        for (route_key,
+             param_key), getter in self._route_config_getters.items():
             current_option = self._route_getters[route_key]()
-            option_specs = self._schema.route_configs.get(route_key, {}).get(current_option, [])
+            option_specs = self._schema.route_configs.get(route_key, {}).get(
+                current_option, [])
             spec = next((s for s in option_specs if s.key == param_key), None)
 
             val = getter()
@@ -454,13 +481,16 @@ class DynamicConfigPanel(QWidget):
                 if isinstance(val, (list, tuple)):
                     left, right = val[0], val[1]
                     if spec and isinstance(spec.transform, dict):
-                        left = _apply_transform(spec.transform.get("left"), left)
-                        right = _apply_transform(spec.transform.get("right"), right)
+                        left = _apply_transform(spec.transform.get("left"),
+                                                left)
+                        right = _apply_transform(spec.transform.get("right"),
+                                                 right)
                     result[param_key] = left
                     result[self._bound_pairs[bound_key]] = right
                 continue
             if spec and isinstance(spec.transform, str):
                 val = _apply_transform(spec.transform, val)
+            if val == "": val = None
             result[param_key] = val
 
         return result

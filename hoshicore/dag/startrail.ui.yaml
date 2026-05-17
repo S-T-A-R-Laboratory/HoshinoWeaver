@@ -41,11 +41,11 @@ configs:
     widget: switch
   sat_window_size:
     label: "去卫星窗口"
-    description: "滑动窗口半径（前后各取 N 帧）"
+    description: "滑动窗口总长"
     widget: slider
-    min: 1
-    max: 5
-    step: 1
+    min: 3
+    max: 9
+    step: 2
   int_weight:
     label: "整数权重"
     description: "启用使用整数累加，改善精度，速度更快"
@@ -92,7 +92,7 @@ route_configs:
     mask:
       label: "掩模文件"
       widget: file_picker
-      accept: ".tif,.tiff,.png"
+      accept: ".tif,.tiff,.png,.jpg"
     minus_only:
       label: "平衡亮度"
       description: "仅平衡最大值结果亮度，不额外执行最大值叠加的统计学还原"

@@ -29,7 +29,7 @@ route_configs:
 configs:
   int_weight:       { type: bool, default: true }
   exif_reduce_type: { type: str,  default: "sum" }
-  output_filename:  { type: str,  default: "result.tif" }
+  output_filename:  { type: str,   required: true }
   output_dtype:     { type: str,  default: "uint8" }
   jpg_quality:      { type: int,  default: 85 }
   png_compressing:  { type: int,  default: 7 }

@@ -26,6 +26,8 @@ sigma_clip:
     min: 0.9
     max: 1.0
     step: 0.01
+  temp_path:
+    hidden: true
 huber_mean:
   huber_c:
     label: "Huber 常数 c"
