@@ -8,12 +8,15 @@ from typing import Optional, Union, Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from .._custom_op import fgp_accumulate as custom_fgp_accumulate
+from .._custom_op import fgp_masked_mean_merge as custom_fgp_masked_mean_merge
+from .._custom_op import huber_weighted_accumulate as custom_huber_weighted_accumulate
+from .._custom_op import max_combine as custom_max_combine
+from .._custom_op import sigma_clip_fused_masked_merge as custom_sigma_clip_fused_masked_merge
+from .._custom_op import sigma_clip_fused_merge as custom_sigma_clip_fused_merge
 from .data_container import (DTYPE_LEVEL, DTYPE_MAX_VALUE, DTYPE_UPSCALE_MAP,
                              _SCALE_BASE, FloatImage, FastGaussianParam,
                              HuberMeanParam)
-from .numba_kernels import (fgp_masked_mean_merge, fgp_mean_merge,
-                            fgp_weighted_mean_merge, sigma_clip_fused_merge,
-                            sigma_clip_fused_masked_merge)
 
 
 def _accum_dtypes(
@@ -76,7 +79,7 @@ class BaseMerger(metaclass=ABCMeta):
             raw, weight = self._apply_int_weight(raw, weight)
 
         # 预处理 + 加权（子类各自决定如何施加权重）
-        processed = self._pre_process(raw, weight)
+        processed = self._pre_process(raw, weight, spatial_mask=spatial_mask)
 
         if self.result is None:
             self.result = processed
@@ -121,10 +124,14 @@ class BaseMerger(metaclass=ABCMeta):
     def _merge(self, base_img, new_img):
         raise NotImplementedError
 
-    def _pre_process(self, img: NDArray, weight=None) -> Any:
+    def _pre_process(self,
+                     img: NDArray,
+                     weight=None,
+                     spatial_mask: Optional[np.ndarray] = None) -> Any:
         """预处理 + 加权。子类可覆写以实现特定加权逻辑。
 
         默认实现：直接对 ndarray 乘以权重（适用于 Max/Min）。
+        spatial_mask 在基类中不处理，需要 mask 语义的子类应自行覆写。
         """
         if weight is not None:
             return img * weight
@@ -138,8 +145,18 @@ class BaseMerger(metaclass=ABCMeta):
 
 class MaxMerger(BaseMerger):
 
+    def _pre_process(self,
+                     img: NDArray,
+                     weight=None,
+                     spatial_mask: Optional[np.ndarray] = None) -> Any:
+        """MaxMerger: mask 外像素置 0（不影响 maximum 结果）。"""
+        if spatial_mask is not None:
+            mask = spatial_mask[..., None] if img.ndim == spatial_mask.ndim + 1 else spatial_mask
+            img = img * mask
+        return super()._pre_process(img, weight)
+
     def _merge(self, base_img, new_img):
-        return np.maximum(base_img, new_img)
+        return custom_max_combine(base_img, new_img)
 
 
 class MinMerger(BaseMerger):
@@ -167,6 +184,16 @@ class MeanMerger(BaseMerger):
         if self.int_weight and weight is not None and self._source_dtype is not None:
             raw, weight = self._apply_int_weight(raw, weight)
 
+        if spatial_mask is None:
+            # 无 mask 的主热点路径直接走 custom-op/runtime backend，保留
+            # compiled -> numpy 的选择和线程缓存逻辑。
+            current = self.result
+            if current is None:
+                self.result = self._pre_process(raw, weight)
+                return
+            self.result = custom_fgp_accumulate(current, raw, weight)
+            return
+
         if self._sum_mu is None:
             sum_dt, sq_dt, n_dt = _accum_dtypes(self._source_dtype,
                                                 self.int_weight)
@@ -178,15 +205,8 @@ class MeanMerger(BaseMerger):
             if weight is not None:
                 raise NotImplementedError(
                     "spatial_mask + weight combination is not yet supported")
-            fgp_masked_mean_merge(raw, spatial_mask, self._sum_mu,
-                                  self._square_sum, self._n)
-        elif weight is not None and isinstance(weight, (int, np.integer)):
-            fgp_weighted_mean_merge(raw, weight, self._sum_mu,
-                                    self._square_sum, self._n)
-        else:
-            if weight is not None:
-                raw = (raw * weight).astype(raw.dtype)
-            fgp_mean_merge(raw, self._sum_mu, self._square_sum, self._n)
+            custom_fgp_masked_mean_merge(raw, spatial_mask, self._sum_mu,
+                                         self._square_sum, self._n)
 
     @property
     def result(self):
@@ -239,7 +259,7 @@ class MeanMerger(BaseMerger):
 class SigmaClippingMerger(MeanMerger):
     """带有N*Sigma拒绝平均值叠加Merger。
 
-    使用 Numba fused kernel 将 clip 判断 + rejected FGP 累加
+    使用 fused kernel 将 clip 判断 + rejected FGP 累加
     融合为单次遍历，消除 ~500MB 临时数组和 ~10 次全图遍历。
 
     累加的是被拒绝像素的统计量。最终结果 = total_fgp - rejected_fgp。
@@ -282,12 +302,24 @@ class SigmaClippingMerger(MeanMerger):
             self._n = np.zeros(img.shape, dtype=n_dt)
 
         if spatial_mask is not None:
-            sigma_clip_fused_masked_merge(img, spatial_mask, self.rej_high_img,
-                                          self.rej_low_img, self._sum_mu,
-                                          self._square_sum, self._n)
+            custom_sigma_clip_fused_masked_merge(
+                img,
+                spatial_mask,
+                self.rej_high_img,
+                self.rej_low_img,
+                self._sum_mu,
+                self._square_sum,
+                self._n,
+            )
         else:
-            sigma_clip_fused_merge(img, self.rej_high_img, self.rej_low_img,
-                                   self._sum_mu, self._square_sum, self._n)
+            custom_sigma_clip_fused_merge(
+                img,
+                self.rej_high_img,
+                self.rej_low_img,
+                self._sum_mu,
+                self._square_sum,
+                self._n,
+            )
 
 
 class HuberWeightedMerger(BaseMerger):
@@ -326,6 +358,39 @@ class HuberWeightedMerger(BaseMerger):
                new_img: HuberMeanParam) -> HuberMeanParam:
         return base_img + new_img
 
+    def merge(self,
+              new_img: np.ndarray,
+              weight: Optional[Union[float, NDArray]] = None,
+              spatial_mask: Optional[np.ndarray] = None):
+        _ = spatial_mask
+        raw = new_img
+        if self._source_dtype is None:
+            self._source_dtype = raw.dtype
+
+        if self.int_weight and weight is not None and self._source_dtype is not None:
+            raw, weight = self._apply_int_weight(raw, weight)
+
+        if self.result is None:
+            self.result = HuberMeanParam(
+                weighted_sum=np.zeros(raw.shape, dtype=np.float64),
+                weight_total=np.zeros(raw.shape, dtype=np.float64),
+                source_dtype=raw.dtype,
+            )
+        elif self.shape_check:
+            assert self.result.shape == raw.shape, (
+                f"{self.__class__.__name__} failed to merge new image. "
+                f"It should have the same shape as merged image "
+                f"{self.result.shape}, but {raw.shape} got.")
+
+        custom_huber_weighted_accumulate(
+            self.result,
+            raw,
+            self._ref_mean,
+            self._ref_std,
+            self.huber_c,
+            weight,
+        )
+
     @property
     def merged_image(self) -> Union[FloatImage, None]:
         if self.result is None:
@@ -333,7 +398,11 @@ class HuberWeightedMerger(BaseMerger):
         return FloatImage(self.result.mu,
                           dtype=self._source_dtype or np.dtype("float64"))
 
-    def _pre_process(self, img: np.ndarray, weight=None) -> HuberMeanParam:
+    def _pre_process(self,
+                     img: np.ndarray,
+                     weight=None,
+                     spatial_mask=None) -> HuberMeanParam:
+        _ = spatial_mask
         r = (img.astype(np.float32) - self._ref_mean) / (self._ref_std + 1e-10)
         abs_r = np.abs(r)
         huber_w = np.where(

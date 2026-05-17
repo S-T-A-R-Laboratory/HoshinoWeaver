@@ -31,6 +31,7 @@ import cv2
 import numpy as np
 from loguru import logger
 
+from .._custom_op import median_reduce_chunk as custom_median_reduce_chunk
 from ..component.data_container import FastGaussianParam, FloatImage
 from ..component.frame_buffer import (BaseFrameBuffer, DiskFrameBuffer,
                                       SourceReplayBuffer)
@@ -270,8 +271,8 @@ class SigmaClipIteratorOp(BaseOp):
                         empty_mask = np.all(raw[..., :3] == 0, axis=-1)
                         if empty_mask.any():
                             spatial_mask = ~empty_mask
-                    await self._run_numba(clip_merger.merge, raw, weight,
-                                          spatial_mask=spatial_mask)
+                    await self._run_parallel_cpu(clip_merger.merge, raw, weight,
+                                                 spatial_mask=spatial_mask)
                     self.tracker.update(self.name)
 
                 self.tracker.close_bar(self.name)
@@ -423,6 +424,10 @@ class MedianReduceOp(BaseOp):
         },
     }
 
+    @staticmethod
+    def _reduce_chunk(stack: np.ndarray) -> np.ndarray:
+        return custom_median_reduce_chunk(stack)
+
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         frame_buffer: DiskFrameBuffer = configs['buffer_handle']
         chunk_rows: int = configs['chunk_rows']
@@ -470,8 +475,7 @@ class MedianReduceOp(BaseOp):
                         row_start:row_end].astype(np.float32)
 
                 # 沿帧轴取中位数
-                chunk_median = await self._run_cpu(
-                    np.median, stack, axis=0)
+                chunk_median = await self._run_cpu(self._reduce_chunk, stack)
                 result_chunks.append(chunk_median)
                 self.tracker.update(self.name)
 
@@ -554,8 +558,10 @@ class ThresholdMaxIteratorOp(BaseOp):
             std_img = np.sqrt(np.maximum(fgp.var, 0).astype(np.float64))
             result = mean_img.copy()
 
-            kernel = cv2.getStructuringElement(
-                cv2.MORPH_RECT, (kernel_size, kernel_size))
+            kernel = None
+            if kernel_size > 1:
+                kernel = cv2.getStructuringElement(
+                    cv2.MORPH_RECT, (kernel_size, kernel_size))
 
             self.tracker.create_bar(
                 self.name, n_frames,
