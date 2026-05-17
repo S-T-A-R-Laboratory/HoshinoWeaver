@@ -778,7 +778,7 @@ Worker 内的 ops 通过 `ProxyTracker` + `mp.Queue` 向主进程汇报进度事
 | 文件 | 职责 |
 |------|------|
 | `engine/segment_detect.py` | 段检测算法、终端类型枚举、ParallelSegment 数据结构 |
-| `engine/segment_adapter.py` | SegmentAdapter（多阶段 Collector）、apply_data_parallelism() |
+| `engine/segment_adapter.py` | 历史 SegmentAdapter 实现（当前分支已删除，仅保留为多进程方案设计记录） |
 | `engine/segment_worker.py` | worker 入口 `_segment_worker_main`（多阶段协议） |
 | `engine/flatten.py` | `flatten_sub_dags()` SubDAG 预展开 |
 | `engine/meta.py` | `meta_resolve()` Meta YAML 路由解析 |

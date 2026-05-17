@@ -239,13 +239,12 @@ class BaseOp(object):
             raise CancellationError("Cancelled during CPU execution")
         return result
 
-    async def _run_numba(self, fn, *args, **kwargs):
-        """执行 numba parallel 加速的函数。
+    async def _run_parallel_cpu(self, fn, *args, **kwargs):
+        """执行可能自行管理并行的 CPU 计算函数。
 
-        Workaround: numba_parallel_for 在 Windows frozen 环境的非主线程中
-        会死锁（Python 3.12+, PyInstaller）。此时退回主线程同步执行。
-        numba 内部仍通过 prange 并行，不影响计算性能。
-        非 frozen 环境正常卸载到线程池。
+        当前主要用于 custom-op / C 扩展 / 其他内部并行实现。
+        Windows frozen 环境下，为避免非主线程执行底层并行代码时死锁，
+        会退回主线程同步执行；非 frozen 环境正常卸载到线程池。
         """
         if getattr(sys, 'frozen', False) and sys.platform == 'win32':
             result = fn(*args, **kwargs)

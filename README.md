@@ -50,6 +50,20 @@
 - 在项目目录下运行 `pip install -r requirements.txt` 快速安装这些依赖包。
 - 运行 `python "HoshinoWeaver desktop.py"` 启动图形界面。
 
+## 开发说明
+
+项目包含可选的 C++/CUDA 加速算子，无编译环境时自动回退到 NumPy 实现。
+
+- `hoshicore/_custom_op/` — 算子 Python 接口
+- `csrc/` — C++/CUDA 源码与构建脚本，详见 [csrc/README.md](./csrc/README.md)
+- `bench/` — 性能基准测试，详见 [bench/README.md](./bench/README.md)
+
+构建本地加速算子：
+
+```bash
+python csrc/build_ops.py
+```
+
 
 ## HoshinoWeaver已实现
 
