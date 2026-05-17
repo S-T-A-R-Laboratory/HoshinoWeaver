@@ -63,7 +63,12 @@ configs:
     label: "天空区域掩模"
     description: "白色区域为天空，黑色区域为地面"
     widget: file_picker
-    accept: ".tif,.tiff,.png"
+    accept: ".tif,.tiff,.png,.jpg"
+  align_base:
+    label: "对齐基准图像"
+    description: "天空对齐基准图像。空缺默认使用第一张"
+    widget: file_picker
+    accept: ".tif,.tiff,.png,.jpg"
   distortion:
     hidden: true
   exif_reduce_type:
@@ -83,7 +88,7 @@ route_configs:
 layout:
   groups:
     - name: "对齐设置"
-      keys: [align_method, same_camera, mask]
+      keys: [align_method, align_base, same_camera, mask]
     - name: "输出设置"
       keys: [int_weight]
   order: [sky_stacker, ground_stacker, align_method, same_camera, mask, int_weight]

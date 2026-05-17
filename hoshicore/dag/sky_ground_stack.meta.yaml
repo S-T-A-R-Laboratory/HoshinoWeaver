@@ -10,14 +10,14 @@ inputs:
 routes:
   sky_stacker:
     options:
-      mean:       null   # fixed-op，op 由节点 op 字段决定
+      mean: null # fixed-op，op 由节点 op 字段决定
       sigma_clip: null
       huber_mean: null
       median: null
     default: sigma_clip
   ground_stacker:
     options:
-      mean:       null
+      mean: null
       sigma_clip: null
       huber_mean: null
       median: null
@@ -25,37 +25,42 @@ routes:
 
 # ── 全局配置 ──
 configs:
-  int_weight:       { type: bool,  default: true }
-  exif_reduce_type: { type: str,   default: "sum" }
-  output_filename:  { type: str,   default: "result.tif" }
-  output_dtype:     { type: str,   default: "uint16" }
-  jpg_quality:      { type: int,   default: 85 }
-  png_compressing:  { type: int,   default: 7 }
-  loader_type:      { type: str,   default: "img_file_list" }
-  loader_configs:   { type: dict,  default: {} }
-  align_method:     { type: str,   default: "auto" }
-  same_camera:      { type: bool,  default: true }
-  distortion:       { type: list,  default: null }
-  mask:             { type: str,   required: false, default: null }
+  int_weight: { type: bool, default: true }
+  exif_reduce_type: { type: str, default: "sum" }
+  output_dtype: { type: str, default: "uint16" }
+  jpg_quality: { type: int, default: 85 }
+  png_compressing: { type: int, default: 7 }
+  loader_type: { type: str, default: "img_file_list" }
+  loader_configs: { type: dict, default: {} }
+  align_method: { type: str, default: "homography" }
+  align_base: {type: str, default: null}
+  same_camera: { type: bool, default: true }
+  distortion: { type: list, default: null }
+  output_filename:  { type: str,   required: true }
+  mask: { type: str, required: false, default: null }
 
 # ── 路由专属配置 ──
 route_configs:
   sky_stacker:
     sigma_clip:
-      rej_high:             { type: float, default: 3.0 }
-      rej_low:              { type: float, default: 3.0 }
-      max_iter:             { type: int,   default: 5 }
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
       early_converge_ratio: { type: float, default: 0.99 }
+      temp_path: { type: str, default: null }
     huber_mean:
       huber_c: { type: float, default: 1.345 }
+      temp_path: { type: str, default: null }
   ground_stacker:
     sigma_clip:
-      rej_high:             { type: float, default: 3.0 }
-      rej_low:              { type: float, default: 3.0 }
-      max_iter:             { type: int,   default: 5 }
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
       early_converge_ratio: { type: float, default: 0.99 }
+      temp_path: { type: str, default: null }
     huber_mean:
       huber_c: { type: float, default: 1.345 }
+      temp_path: { type: str, default: null }
 
 # ── 节点 ──
 #
@@ -107,8 +112,8 @@ nodes:
     configs:
       mask: load_mask.result
     outputs:
-      result: {type: sequence}
-  
+      result: { type: sequence }
+
   apply_ground_mask:
     op: ApplyMaskOp
     inputs:
@@ -116,7 +121,14 @@ nodes:
     configs:
       mask: mask_invert.result
     outputs:
-      result: {type: sequence}
+      result: { type: sequence }
+
+  load_align_base:
+    op: LoadSingleImageOp
+    configs:
+      path: configs.align_base
+    outputs:
+      result: {type: image}
 
   star_aligner:
     op: StarAlignmentOp
@@ -124,6 +136,7 @@ nodes:
       data: apply_sky_mask.result
       exifs: exif_loader.result
     configs:
+      reference: load_align_base.result
       method: configs.align_method
       same_camera: configs.same_camera
       distortion: configs.distortion
@@ -132,10 +145,10 @@ nodes:
       aligned_exifs: { type: sequence }
 
   sky_stacker:
-    op: stacker.meta.yaml      # fixed-op；route_key 选择 route_configs 分支
+    op: stacker.meta.yaml # fixed-op；route_key 选择 route_configs 分支
     route_key: sky_stacker
     routes:
-      stacker: routes.sky_stacker   # 透传父图选择到子图 stacker route
+      stacker: routes.sky_stacker # 透传父图选择到子图 stacker route
     inputs:
       data: star_aligner.result
     route_configs:
@@ -156,10 +169,10 @@ nodes:
       result: { type: image }
 
   ground_stacker:
-    op: stacker.meta.yaml      # fixed-op；route_key 选择 route_configs 分支
+    op: stacker.meta.yaml # fixed-op；route_key 选择 route_configs 分支
     route_key: ground_stacker
     routes:
-      stacker: routes.ground_stacker   # 透传父图选择到子图 stacker route
+      stacker: routes.ground_stacker # 透传父图选择到子图 stacker route
     inputs:
       data: apply_ground_mask.result
     route_configs:

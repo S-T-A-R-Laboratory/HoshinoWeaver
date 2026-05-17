@@ -14,8 +14,8 @@ configs:
   loader_configs:   { type: dict, default: {} }
   int_weight:       { type: bool, default: true }
   exif_reduce_type: { type: str,  default: "sum" }
-  output_filename:  { type: str,  default: "result.tif" }
-  output_dtype:     { type: str,  default: "uint8" }
+  output_filename:  { type: str,   required: true }
+  output_dtype:     { type: str,  default: "uint16" }
   jpg_quality:      { type: int,  default: 85 }
   png_compressing:  { type: int,  default: 7 }
   bias_master_path: { type: str,  default: null }

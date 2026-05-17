@@ -271,11 +271,11 @@ def _make_slider(
 ) -> tuple[QSlider, QLabel, Callable, Callable]:
     """Create a QSlider + value label for int/float config."""
     is_float = spec.type == "float"
-    multiplier = 100 if is_float else 1
+    step = spec.step if spec.step else (0.1 if is_float else 1)
+    multiplier = int(1.0 / step) if step < 1 else 1
 
     mn = spec.min if spec.min is not None else 0
     mx = spec.max if spec.max is not None else 100
-    step = spec.step if spec.step else (0.1 if is_float else 1)
     default = spec.default if spec.default is not None else mn
 
     slider = QSlider(Qt.Horizontal, parent)
@@ -290,10 +290,12 @@ def _make_slider(
     val_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
     def _update_label(v):
+        quant_v = round((v - mn) / step) * step + mn
+        slider.setValue(quant_v)
         if is_float:
-            val_label.setText(f"{v / multiplier:.2f}")
+            val_label.setText(f"{quant_v / multiplier:.2f}")
         else:
-            val_label.setText(str(v))
+            val_label.setText(str(quant_v))
         if on_change:
             on_change()
 
