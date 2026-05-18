@@ -1,4 +1,4 @@
-description: "星轨叠加（fifo 最大值 / mix 噪声均衡 / tmax 阈值提取，统一入口）"
+description: "星轨叠加（fifo 最大值 / mix 噪声均衡入口）"
 version: "1"
 
 # ── 全局输入 ──
