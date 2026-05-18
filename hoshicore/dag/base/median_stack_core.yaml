@@ -9,7 +9,7 @@ inputs:
 # ── 全局配置 ──
 configs:
   chunk_rows: { type: int, default: 32 }
-  buffer_mode: { type: str, default: "auto" }  # auto/disk/replay
+  buffer_mode: { type: str, default: "disk" }  # disk/memory/replay
 
 # ── 节点 ──
 #

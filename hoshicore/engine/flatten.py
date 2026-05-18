@@ -20,7 +20,7 @@ SubDAG 预展开：将 .yaml 引用的子图在编译期展平为顶层节点。
         main_stacker.disk_buffer:
           op: DiskBufferWriterOp
           inputs: { data: flat_divide.result, fnames: __inactive__ }
-          configs: { buffer_mode: "auto" }
+          configs: { buffer_mode: "disk" }
         main_stacker.sigma_clip_iter:
           op: SigmaClipIteratorOp
           configs: { fgp_total: main_stacker.mean_stacker.statistics, ... }

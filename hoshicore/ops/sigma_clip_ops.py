@@ -12,8 +12,9 @@
 
 DiskBufferWriterOp：
     消费序列输入，逐帧缓存供下游多 pass 算法重放。
-    支持两种缓冲策略（通过 buffer_mode config 控制）：
+    支持三种缓冲策略（通过 buffer_mode config 控制）：
         - disk（默认）：将解码后的帧写入 DiskFrameBuffer（临时 .npz），读取快但占磁盘
+        - memory：帧直接保存在 RAM 中（MemoryFrameBuffer），零 I/O 但占内存
         - replay：保留原始文件路径到 SourceReplayBuffer，零临时文件但每 pass 重新 decode
     清理策略：
         - 正常完成：buffer 由下游 SigmaClipIteratorOp 在 finally 中清理
@@ -33,7 +34,7 @@ from loguru import logger
 
 from ..component.data_container import FastGaussianParam, FloatImage
 from ..component.frame_buffer import (BaseFrameBuffer, DiskFrameBuffer,
-                                      SourceReplayBuffer)
+                                      MemoryFrameBuffer, SourceReplayBuffer)
 from ..component.merger import (HuberWeightedMerger, MeanMerger,
                                 SigmaClippingMerger)
 from ..component.noise_equalization import (compute_adaptive_n_sigma,
@@ -47,16 +48,10 @@ from .base import BaseOp
 class DiskBufferWriterOp(BaseOp):
     """将序列帧缓存供下游多 pass 算法重放。
 
-    支持两种缓冲策略：
-        - disk（默认）：解码后的帧写入 DiskFrameBuffer（临时 .npz 文件）
-        - replay：保留原始文件路径到 SourceReplayBuffer，零临时文件
-
-    buffer_mode 配置：
-        - "auto"（默认）：有 fnames 输入 → replay，否则 → disk
-        - "disk"：强制使用 DiskFrameBuffer
-        - "replay"：强制使用 SourceReplayBuffer（需要 fnames 输入）
-        
-    # TODO: 支持内存缓冲（MemoryFrameBuffer），适用于小规模帧数且内存充足的场景，提供更快访问但占用 RAM。
+    支持三种缓冲策略（通过 buffer_mode 配置）：
+        - "disk"（默认）：解码后的帧写入 DiskFrameBuffer（临时 .npz 文件）
+        - "memory"：帧直接保存在 RAM 中（MemoryFrameBuffer），零 I/O 但占内存
+        - "replay"：保留原始文件路径到 SourceReplayBuffer（需要 fnames 输入）
     """
 
     EXECUTOR = "cpu"
@@ -78,7 +73,7 @@ class DiskBufferWriterOp(BaseOp):
     CONFIGS: dict[str, dict[str, Any]] = {
         "buffer_mode": {
             "type": "str",
-            "default": "auto",
+            "default": "disk",
         },
         "temp_path": {
             "type": "str",
@@ -96,22 +91,23 @@ class DiskBufferWriterOp(BaseOp):
 
         has_weight = self.inputs['weight'].active
         has_fnames = self.inputs['fnames'].active
-        buffer_mode = configs.get("buffer_mode", "auto")
+        buffer_mode = configs.get("buffer_mode", "disk")
         temp_path = configs.get("temp_path", None)
 
         # 确定缓冲策略
-        use_replay = (buffer_mode == "replay")
-        if use_replay and not has_fnames:
-            raise ValueError(
-                f"{self.name}: replay mode requires 'fnames' input, "
-                f"but fnames is not wired.")
-
-        if use_replay:
+        if buffer_mode == "memory":
+            frame_buffer = MemoryFrameBuffer()
+            mode_label = "Memory"
+        elif buffer_mode == "replay":
+            if not has_fnames:
+                raise ValueError(
+                    f"{self.name}: replay mode requires 'fnames' input, "
+                    f"but fnames is not wired.")
             frame_buffer = SourceReplayBuffer()
             mode_label = "Replay"
         else:
             frame_buffer = DiskFrameBuffer(temp_path=temp_path)
-            mode_label = "Buffer"
+            mode_label = "Disk"
 
         stacked_num = 0
         failed_num = 0
@@ -140,7 +136,7 @@ class DiskBufferWriterOp(BaseOp):
                     self.tracker.update(self.name)
                     continue
 
-                if use_replay:
+                if buffer_mode == "replay":
                     frame_buffer.append(fname, weight)
                 else:
                     frame_buffer.append(cur_img, weight)

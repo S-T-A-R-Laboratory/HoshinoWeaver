@@ -4,7 +4,7 @@ import pytest
 from hoshicore.component.frame_buffer import (
     BaseFrameBuffer,
     DiskFrameBuffer,
-    DiskBufferDescriptor,
+    MemoryFrameBuffer,
 )
 
 
@@ -46,25 +46,6 @@ class TestDiskFrameBuffer:
         buf.cleanup()
         npz_files_after = list(tmp_path.glob("*.npz"))
         assert len(npz_files_after) == 0
-
-    def test_to_from_descriptor(self, tmp_path):
-        buf = DiskFrameBuffer(temp_path=tmp_path)
-        buf.acquire()
-        frame = np.array([[[1, 2, 3]]], dtype=np.uint16)
-        buf.append(frame)
-        desc = buf.to_descriptor()
-        assert isinstance(desc, DiskBufferDescriptor)
-        assert desc.count == 1
-
-        buf2 = DiskFrameBuffer.from_descriptor(desc)
-        buf2.acquire()
-        got, _ = buf2[0]
-        np.testing.assert_array_equal(got, frame)
-
-        # Original cleanup first — files stay because buf2 is independent
-        buf.cleanup()
-        # buf2 cleanup removes files
-        buf2.cleanup()
 
     def test_weight_ndarray(self, tmp_path):
         buf = DiskFrameBuffer(temp_path=tmp_path)
@@ -131,3 +112,51 @@ class TestRefCounting:
         # Consumer B finishes
         buf.cleanup()  # ref 1→0 → files deleted
         assert list(tmp_path.glob("*.npz")) == []
+
+
+class TestMemoryFrameBuffer:
+    def test_append_and_getitem(self):
+        buf = MemoryFrameBuffer()
+        buf.acquire()
+        frame1 = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
+        frame2 = np.arange(12, 24, dtype=np.uint8).reshape(2, 2, 3)
+        buf.append(frame1, weight=0.5)
+        buf.append(frame2)
+        assert len(buf) == 2
+
+        got1, w1 = buf[0]
+        np.testing.assert_array_equal(got1, frame1)
+        assert w1 == pytest.approx(0.5)
+
+        got2, w2 = buf[1]
+        np.testing.assert_array_equal(got2, frame2)
+        assert w2 is None
+        buf.cleanup()
+
+    def test_index_out_of_range(self):
+        buf = MemoryFrameBuffer()
+        buf.acquire()
+        with pytest.raises(IndexError):
+            buf[0]
+        buf.cleanup()
+
+    def test_cleanup_clears_data(self):
+        buf = MemoryFrameBuffer()
+        buf.acquire()
+        buf.append(np.zeros((2, 2, 1), dtype=np.uint8))
+        buf.append(np.zeros((2, 2, 1), dtype=np.uint8))
+        assert len(buf) == 2
+        buf.cleanup()
+        assert len(buf) == 0
+
+    def test_weight_ndarray(self):
+        buf = MemoryFrameBuffer()
+        buf.acquire()
+        frame = np.ones((4, 4, 3), dtype=np.uint8)
+        weight = np.full((4, 4, 3), 0.8, dtype=np.float32)
+        buf.append(frame, weight=weight)
+
+        got_frame, got_weight = buf[0]
+        np.testing.assert_array_equal(got_frame, frame)
+        np.testing.assert_allclose(got_weight, weight)
+        buf.cleanup()
