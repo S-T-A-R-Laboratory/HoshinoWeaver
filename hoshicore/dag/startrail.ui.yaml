@@ -21,16 +21,16 @@ routes:
 
 configs:
   fin:
-      label: "渐入渐出比例"
-      description: "渐入渐出帧数比例"
-      widget: range_slider
-      bind: fout
-      min: 0
-      max: 1.0
-      step: 0.05
-      transform: {right: complement}
+    label: "渐入渐出比例"
+    description: "渐入渐出帧数比例"
+    widget: range_slider
+    bind: fout
+    min: 0
+    max: 1.0
+    step: 0.05
+    transform: { right: complement }
   fout:
-      hidden: true
+    hidden: true
   enable_star_shrink:
     label: "启用缩星"
     description: "叠加星轨时缩小星点，使星轨更细腻"
@@ -46,6 +46,11 @@ configs:
     min: 3
     max: 9
     step: 2
+  mask:
+    label: "天空区域掩模"
+    description: "白色区域为天空，黑色区域为地面"
+    widget: file_picker
+    accept: ".tif,.tiff,.png,.jpg"
   int_weight:
     label: "整数权重"
     description: "启用使用整数累加，改善精度，速度更快"
@@ -133,9 +138,26 @@ layout:
     - name: "星轨效果"
       keys: [fin, fout]
     - name: "预处理"
-      keys: [int_weight, enable_star_shrink, enable_satellite_clean, sat_window_size]
+      keys:
+        [
+          int_weight,
+          enable_star_shrink,
+          enable_satellite_clean,
+          sat_window_size,
+          mask,
+        ]
     - name: "输出设置"
-  order: [mode, fin, fout, int_weight, enable_star_shrink, enable_satellite_clean, sat_window_size]
+  order:
+    [
+      mode,
+      fin,
+      fout,
+      int_weight,
+      enable_star_shrink,
+      enable_satellite_clean,
+      sat_window_size,
+      mask,
+    ]
 
 outputs:
   - "!include": fragments/image_output.ui.yaml

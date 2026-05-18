@@ -37,6 +37,7 @@ class SatelliteCleanOp(BaseOp):
     }
     CONFIGS: dict[str, Any] = {
         "window_size": {"type": "int", "default": 3},
+        "mask": {"type": "image", "default": None},
     }
     OUTPUTS: dict[str, Any] = {
         "result": {"type": "sequence"},
@@ -47,6 +48,11 @@ class SatelliteCleanOp(BaseOp):
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         W: int = configs['window_size']
+        mask: Optional[np.ndarray] = configs['mask']
+        if mask is not None and mask.ndim == 3:
+            mask = cv2.cvtColor((mask * 255).astype(np.uint8),
+                                cv2.COLOR_BGR2GRAY)
+            mask = (mask > 0).astype(np.uint8)
         tot_num = self.length
 
         assert W >= 1 and W % 2 == 1, "window_size must be an odd integer >= 1"
@@ -67,7 +73,7 @@ class SatelliteCleanOp(BaseOp):
                     break
 
                 frame_arr = frame.data if isinstance(frame, FloatImage) else frame
-                geo = await self._run_cpu(make_geometry, frame_arr)
+                geo = await self._run_cpu(make_geometry, frame_arr, mask)
 
                 slot = _FrameSlot(original=frame_arr, geo=geo)
                 if buffer:
@@ -79,9 +85,7 @@ class SatelliteCleanOp(BaseOp):
                 # this ensures the residual frames in buffer to be enough, and can still be processed after input is exhausted
                 if len(buffer) >= W:
                     buffer.popleft()
-                    
                 buffer.append(slot)
-                
 
                 if len(buffer) == W:
                     cleaned = await self._run_cpu(

@@ -21,6 +21,7 @@ configs:
   enable_star_shrink:     { type: bool, default: false }
   enable_satellite_clean: { type: bool, default: false }
   sat_window_size:        { type: int,  default: 3 }
+  mask: { type: str, required: false, default: null }
   int_weight:       { type: bool,  default: true }
   exif_reduce_type: { type: str,   default: "sum" }
   loader_type:      { type: str,   default: "img_file_list" }
@@ -80,6 +81,7 @@ nodes:
       data: star_shrink.result
     configs:
       window_size: configs.sat_window_size
+      mask: configs.mask
     outputs:
       result: { type: sequence }
 
