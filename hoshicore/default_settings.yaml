@@ -37,3 +37,6 @@ jpg_quality:
 png_compressing:
   enabled: true
   value: 7
+auto_fallback:
+  enabled: true
+  value: true

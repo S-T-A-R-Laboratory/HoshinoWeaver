@@ -16,6 +16,11 @@ buffer_mode:
     - {value: "memory", label: "内存缓冲"}
     - {value: "replay", label: "源重放缓冲"}
 
+auto_fallback:
+  label: "资源不足自动降级"
+  description: "预检发现资源不足时，自动降低缓冲策略并继续执行"
+  widget: switch
+
 temp_path:
   label: "临时文件目录"
   description: "磁盘缓冲的临时文件存放路径，留空使用系统默认 (tempfile.gettempdir())"

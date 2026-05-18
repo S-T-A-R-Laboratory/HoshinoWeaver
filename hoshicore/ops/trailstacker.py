@@ -48,6 +48,11 @@ class TrailStackerOp(BaseOp):
     MERGER = MaxMerger
     MAX_SIZE: int = 1
 
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        # Max/Min mergers hold 1 result array
+        return (frame_bytes, 0)
+
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         int_weight: bool = configs['int_weight']
         merger = self.MERGER(int_weight=int_weight)
@@ -168,6 +173,11 @@ class MeanStackerOp(TrailStackerOp):
             "type": "image"  # FastGaussianParam，不连接时静默忽略
         },
     }
+
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        # MeanMerger holds FGP: mu + var + n = 3 arrays
+        return (3 * frame_bytes, 0)
 
 
 @register_op()

@@ -20,6 +20,20 @@ class BaseOp(object):
     MAX_SIZE: int = 1
     VARIABLE_OUTPUT: bool = False  # True 时标记为变长输出（Filter 类）
 
+    @classmethod
+    def estimate_resources(
+        cls,
+        configs: dict[str, Any],
+        frame_bytes: int,
+        n_frames: Optional[int],
+    ) -> tuple[int, int]:
+        """返回 (peak_memory_bytes, peak_disk_bytes) 的估计值。
+
+        预检阶段调用，用于在执行前估算资源需求。
+        子类按需 override，默认返回 (0, 0)。
+        """
+        return (0, 0)
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         if '_async_execute' in cls.__dict__:

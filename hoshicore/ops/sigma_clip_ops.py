@@ -86,6 +86,17 @@ class DiskBufferWriterOp(BaseOp):
         },
     }
 
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        if n_frames is None:
+            n_frames = 0
+        mode = configs.get("buffer_mode", "disk")
+        if mode == "memory":
+            return (n_frames * frame_bytes, 0)
+        elif mode == "disk":
+            return (0, n_frames * frame_bytes)
+        return (0, 0)
+
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         tot_num = self.length
 
