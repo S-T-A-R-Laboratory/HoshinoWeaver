@@ -17,6 +17,7 @@ from qasync import asyncSlot
 
 from hoshicore.component.image_io import scan_all_exif
 # 导入Core接口
+from hoshicore.engine.preflight import PreflightAction, PreflightReport
 from hoshicore.engine.wiring import run_from_yaml
 # 导入图标资源
 from ui import resource
@@ -33,6 +34,39 @@ def _format_exception_chain(exc: BaseException) -> str:
         lines.append(f"{type(current).__name__}: {current}")
         current = current.__cause__
     return "\n← ".join(lines)
+
+
+def _gui_preflight_callback(report: PreflightReport) -> PreflightAction:
+    """GUI 预检回调：弹出对话框让用户选择。"""
+    text_lines: list[str] = []
+    for w in report.warnings:
+        text_lines.append(w)
+
+    if report.proposed_fallbacks:
+        text_lines.append("")
+        text_lines.append("建议降级方案：")
+        for fb in report.proposed_fallbacks:
+            text_lines.append(
+                f"  {fb.config_key}: {fb.current_value} → {fb.proposed_value}"
+                f"（{fb.reason}）")
+
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Warning)
+    msg.setWindowTitle("资源预检警告")
+    msg.setText("\n".join(text_lines))
+
+    btn_apply = msg.addButton("应用建议", QMessageBox.AcceptRole)
+    btn_ignore = msg.addButton("忽略并继续", QMessageBox.RejectRole)
+    msg.addButton("中止", QMessageBox.DestructiveRole)
+
+    msg.exec()
+    clicked = msg.clickedButton()
+
+    if clicked == btn_apply:
+        return "apply"
+    elif clicked == btn_ignore:
+        return "ignore"
+    return "abort"
 
 
 class SlotHandler(QMainWindow):
@@ -550,7 +584,8 @@ class SlotHandler(QMainWindow):
                                 tracker=qt_tracker,
                                 progress=False,
                                 cancel_event=self.window._cancel_event,
-                                route_choices=route_choices)
+                                route_choices=route_choices,
+                                preflight_callback=_gui_preflight_callback)
 
             # 执行成功
             output_path = global_configs.get("output_filename", "")

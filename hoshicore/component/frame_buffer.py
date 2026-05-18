@@ -3,15 +3,15 @@ from __future__ import annotations
 """
 帧缓冲：支持按索引随机读取的帧存储，用于 SigmaClipping 等多 pass 算法。
 
-提供两种实现：
+提供三种实现：
     - DiskFrameBuffer:    将解码后的帧写入临时 .npz 文件，读取快但占磁盘空间。
+    - MemoryFrameBuffer:  将帧直接保存在 RAM 中，零 I/O 但占内存。
     - SourceReplayBuffer: 保留原始文件路径，每次访问重新解码，零临时文件但每 pass 有 decode 开销。
 """
 
 import base64
 import os
 import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
 
@@ -19,32 +19,6 @@ import numpy as np
 from loguru import logger
 
 from .image_io import load_img
-
-
-@dataclass
-class DiskBufferDescriptor:
-    """DiskFrameBuffer 的可 pickle 描述符，用于跨进程传递 buffer 元信息。
-
-    Worker 完成 Phase 1 后通过此描述符告知主进程 buffer 位置，
-    而不传递 DiskFrameBuffer 实例本身（内部持有文件路径不可直接 pickle）。
-
-    主进程可通过 DiskFrameBuffer.from_descriptor() 重建实例。
-    """
-    temp_path: str
-    prefix: str
-    count: int
-    paths: list[str] = field(default_factory=list)
-
-
-@dataclass
-class SourceReplayDescriptor:
-    """SourceReplayBuffer 的可 pickle 描述符。
-
-    保存原始文件路径列表，主进程可通过 SourceReplayBuffer.from_descriptor()
-    重建实例。
-    """
-    paths: list[str] = field(default_factory=list)
-    count: int = 0
 
 
 class BaseFrameBuffer:
@@ -163,42 +137,43 @@ class DiskFrameBuffer(BaseFrameBuffer):
         logger.debug(
             f"DiskFrameBuffer cleaned up (prefix={self.prefix}).")
 
-    def to_descriptor(self) -> DiskBufferDescriptor:
-        """导出可 pickle 的描述符，用于跨进程传递 buffer 元信息。
-
-        描述符包含所有 .npz 文件路径，接收方可通过 from_descriptor()
-        重建 DiskFrameBuffer 实例。
-
-        注意：导出后原实例仍然持有文件引用，调用方需确保
-        不会同时有两个实例执行 cleanup。
-        """
-        return DiskBufferDescriptor(
-            temp_path=str(self.temp_path),
-            prefix=self.prefix,
-            count=self._count,
-            paths=[str(p) for p in self._paths],
-        )
-
-    @classmethod
-    def from_descriptor(cls, desc: DiskBufferDescriptor) -> DiskFrameBuffer:
-        """从描述符重建 DiskFrameBuffer 实例（用于 MedianReduceOp 回退场景）。
-
-        重建的实例是独立的所有者（ref_count=1），与原始 worker
-        端的实例无关（worker 端的 buffer 已在 worker 退出时清理）。
-        """
-        buf = cls.__new__(cls)
-        BaseFrameBuffer.__init__(buf)
-        buf.temp_path = Path(desc.temp_path)
-        buf.prefix = desc.prefix
-        buf._count = desc.count
-        buf._paths = [Path(p) for p in desc.paths]
-        buf._cleaned = False
-        return buf
-
     def __del__(self):
         """安全网：防止异常中断（如用户 Ctrl-C）导致临时文件泄漏。"""
         if not self._cleaned and self._paths:
             self._do_cleanup()
+
+
+class MemoryFrameBuffer(BaseFrameBuffer):
+    """内存帧缓冲：将帧直接保存在 RAM 中，按索引随机读取。
+
+    零 I/O 开销，适用于帧数少或帧尺寸小的场景。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._frames: list[tuple[np.ndarray, Optional[Union[float, np.ndarray]]]] = []
+        self._cleaned = False
+
+    def append(self, frame: np.ndarray,
+               weight: Optional[Union[float, np.ndarray]] = None) -> None:
+        self._frames.append((frame, weight))
+
+    def __getitem__(self, idx: int) -> tuple[np.ndarray, Optional[Union[float, np.ndarray]]]:
+        if idx < 0 or idx >= len(self._frames):
+            raise IndexError(
+                f"MemoryFrameBuffer index {idx} out of range "
+                f"[0, {len(self._frames)})")
+        return self._frames[idx]
+
+    def __len__(self) -> int:
+        return len(self._frames)
+
+    def _do_cleanup(self) -> None:
+        if self._cleaned:
+            return
+        self._frames.clear()
+        self._cleaned = True
+        logger.debug("MemoryFrameBuffer cleaned up.")
 
 
 class SourceReplayBuffer(BaseFrameBuffer):
@@ -256,21 +231,6 @@ class SourceReplayBuffer(BaseFrameBuffer):
 
     def __len__(self) -> int:
         return len(self._entries)
-
-    def to_descriptor(self) -> SourceReplayDescriptor:
-        """导出可 pickle 的描述符，用于跨进程传递。"""
-        return SourceReplayDescriptor(
-            paths=[entry[0] for entry in self._entries],
-            count=len(self._entries),
-        )
-
-    @classmethod
-    def from_descriptor(cls, desc: SourceReplayDescriptor) -> SourceReplayBuffer:
-        """从描述符重建 SourceReplayBuffer 实例。"""
-        buf = cls()
-        for path in desc.paths:
-            buf.append(path)
-        return buf
 
     def _do_cleanup(self) -> None:
         """清理内部状态（无临时文件需要删除）。"""

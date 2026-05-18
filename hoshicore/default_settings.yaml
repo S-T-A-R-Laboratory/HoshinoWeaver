@@ -18,7 +18,7 @@ int_weight:
   value: true
 buffer_mode:
   enabled: true
-  value: auto
+  value: disk
 temp_path:
   enabled: false
   value: null
@@ -37,3 +37,6 @@ jpg_quality:
 png_compressing:
   enabled: true
   value: 7
+auto_fallback:
+  enabled: true
+  value: true

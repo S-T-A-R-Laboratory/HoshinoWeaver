@@ -33,6 +33,8 @@ from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
 from .executor import DAGExecutor
 from .flatten import INACTIVE_MARKER
+from .preflight import (PreflightAbortError, PreflightAction,
+                            apply_fallbacks, preflight_check)
 from .registry import REGISTERED_OP
 
 # ────────────────────────────────────────────────────────────────
@@ -468,6 +470,7 @@ async def run_from_yaml(
     tracker: Optional[DummyTracker] = None,
     cancel_event: Optional[asyncio.Event] = None,
     route_choices: Optional[dict[str, str]] = None,
+    preflight_callback=None,
 ) -> dict[str, Any]:
     """
     便捷入口：从 YAML 文件加载、校验、并端到端执行 DAG。
@@ -514,6 +517,33 @@ async def run_from_yaml(
 
     spec = flatten_sub_dags(spec, dag_search_paths=dag_search_paths)
     dag = validate_and_build_order(spec)
+
+    # ── 资源预检 ──
+    report = preflight_check(dag, global_configs, global_inputs, op_registry)
+    if report.proposed_fallbacks:
+        if preflight_callback is not None:
+            action: PreflightAction = preflight_callback(report)
+            if action == "apply":
+                apply_fallbacks(report, global_configs)
+                for fb in report.applied_fallbacks:
+                    logger.info(fb)
+            elif action == "ignore":
+                for w in report.warnings:
+                    logger.info(f"[Preflight] 用户忽略建议: {w}")
+            else:  # "abort"
+                raise PreflightAbortError(
+                    "用户拒绝资源预检建议，执行已中止。")
+        elif global_configs.get("auto_fallback", True):
+            apply_fallbacks(report, global_configs)
+            for fb in report.applied_fallbacks:
+                logger.info(fb)
+        else:
+            for w in report.warnings:
+                logger.warning(w)
+    elif report.warnings:
+        for w in report.warnings:
+            logger.warning(w)
+
     return await run_dag(dag,
                          global_inputs,
                          global_configs,
