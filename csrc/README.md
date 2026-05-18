@@ -142,7 +142,7 @@ python csrc/build_ops.py --dry-run
 |------|----------|------|
 | OpenMP (Linux + GCC) | `-static-libgomp` 或 link `libgomp.a` | 线程池实现烤进 `_C.so` |
 | OpenMP (Windows + MSVC) | `/openmp` + 静态 CRT（`/MT`）| `vcomp140.dll` 依赖消除；若用 LLVM OpenMP 则嵌入 libomp |
-| OpenMP (macOS) | 不启用 | macOS 包不启用 OpenMP |
+| OpenMP (macOS) | 静态链接 Homebrew `libomp.a` | 需先 `brew install libomp`，编译时自动检测并静态链接 |
 | CUDA runtime | `CUDA_USE_STATIC_CUDA_RUNTIME=ON`，link `cudart_static` | NVIDIA 官方支持，消除 `libcudart.so` / `cudart64_*.dll` 依赖 |
 
 ### 无法静态链接的部分
