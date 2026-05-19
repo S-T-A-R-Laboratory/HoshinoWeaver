@@ -106,6 +106,10 @@ def preflight_check(
             continue
         node_configs = _resolve_node_configs(node_spec, effective_configs, op_cls)
         mem, disk = op_cls.estimate_resources(node_configs, frame_bytes, n_frames)
+        if mem != 0 or disk != 0:
+            logger.info(
+                f"[Preflight] {op_name} 资源需求: {mem/1e9:.2f} GB, {disk/1e9:.2f} GB"
+            )
         total_mem += mem
         total_disk += disk
 
@@ -182,14 +186,21 @@ def _resolve_node_configs(
     for key, link in node_configs.items():
         if isinstance(link, str) and link.startswith("configs."):
             config_name = link[len("configs."):]
-            resolved[key] = effective_configs.get(config_name)
+            if config_name in effective_configs:
+                resolved[key] = effective_configs[config_name]
+            elif config_name != key and key in effective_configs:
+                resolved[key] = effective_configs[key]
+            else:
+                resolved[key] = None
         elif not isinstance(link, str) or "." not in link:
-            # literal value
             resolved[key] = link
 
     # fill defaults for unresolved keys
     for key, spec in op_config_defaults.items():
         if key not in resolved:
-            resolved[key] = spec.get("default") if isinstance(spec, dict) else None
+            if isinstance(spec, dict) and spec.get("global") and key in effective_configs:
+                resolved[key] = effective_configs[key]
+            else:
+                resolved[key] = spec.get("default") if isinstance(spec, dict) else None
 
     return resolved

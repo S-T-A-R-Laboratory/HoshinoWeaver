@@ -140,8 +140,8 @@ def peek_shape(file_path: str) -> tuple[tuple[int, ...], int]:
 
     if suffix in RAW_SUFFIX:
         with rawpy.imread(file_path) as raw:
-            h = raw.sizes.output_height
-            w = raw.sizes.output_width
+            h = raw.sizes.height
+            w = raw.sizes.width
             return (h, w, 3), 2
 
     if suffix not in COMMON_SUFFIX and suffix not in NOT_RECOM_SUFFIX:
