@@ -9,11 +9,12 @@ from __future__ import annotations
     - SourceReplayBuffer: 保留原始文件路径，每次访问重新解码，零临时文件但每 pass 有 decode 开销。
 """
 
+import asyncio
 import base64
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional, Union
+from typing import AsyncIterator, Optional, Union
 
 import numpy as np
 from loguru import logger
@@ -55,6 +56,53 @@ class BaseFrameBuffer:
 
     def _do_cleanup(self) -> None:
         raise NotImplementedError
+
+    async def iter_prefetch(
+        self,
+        start: int = 0,
+        stop: Optional[int] = None,
+    ) -> AsyncIterator[tuple[np.ndarray, Optional[Union[float, np.ndarray]]]]:
+        """异步预读迭代器：将下一帧的 IO 与当前帧的计算重叠。
+
+        在事件循环中以 asyncio.to_thread 提前发起下一帧的读取，
+        使 IO 等待与调用方的 CPU 计算（await _run_cpu(...)）并行执行。
+
+        对 MemoryFrameBuffer 无额外开销（to_thread 调用极快）；
+        对 DiskFrameBuffer / SourceReplayBuffer 可有效隐藏 IO 延迟。
+
+        用法::
+
+            async for raw, weight in frame_buffer.iter_prefetch():
+                await self._run_cpu(merger.merge, raw, weight)
+
+        Args:
+            start: 起始索引（含），默认 0。
+            stop:  终止索引（不含），默认 len(self)。
+        """
+        if stop is None:
+            stop = len(self)
+        if start >= stop:
+            return
+
+        def _load(idx: int):
+            return self[idx]
+
+        prefetch_task: asyncio.Task = asyncio.create_task(
+            asyncio.to_thread(_load, start)
+        )
+        for idx in range(start, stop):
+            next_idx = idx + 1
+            if next_idx < stop:
+                next_task: asyncio.Task = asyncio.create_task(
+                    asyncio.to_thread(_load, next_idx)
+                )
+            else:
+                next_task = None
+
+            yield await prefetch_task
+
+            if next_task is not None:
+                prefetch_task = next_task
 
 
 class DiskFrameBuffer(BaseFrameBuffer):

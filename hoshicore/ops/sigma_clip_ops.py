@@ -272,8 +272,7 @@ class SigmaClipIteratorOp(BaseOp):
                     len(frame_buffer),
                     desc=f"{self.name} [Clip {iteration + 1}]")
 
-                for idx in range(len(frame_buffer)):
-                    raw, weight = frame_buffer[idx]
+                async for raw, weight in frame_buffer.iter_prefetch():
                     # 合成 spatial_mask：静态 mask + 当前帧 empty_mask
                     spatial_mask = None
                     if static_mask is not None:
@@ -386,8 +385,7 @@ class HuberMeanIteratorOp(BaseOp):
                 self.name, n_frames,
                 desc=f"{self.name} [Huber]")
 
-            for idx in range(n_frames):
-                raw, weight = frame_buffer[idx]
+            async for raw, weight in frame_buffer.iter_prefetch():
                 await self._run_cpu(huber_merger.merge, raw, weight)
                 self.tracker.update(self.name)
 
@@ -417,7 +415,7 @@ class MedianReduceOp(BaseOp):
 
     输入 buffer_handle 来自 DiskBufferWriterOp。
 
-    注意：中位数不可分布式归约，多进程时需要回退到主进程单线程计算。
+    注意：中位数不可分布式归约。
     """
 
     EXECUTOR = "cpu"
@@ -582,8 +580,7 @@ class ThresholdMaxIteratorOp(BaseOp):
                 self.name, n_frames,
                 desc=f"{self.name} [ThresholdMax]")
 
-            for idx in range(n_frames):
-                raw, weight = frame_buffer[idx]
+            async for raw, weight in frame_buffer.iter_prefetch():
                 frame = raw.astype(np.float64)
                 await self._run_cpu(
                     threshold_max_merge,
