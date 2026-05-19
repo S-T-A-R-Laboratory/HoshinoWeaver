@@ -72,6 +72,14 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "HNW_ENABLE_CUDA": "ON"
       }
+    },
+    {
+      "name": "windows-mingw",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "HNW_ENABLE_CUDA": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -102,6 +110,10 @@
     {
       "name": "windows-msvc-cuda",
       "configurePreset": "windows-msvc-cuda"
+    },
+    {
+      "name": "windows-mingw",
+      "configurePreset": "windows-mingw"
     }
   ]
 }

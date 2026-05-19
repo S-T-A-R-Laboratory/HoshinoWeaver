@@ -158,6 +158,16 @@ def _resolve_windows_compiler(choice: str) -> tuple[str | None, str | None, list
                 "so that `cl` and `link` are on PATH."
             )
 
+    if choice in {"auto", "gcc"}:
+        cc = _which("gcc")
+        cxx = _which("g++")
+        if cc and cxx:
+            return cc, cxx, hints
+        if choice == "gcc":
+            hints.append(
+                "Install MinGW-w64 (ucrt variant recommended) and make gcc/g++ available on PATH."
+            )
+
     if choice in {"auto", "clang"}:
         clang_cl = _which("clang-cl")
         if clang_cl:
@@ -167,7 +177,7 @@ def _resolve_windows_compiler(choice: str) -> tuple[str | None, str | None, list
 
     hints.append(
         "Windows build expects MSVC Build Tools in an activated Developer shell, "
-        "or explicit CC/CXX pointing to clang-cl."
+        "MinGW-w64 gcc/g++ on PATH, or explicit CC/CXX."
     )
     raise RuntimeError("\n".join(hints))
 
@@ -219,7 +229,7 @@ def _ensure_required_tools() -> None:
         raise RuntimeError(f"Missing CMake presets file: {PRESETS_FILE}")
 
 
-def _default_cmake_preset(choice: str, *, enable_cuda: bool) -> str:
+def _default_cmake_preset(choice: str, *, enable_cuda: bool, resolved_cc: str | None = None) -> str:
     if SYSTEM == "Linux":
         if enable_cuda:
             if choice not in {"auto", "gcc"}:
@@ -234,9 +244,15 @@ def _default_cmake_preset(choice: str, *, enable_cuda: bool) -> str:
             return "macos-clang"
     elif SYSTEM == "Windows":
         if enable_cuda:
+            if choice == "gcc":
+                raise RuntimeError("Windows CUDA build requires MSVC. MinGW is not supported as a CUDA host compiler.")
             if choice not in {"auto", "msvc"}:
                 raise RuntimeError("Windows CUDA build currently expects MSVC host compilers.")
             return "windows-msvc-cuda"
+        if choice == "gcc":
+            return "windows-mingw"
+        if choice == "auto" and resolved_cc and "gcc" in Path(resolved_cc).name.lower():
+            return "windows-mingw"
         if choice in {"auto", "msvc"}:
             return "windows-msvc"
     raise RuntimeError(
@@ -292,7 +308,7 @@ def _cmake_build_commands(
     cc: str | None,
     cxx: str | None,
 ) -> tuple[list[str], list[str], str]:
-    preset = args.preset or _default_cmake_preset(args.compiler, enable_cuda=args.cuda)
+    preset = args.preset or _default_cmake_preset(args.compiler, enable_cuda=args.cuda, resolved_cc=cc)
     configure_cmd = ["cmake", "--preset", preset]
     build_cmd = ["cmake", "--build", "--preset", preset]
     if args.verbose_build:
