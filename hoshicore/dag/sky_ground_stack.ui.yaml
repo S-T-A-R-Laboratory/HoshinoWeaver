@@ -68,7 +68,7 @@ configs:
     label: "对齐基准图像"
     description: "天空对齐基准图像。空缺默认使用第一张"
     widget: file_picker
-    accept: ".tif,.tiff,.png,.jpg"
+    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
   distortion:
     hidden: true
   exif_reduce_type:
