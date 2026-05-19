@@ -11,5 +11,6 @@ function(hnw_link_cuda_runtime target_name)
         return()
     endif()
 
-    target_link_libraries("${target_name}" PRIVATE CUDA::cudart)
+    # Static link to eliminate cudart DLL dependency
+    target_link_libraries("${target_name}" PRIVATE CUDA::cudart_static)
 endfunction()

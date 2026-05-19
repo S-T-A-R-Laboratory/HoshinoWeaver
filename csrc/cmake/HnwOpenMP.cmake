@@ -22,6 +22,11 @@ function(hnw_link_openmp target_name)
         target_include_directories("${target_name}" PRIVATE "${_LIBOMP_PREFIX}/include")
         # Static link to avoid runtime dylib dependency
         target_link_libraries("${target_name}" PRIVATE "${_LIBOMP_PREFIX}/lib/libomp.a")
+    elseif(MSVC)
+        # MSVC: /openmp is a compile-only flag; vcomp140.dll is implicitly linked.
+        # Cannot statically link MSVC OpenMP runtime in a Python extension (.pyd).
+        # PyInstaller will collect vcomp140.dll automatically.
+        target_compile_options("${target_name}" PRIVATE /openmp)
     else()
         find_package(OpenMP REQUIRED COMPONENTS CXX)
         target_link_libraries("${target_name}" PRIVATE OpenMP::OpenMP_CXX)
