@@ -20,6 +20,20 @@ class BaseOp(object):
     MAX_SIZE: int = 1
     VARIABLE_OUTPUT: bool = False  # True 时标记为变长输出（Filter 类）
 
+    @classmethod
+    def estimate_resources(
+        cls,
+        configs: dict[str, Any],
+        frame_bytes: int,
+        n_frames: Optional[int],
+    ) -> tuple[int, int]:
+        """返回 (peak_memory_bytes, peak_disk_bytes) 的估计值。
+
+        预检阶段调用，用于在执行前估算资源需求。
+        子类按需 override，默认返回 (0, 0)。
+        """
+        return (0, 0)
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         if '_async_execute' in cls.__dict__:
@@ -242,22 +256,6 @@ class BaseOp(object):
         设计为统一入口：后续阶段可无缝替换为 ProcessPoolExecutor 以实现真正多核并行。
         """
         result = await asyncio.to_thread(fn, *args, **kwargs)
-        if self._cancel_event is not None and self._cancel_event.is_set():
-            raise CancellationError("Cancelled during CPU execution")
-        return result
-
-    async def _run_numba(self, fn, *args, **kwargs):
-        """执行 numba parallel 加速的函数。
-
-        Workaround: numba_parallel_for 在 Windows frozen 环境的非主线程中
-        会死锁（Python 3.12+, PyInstaller）。此时退回主线程同步执行。
-        numba 内部仍通过 prange 并行，不影响计算性能。
-        非 frozen 环境正常卸载到线程池。
-        """
-        if getattr(sys, 'frozen', False) and sys.platform == 'win32':
-            result = fn(*args, **kwargs)
-        else:
-            result = await asyncio.to_thread(fn, *args, **kwargs)
         if self._cancel_event is not None and self._cancel_event.is_set():
             raise CancellationError("Cancelled during CPU execution")
         return result

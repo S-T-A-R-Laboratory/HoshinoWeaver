@@ -1,0 +1,5 @@
+# Extra Python-installable tools for the native custom-op build path.
+# Core project/runtime dependencies remain in the repo-root requirements.txt.
+
+cmake>=3.23
+ninja>=1.11

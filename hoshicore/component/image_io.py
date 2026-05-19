@@ -15,8 +15,8 @@ import tifffile
 from loguru import logger
 
 from .exif import ExifData, encode_exif_data
-from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, SAME_SUFFIX_MAPPING,
-                    is_support_format, time_cost_warpper)
+from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, RAW_SUFFIX,
+                    SAME_SUFFIX_MAPPING, is_support_format, time_cost_warpper)
 
 
 def load_img(file_path: str) -> Optional[np.ndarray]:
@@ -114,6 +114,49 @@ def save_img(filename: str,
 
     with open(filename, mode='wb') as f:
         f.write(image_bytes)
+
+
+def peek_shape(file_path: str) -> tuple[tuple[int, ...], int]:
+    """只读文件头，返回 (shape, dtype_bytes)。不做完整解码。
+
+    比 get_img_attrs 更精确（含 channels）且覆盖 RAW 格式。
+
+    Returns:
+        (shape, dtype_bytes): shape 为 (H, W) 或 (H, W, C)，
+        dtype_bytes 为每像素每通道字节数。
+    """
+    import os
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"peek_shape: file not found: {file_path}")
+
+    suffix = file_path.rsplit(".", 1)[-1].lower()
+    if suffix in SAME_SUFFIX_MAPPING:
+        suffix = SAME_SUFFIX_MAPPING[suffix]
+
+    if suffix in ("tif", "tiff"):
+        with tifffile.TiffFile(file_path) as tf:
+            page = tf.pages[0]
+            return tuple(page.shape), page.dtype.itemsize
+
+    if suffix in RAW_SUFFIX:
+        with rawpy.imread(file_path) as raw:
+            h = raw.sizes.height
+            w = raw.sizes.width
+            return (h, w, 3), 2
+
+    if suffix not in COMMON_SUFFIX and suffix not in NOT_RECOM_SUFFIX:
+        raise ValueError(f"peek_shape: unsupported format: {suffix}")
+
+    # jpg, png, bmp, etc.
+    img = PIL.Image.open(file_path)
+    w, h = img.size
+    bands = len(img.getbands())
+    mode = img.mode
+    img.close()
+    dtype_bytes = 2 if mode in ("I;16", "I;16B") else 1
+    if bands == 1:
+        return (h, w), dtype_bytes
+    return (h, w, bands), dtype_bytes
 
 
 def get_img_attrs(fname: str) -> dict:

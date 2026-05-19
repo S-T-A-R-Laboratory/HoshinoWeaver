@@ -12,8 +12,9 @@
 
 DiskBufferWriterOp：
     消费序列输入，逐帧缓存供下游多 pass 算法重放。
-    支持两种缓冲策略（通过 buffer_mode config 控制）：
+    支持三种缓冲策略（通过 buffer_mode config 控制）：
         - disk（默认）：将解码后的帧写入 DiskFrameBuffer（临时 .npz），读取快但占磁盘
+        - memory：帧直接保存在 RAM 中（MemoryFrameBuffer），零 I/O 但占内存
         - replay：保留原始文件路径到 SourceReplayBuffer，零临时文件但每 pass 重新 decode
     清理策略：
         - 正常完成：buffer 由下游 SigmaClipIteratorOp 在 finally 中清理
@@ -31,9 +32,10 @@ import cv2
 import numpy as np
 from loguru import logger
 
+from .._custom_op import median_reduce_chunk as custom_median_reduce_chunk
 from ..component.data_container import FastGaussianParam, FloatImage
 from ..component.frame_buffer import (BaseFrameBuffer, DiskFrameBuffer,
-                                      SourceReplayBuffer)
+                                      MemoryFrameBuffer, SourceReplayBuffer)
 from ..component.merger import (HuberWeightedMerger, MeanMerger,
                                 SigmaClippingMerger)
 from ..component.noise_equalization import (compute_adaptive_n_sigma,
@@ -47,16 +49,10 @@ from .base import BaseOp
 class DiskBufferWriterOp(BaseOp):
     """将序列帧缓存供下游多 pass 算法重放。
 
-    支持两种缓冲策略：
-        - disk（默认）：解码后的帧写入 DiskFrameBuffer（临时 .npz 文件）
-        - replay：保留原始文件路径到 SourceReplayBuffer，零临时文件
-
-    buffer_mode 配置：
-        - "auto"（默认）：有 fnames 输入 → replay，否则 → disk
-        - "disk"：强制使用 DiskFrameBuffer
-        - "replay"：强制使用 SourceReplayBuffer（需要 fnames 输入）
-        
-    # TODO: 支持内存缓冲（MemoryFrameBuffer），适用于小规模帧数且内存充足的场景，提供更快访问但占用 RAM。
+    支持三种缓冲策略（通过 buffer_mode 配置）：
+        - "disk"（默认）：解码后的帧写入 DiskFrameBuffer（临时 .npz 文件）
+        - "memory"：帧直接保存在 RAM 中（MemoryFrameBuffer），零 I/O 但占内存
+        - "replay"：保留原始文件路径到 SourceReplayBuffer（需要 fnames 输入）
     """
 
     EXECUTOR = "cpu"
@@ -78,11 +74,13 @@ class DiskBufferWriterOp(BaseOp):
     CONFIGS: dict[str, dict[str, Any]] = {
         "buffer_mode": {
             "type": "str",
-            "default": "auto",
+            "default": "disk",
+            "global": True,
         },
         "temp_path": {
             "type": "str",
             "default": None,
+            "global": True,
         }
     }
     OUTPUTS = {
@@ -91,27 +89,39 @@ class DiskBufferWriterOp(BaseOp):
         },
     }
 
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        if n_frames is None:
+            n_frames = 0
+        mode = configs.get("buffer_mode", "disk")
+        if mode == "memory":
+            return (n_frames * frame_bytes, 0)
+        elif mode == "disk":
+            return (0, n_frames * frame_bytes)
+        return (0, 0)
+
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         tot_num = self.length
 
         has_weight = self.inputs['weight'].active
         has_fnames = self.inputs['fnames'].active
-        buffer_mode = configs.get("buffer_mode", "auto")
+        buffer_mode = configs.get("buffer_mode", "disk")
         temp_path = configs.get("temp_path", None)
 
         # 确定缓冲策略
-        use_replay = (buffer_mode == "replay")
-        if use_replay and not has_fnames:
-            raise ValueError(
-                f"{self.name}: replay mode requires 'fnames' input, "
-                f"but fnames is not wired.")
-
-        if use_replay:
+        if buffer_mode == "memory":
+            frame_buffer = MemoryFrameBuffer()
+            mode_label = "Memory"
+        elif buffer_mode == "replay":
+            if not has_fnames:
+                raise ValueError(
+                    f"{self.name}: replay mode requires 'fnames' input, "
+                    f"but fnames is not wired.")
             frame_buffer = SourceReplayBuffer()
             mode_label = "Replay"
         else:
             frame_buffer = DiskFrameBuffer(temp_path=temp_path)
-            mode_label = "Buffer"
+            mode_label = "Disk"
 
         stacked_num = 0
         failed_num = 0
@@ -140,7 +150,7 @@ class DiskBufferWriterOp(BaseOp):
                     self.tracker.update(self.name)
                     continue
 
-                if use_replay:
+                if buffer_mode == "replay":
                     frame_buffer.append(fname, weight)
                 else:
                     frame_buffer.append(cur_img, weight)
@@ -262,8 +272,7 @@ class SigmaClipIteratorOp(BaseOp):
                     len(frame_buffer),
                     desc=f"{self.name} [Clip {iteration + 1}]")
 
-                for idx in range(len(frame_buffer)):
-                    raw, weight = frame_buffer[idx]
+                async for raw, weight in frame_buffer.iter_prefetch():
                     # 合成 spatial_mask：静态 mask + 当前帧 empty_mask
                     spatial_mask = None
                     if static_mask is not None:
@@ -276,8 +285,8 @@ class SigmaClipIteratorOp(BaseOp):
                         empty_mask = np.all(raw[..., :3] == 0, axis=-1)
                         if empty_mask.any():
                             spatial_mask = ~empty_mask
-                    await self._run_numba(clip_merger.merge, raw, weight,
-                                          spatial_mask=spatial_mask)
+                    await self._run_cpu(clip_merger.merge, raw, weight,
+                                                 spatial_mask=spatial_mask)
                     self.tracker.update(self.name)
 
                 self.tracker.close_bar(self.name)
@@ -376,8 +385,7 @@ class HuberMeanIteratorOp(BaseOp):
                 self.name, n_frames,
                 desc=f"{self.name} [Huber]")
 
-            for idx in range(n_frames):
-                raw, weight = frame_buffer[idx]
+            async for raw, weight in frame_buffer.iter_prefetch():
                 await self._run_cpu(huber_merger.merge, raw, weight)
                 self.tracker.update(self.name)
 
@@ -407,7 +415,7 @@ class MedianReduceOp(BaseOp):
 
     输入 buffer_handle 来自 DiskBufferWriterOp。
 
-    注意：中位数不可分布式归约，多进程时需要回退到主进程单线程计算。
+    注意：中位数不可分布式归约。
     """
 
     EXECUTOR = "cpu"
@@ -428,6 +436,10 @@ class MedianReduceOp(BaseOp):
             "type": "image",
         },
     }
+
+    @staticmethod
+    def _reduce_chunk(stack: np.ndarray) -> np.ndarray:
+        return custom_median_reduce_chunk(stack)
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         frame_buffer: DiskFrameBuffer = configs['buffer_handle']
@@ -476,8 +488,7 @@ class MedianReduceOp(BaseOp):
                         row_start:row_end].astype(np.float32)
 
                 # 沿帧轴取中位数
-                chunk_median = await self._run_cpu(
-                    np.median, stack, axis=0)
+                chunk_median = await self._run_cpu(self._reduce_chunk, stack)
                 result_chunks.append(chunk_median)
                 self.tracker.update(self.name)
 
@@ -560,15 +571,16 @@ class ThresholdMaxIteratorOp(BaseOp):
             std_img = np.sqrt(np.maximum(fgp.var, 0).astype(np.float64))
             result = mean_img.copy()
 
-            kernel = cv2.getStructuringElement(
-                cv2.MORPH_RECT, (kernel_size, kernel_size))
+            kernel = None
+            if kernel_size > 1:
+                kernel = cv2.getStructuringElement(
+                    cv2.MORPH_RECT, (kernel_size, kernel_size))
 
             self.tracker.create_bar(
                 self.name, n_frames,
                 desc=f"{self.name} [ThresholdMax]")
 
-            for idx in range(n_frames):
-                raw, weight = frame_buffer[idx]
+            async for raw, weight in frame_buffer.iter_prefetch():
                 frame = raw.astype(np.float64)
                 await self._run_cpu(
                     threshold_max_merge,

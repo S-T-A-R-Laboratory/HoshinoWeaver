@@ -36,7 +36,7 @@ def _generate_spec(
     gui_script = join_path(work_path, f"{GUI_FILENAME}.py")
     cli_script = join_path(work_path, f"{CLI_FILENAME}.py")
 
-    collect_all_packages = ["numba", "llvmlite", "pyexiv2"]
+    collect_all_packages = ["pyexiv2"]
     collect_block = "\n".join(
         f"_d, _b, _h = collect_all({pkg!r})\n"
         f"shared_datas += _d; shared_binaries += _b; shared_hiddenimports += _h"
@@ -55,8 +55,32 @@ shared_hiddenimports = []
 
 {collect_block}
 
-shared_datas += copy_metadata('numba')
 shared_hiddenimports += collect_submodules('scipy._lib.array_api_compat')
+
+# Collect compiled custom-op extension if available
+import importlib.util as _imputil
+_c_spec = _imputil.find_spec('hoshicore._custom_op._C')
+if _c_spec is not None:
+    shared_hiddenimports.append('hoshicore._custom_op._C')
+    # OpenMP runtime DLL collection:
+    #   MSVC  → vcomp140.dll (implicit, collected via ctypes.util)
+    #   MinGW → libgomp-1.dll + GCC runtime DLLs copied by build_ops.py into _custom_op/
+    try:
+        from hoshicore._custom_op import build_info as _build_info
+        _bi = _build_info()
+        if _bi.get('openmp') and _bi.get('compiler') == 'msvc':
+            import ctypes.util as _ctutil
+            _vcomp = _ctutil.find_library('vcomp140')
+            if _vcomp:
+                shared_binaries.append((_vcomp, '.'))
+    except Exception:
+        pass
+
+    # MinGW builds: build_ops.py copies runtime DLLs next to _C.pyd; collect them all.
+    import glob as _glob, os.path as _osp
+    _cop_dir = _osp.dirname(_osp.abspath(__import__('hoshicore._custom_op', fromlist=['_custom_op']).__file__))
+    for _dll in _glob.glob(_osp.join(_cop_dir, '*.dll')):
+        shared_binaries.append((_dll, '.'))
 
 # pyexiv2 loads exiv2api via sys.path.append + bare import;
 # PyInstaller can't trace that, so add the platform extension dir explicitly.
@@ -171,6 +195,39 @@ platform_mapping = {
 }
 
 
+def _ensure_custom_ops(work_path: str, *, skip_build: bool, allow_numpy_only: bool) -> bool:
+    """Verify _C is importable; build if needed. Return True if available."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import hoshicore._custom_op._C"],
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        logger.info("Custom ops (_C) verified.")
+        return True
+    if skip_build:
+        if allow_numpy_only:
+            logger.warning("Custom ops (_C) not available. Package will use numpy fallback.")
+            return False
+        logger.error(
+            "Custom ops (_C) not available. "
+            "Build first with `python csrc/build_ops.py`, or pass --allow-numpy-only."
+        )
+        sys.exit(1)
+    logger.info("Custom ops (_C) not found, attempting build...")
+    ret = subprocess.run(
+        [sys.executable, join_path(work_path, "csrc", "build_ops.py")],
+        cwd=work_path,
+    )
+    if ret.returncode != 0:
+        if allow_numpy_only:
+            logger.warning("Custom-op build failed. Continuing with numpy fallback.")
+            return False
+        logger.error("Custom-op build failed. Fix build errors or pass --allow-numpy-only.")
+        sys.exit(1)
+    logger.info("Custom ops built successfully.")
+    return True
+
+
 def main():
     argparser = argparse.ArgumentParser(
         description="Package HoshiNoWeaver using PyInstaller.")
@@ -186,6 +243,14 @@ def main():
         "--debug-gui",
         action="store_true",
         help="Generate GUI version with console window.")
+    argparser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="Skip automatic C++ custom-op compilation (assume already built or absent).")
+    argparser.add_argument(
+        "--allow-numpy-only",
+        action="store_true",
+        help="Allow packaging without compiled _C (numpy fallback). Default: error if _C unavailable.")
     args = argparser.parse_args()
 
     platform = platform_mapping[sys.platform]
@@ -209,6 +274,13 @@ def main():
 
     icon_path = join_path(work_path, "imgs", "HNW.jpg")
     macos_bundle = platform.startswith("macos") and not args.debug_gui
+
+    # ── Ensure custom ops ──
+    _ensure_custom_ops(
+        work_path,
+        skip_build=args.no_build,
+        allow_numpy_only=args.allow_numpy_only,
+    )
 
     # ── Generate .spec ──
     spec_content = _generate_spec(

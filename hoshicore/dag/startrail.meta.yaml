@@ -1,4 +1,4 @@
-description: "星轨叠加（fifo 最大值 / mix 噪声均衡 / tmax 阈值提取，统一入口）"
+description: "星轨叠加（fifo 最大值 / mix 噪声均衡入口）"
 version: "1"
 
 # ── 全局输入 ──
@@ -21,6 +21,7 @@ configs:
   enable_star_shrink:     { type: bool, default: false }
   enable_satellite_clean: { type: bool, default: false }
   sat_window_size:        { type: int,  default: 3 }
+  mask: { type: str, required: false, default: null }
   int_weight:       { type: bool,  default: true }
   exif_reduce_type: { type: str,   default: "sum" }
   loader_type:      { type: str,   default: "img_file_list" }
@@ -37,14 +38,14 @@ route_configs:
       rej_high:    { type: float, default: 3.0 }
       rej_low:     { type: float, default: 3.0 }
       max_iter:    { type: int,   default: 5 }
-      buffer_mode: { type: str,   default: "auto" }
+      buffer_mode: { type: str,   default: "disk", global: true }
       mask:        { type: str,   default: null }
       minus_only:  { type: bool,  default: true }
     tmax:
       rej_high:    { type: float, default: 3.0 }
       rej_low:     { type: float, default: 3.0 }
       max_iter:    { type: int,   default: 5 }
-      buffer_mode: { type: str,   default: "auto" }
+      buffer_mode: { type: str,   default: "disk", global: true }
       mask:        { type: str,   default: null }
       n_sigma:     { type: float, default: -1 }
 
@@ -80,6 +81,7 @@ nodes:
       data: star_shrink.result
     configs:
       window_size: configs.sat_window_size
+      mask: configs.mask
     outputs:
       result: { type: sequence }
 
