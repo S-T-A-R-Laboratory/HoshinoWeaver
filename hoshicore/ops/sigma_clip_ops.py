@@ -75,10 +75,12 @@ class DiskBufferWriterOp(BaseOp):
         "buffer_mode": {
             "type": "str",
             "default": "disk",
+            "global": True,
         },
         "temp_path": {
             "type": "str",
             "default": None,
+            "global": True,
         }
     }
     OUTPUTS = {

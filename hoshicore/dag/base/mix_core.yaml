@@ -13,7 +13,7 @@ configs:
   rej_high:    { type: float, default: 3.0 }
   rej_low:     { type: float, default: 3.0 }
   max_iter:    { type: int,   default: 5 }
-  buffer_mode: { type: str,   default: "disk" }
+  buffer_mode: { type: str,   default: "disk", global: true }
   mask:        { type: str,   default: null }
   minus_only:  { type: bool,  default: true }
 
