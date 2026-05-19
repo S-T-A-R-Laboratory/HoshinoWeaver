@@ -1,5 +1,14 @@
 """Public entrypoint for optional custom-op APIs."""
 
+import os
+import sys
+
+# Python 3.8+ on Windows no longer searches the directory containing a .pyd for
+# its DLL dependencies. Add this package's directory so that MinGW runtime DLLs
+# copied here by build_ops.py (libgomp-1.dll, libgcc_s_seh-1.dll, etc.) are found.
+if sys.platform == "win32":
+    os.add_dll_directory(os.path.dirname(os.path.abspath(__file__)))
+
 from hoshicore._custom_op.api import (
     build_info,
     camera_model_remap,

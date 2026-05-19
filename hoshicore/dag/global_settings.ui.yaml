@@ -9,12 +9,12 @@ int_weight:
 
 buffer_mode:
   label: "中间帧缓冲模式"
-  description: "disk=磁盘缓冲，memory=内存缓冲，replay=源重放缓冲"
+  description: "memory=内存缓冲，disk=磁盘缓冲，replay=源重放"
   widget: select
   options:
-    - {value: "disk",   label: "磁盘缓冲"}
     - {value: "memory", label: "内存缓冲"}
-    - {value: "replay", label: "源重放缓冲"}
+    - {value: "disk",   label: "磁盘缓冲"}
+    - {value: "replay", label: "源重放"}
 
 auto_fallback:
   label: "资源不足自动降级"
