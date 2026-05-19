@@ -1,6 +1,9 @@
 *.jpg
 *.tif
+*.pyd
+*.so
 logs/
+csrc/build
 ui/__pycache__
 __pycache__/
 .vscode/

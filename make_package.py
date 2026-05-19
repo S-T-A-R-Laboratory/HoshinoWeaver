@@ -62,15 +62,25 @@ import importlib.util as _imputil
 _c_spec = _imputil.find_spec('hoshicore._custom_op._C')
 if _c_spec is not None:
     shared_hiddenimports.append('hoshicore._custom_op._C')
-    # MSVC builds need vcomp140.dll for OpenMP; MinGW/macOS/Linux static-link it
+    # OpenMP runtime DLL collection:
+    #   MSVC  → vcomp140.dll (implicit, collected via ctypes.util)
+    #   MinGW → libgomp-1.dll (dynamic link; located next to gcc.exe on PATH)
     try:
         from hoshicore._custom_op import build_info as _build_info
         _bi = _build_info()
-        if _bi.get('compiler') == 'msvc' and _bi.get('openmp'):
-            import ctypes.util as _ctutil
-            _vcomp = _ctutil.find_library('vcomp140')
-            if _vcomp:
-                shared_binaries.append((_vcomp, '.'))
+        if _bi.get('openmp'):
+            if _bi.get('compiler') == 'msvc':
+                import ctypes.util as _ctutil
+                _vcomp = _ctutil.find_library('vcomp140')
+                if _vcomp:
+                    shared_binaries.append((_vcomp, '.'))
+            elif _bi.get('compiler') == 'gcc' and _sys.platform == 'win32':
+                import shutil as _shutil, os.path as _osp
+                _gcc = _shutil.which('gcc')
+                if _gcc:
+                    _gomp = _osp.join(_osp.dirname(_gcc), 'libgomp-1.dll')
+                    if _osp.exists(_gomp):
+                        shared_binaries.append((_gomp, '.'))
     except Exception:
         pass
 
