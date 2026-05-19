@@ -37,10 +37,11 @@ def to_gray_f64(arr: np.ndarray) -> np.ndarray:
     return gray
 
 
-def make_geometry(arr: np.ndarray) -> GeometryView:
+def make_geometry(arr: np.ndarray,
+                  mask: Optional[np.ndarray] = None) -> GeometryView:
     """从原始图像数组构建 FlatCameraModel GeometryView。"""
     gray = to_gray_f64(arr)
-    cache = StarDetectionCache(gray)
+    cache = StarDetectionCache(gray, mask=mask)
     return GeometryView.from_flat_projection(cache)
 
 

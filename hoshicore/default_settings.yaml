@@ -18,7 +18,10 @@ int_weight:
   value: true
 buffer_mode:
   enabled: true
-  value: auto
+  value: memory
+auto_fallback:
+  enabled: true
+  value: false
 temp_path:
   enabled: false
   value: null

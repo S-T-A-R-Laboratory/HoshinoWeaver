@@ -5,15 +5,24 @@ inputs:
   data: { type: sequence, required: true }
 
 configs:
-  window_size: { type: int, default: 2 }
+  window_size: { type: int, default: 3 }
+  mask: { type: str, required: false, default: null }
 
 nodes:
+  load_mask:
+    op: LoadMaskImageOp
+    configs:
+      path: configs.mask
+    outputs:
+      result: { type: image }
+
   sat_clean:
     op: SatelliteCleanOp
     inputs:
       data: inputs.data
     configs:
       window_size: configs.window_size
+      mask: load_mask.result
     outputs:
       result: { type: sequence }
 

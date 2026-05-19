@@ -33,6 +33,8 @@ from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
 from .executor import DAGExecutor
 from .flatten import INACTIVE_MARKER
+from .preflight import (PreflightAbortError, PreflightAction,
+                            apply_fallbacks, preflight_check)
 from .registry import REGISTERED_OP
 
 # ────────────────────────────────────────────────────────────────
@@ -140,11 +142,11 @@ def _make_sequence_feeders(
     导致被替换段中的依赖链路饥饿。
 
     例如 mix_startrail 中 inputs.fnames 同时推送到：
-        - data_loader.src（SegmentAdapter 消费，受 worker IPC 背压）
-        - weight_generator.sequence（SegmentAdapter 需要其输出）
+        - data_loader.src（下游 Op 消费，受 worker IPC 背压）
+        - weight_generator.sequence（下游 Op 需要其输出）
         - exif_loader.fnames（独立链路）
     若使用 asyncio.gather 统一推送，当 data_loader.src 满载时，
-    weight_generator 也无法获得输入 → SegmentAdapter 等待 weight → 停滞。
+    weight_generator 也无法获得输入 → 下游 Op 等待 weight → 停滞。
     """
     length = len(data)
     logger.info(f"[Feeder] Global input '{name}': "
@@ -289,7 +291,15 @@ def instantiate_and_wire(
         # 检查 Op CONFIGS
         for key, spec in op_inst.CONFIGS.items():
             if key not in yaml_cfg_keys:
-                if "default" in spec:
+                if spec.get("global") and key in effective_configs:
+                    unwired_feeders.append(
+                        (f"{node_name}.{key}", effective_configs[key],
+                         op_inst.config[key]))
+                    logger.debug(
+                        f"Global config '{key}' of node '{node_name}' "
+                        f"resolved from effective_configs: "
+                        f"{effective_configs[key]}")
+                elif "default" in spec:
                     unwired_feeders.append(
                         (f"{node_name}.{key}", spec["default"],
                          op_inst.config[key]))
@@ -468,6 +478,7 @@ async def run_from_yaml(
     tracker: Optional[DummyTracker] = None,
     cancel_event: Optional[asyncio.Event] = None,
     route_choices: Optional[dict[str, str]] = None,
+    preflight_callback=None,
 ) -> dict[str, Any]:
     """
     便捷入口：从 YAML 文件加载、校验、并端到端执行 DAG。
@@ -514,6 +525,33 @@ async def run_from_yaml(
 
     spec = flatten_sub_dags(spec, dag_search_paths=dag_search_paths)
     dag = validate_and_build_order(spec)
+
+    # ── 资源预检 ──
+    report = preflight_check(dag, global_configs, global_inputs, op_registry)
+    if report.proposed_fallbacks:
+        if preflight_callback is not None:
+            action: PreflightAction = preflight_callback(report)
+            if action == "apply":
+                apply_fallbacks(report, global_configs)
+                for fb in report.applied_fallbacks:
+                    logger.info(fb)
+            elif action == "ignore":
+                for w in report.warnings:
+                    logger.info(f"[Preflight] 用户忽略建议: {w}")
+            else:  # "abort"
+                raise PreflightAbortError(
+                    "用户拒绝资源预检建议，执行已中止。")
+        elif global_configs.get("auto_fallback", True):
+            apply_fallbacks(report, global_configs)
+            for fb in report.applied_fallbacks:
+                logger.info(fb)
+        else:
+            for w in report.warnings:
+                logger.warning(w)
+    elif report.warnings:
+        for w in report.warnings:
+            logger.warning(w)
+
     return await run_dag(dag,
                          global_inputs,
                          global_configs,
@@ -581,6 +619,11 @@ def _flatten_config_specs(
         else:
             if full_key in user_configs:
                 resolved[full_key] = user_configs[full_key]
+            elif (isinstance(spec, dict) and spec.get("global")
+                  and full_key != name and name in user_configs):
+                resolved[full_key] = user_configs[name]
+                logger.debug(f"Config '{full_key}' resolved via global leaf "
+                             f"fallback '{name}': {user_configs[name]}")
             elif isinstance(spec, dict) and "default" in spec:
                 resolved[full_key] = spec["default"]
                 logger.debug(f"Config '{full_key}' not provided, "

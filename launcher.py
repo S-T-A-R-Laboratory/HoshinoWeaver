@@ -9,6 +9,7 @@ from loguru import logger as default_logger
 
 from hoshicore.component.utils import init_logger, is_support_format
 from hoshicore.engine.inspect import InspectResult, inspect_yaml
+from hoshicore.engine.preflight import PreflightAction, PreflightReport
 from hoshicore.engine.wiring import run_from_yaml
 
 
@@ -109,6 +110,41 @@ def _format_default(value: object) -> str:
     if isinstance(value, bool):
         return str(value).lower()
     return str(value)
+
+
+def _cli_preflight_callback(report: PreflightReport) -> PreflightAction:
+    """CLI 预检回调：打印警告和建议，等待用户选择。"""
+    print("\n" + "=" * 60)
+    print("  资源预检警告")
+    print("=" * 60)
+
+    for w in report.warnings:
+        print(f"  {w}")
+
+    if report.proposed_fallbacks:
+        print("\n建议降级方案：")
+        for fb in report.proposed_fallbacks:
+            print(f"  {fb.config_key}: {fb.current_value} -> {fb.proposed_value}"
+                  f" ({fb.reason})")
+
+    print("\n请选择操作：")
+    print("  [A] 应用建议并继续执行")
+    print("  [I] 忽略建议，按原配置继续")
+    print("  [Q] 中止执行")
+    print()
+
+    while True:
+        try:
+            choice = input("输入选择 (A/I/Q): ").strip().upper()
+        except (EOFError, KeyboardInterrupt):
+            return "abort"
+        if choice in ("A", "APPLY"):
+            return "apply"
+        if choice in ("I", "IGNORE"):
+            return "ignore"
+        if choice in ("Q", "QUIT", "ABORT"):
+            return "abort"
+        print("  无效输入，请输入 A、I 或 Q")
 
 
 def main():
@@ -215,7 +251,8 @@ def main():
             run_from_yaml(yaml_path,
                           global_inputs,
                           global_configs,
-                          route_choices=route_choices))
+                          route_choices=route_choices,
+                          preflight_callback=_cli_preflight_callback))
     except KeyboardInterrupt:
         print("\n已中止", file=sys.stderr)
         sys.exit(130)

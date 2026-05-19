@@ -491,7 +491,8 @@ class DynamicConfigPanel(QWidget):
             if spec and isinstance(spec.transform, str):
                 val = _apply_transform(spec.transform, val)
             if val == "": val = None
-            result[param_key] = val
+            # 暂不支持多层级路由参数键名
+            result[f"{route_key}.{current_option}.{param_key}"] = val
 
         return result
 

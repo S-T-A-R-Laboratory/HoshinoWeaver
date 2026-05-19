@@ -401,7 +401,7 @@ configs:
   rej_low: { type: float, default: 3.0 }
   max_iter: { type: int, default: 5 }
   early_converge_ratio: { type: float, default: 0.99 }
-  buffer_mode: { type: str, default: "auto" }
+  buffer_mode: { type: str, default: "disk" }
 
 nodes:
   mean_stacker:

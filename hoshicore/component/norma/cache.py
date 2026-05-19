@@ -4,6 +4,7 @@ StarDetectionCache: pixel-level, camera-independent (one per image).
 GeometryView: depends on (StarDetectionCache, BaseCameraModel).
 """
 from functools import cached_property
+from typing import Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -20,13 +21,16 @@ class StarDetectionCache:
     Callers are responsible for dtype normalisation (e.g. via _to_gray_f64).
     """
 
-    def __init__(self, image_gray: NDArray[np.float64]):
+    def __init__(self,
+                 image_gray: NDArray[np.float64],
+                 mask: Optional[np.ndarray] = None):
         self._image_gray = image_gray
+        self.mask = mask
         self.img_shape = image_gray.shape
 
     @cached_property
     def detected_stars(self) -> DetectedStars:
-        return detect_star_points(self._image_gray)
+        return detect_star_points(self._image_gray, self.mask)
 
     @property
     def positions(self) -> NDArray[np.float64]:
@@ -66,14 +70,16 @@ class GeometryView:
 
     @cached_property
     def features(self) -> NDArray[np.float64]:
-        return extract_point_features(self.unit_vectors, self._detection.volumes)
+        return extract_point_features(self.unit_vectors,
+                                      self._detection.volumes)
 
     def with_camera(self, camera: BaseCameraModel) -> "GeometryView":
         """Create a new GeometryView with a different camera (reuses detection)."""
         return GeometryView(self._detection, camera)
 
     @classmethod
-    def from_flat_projection(cls, detection: StarDetectionCache) -> "GeometryView":
+    def from_flat_projection(cls,
+                             detection: StarDetectionCache) -> "GeometryView":
         """Create a GeometryView using flat projection (2D homography path).
 
         Uses image center as principal point and max(h, w) as focal length.

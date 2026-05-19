@@ -9,6 +9,9 @@ from loguru import logger
 from numpy.typing import NDArray
 from scipy.stats import norm as _norm
 
+from .._custom_op import equalize_noise_correct as custom_equalize_noise_correct
+from .._custom_op import threshold_max_merge as custom_threshold_max_merge
+
 
 def _ransac_ratio(x: NDArray,
                   y: NDArray,
@@ -152,17 +155,15 @@ def equalize_noise(max_img: NDArray,
     mask = (std_img > (mean_std + sigma_reject * std_std)[None, None, ...])
     filled_std_img = fill_local_mean(std_img, mask, kernel_size=21)
 
-    # step4.x: 高光保护：亮度高于指定范围的，方差线性下降，直至255惩罚到0。
-    hp = highlight_preserve
-    fix_strength = (max_value * hp - max_img).clip(max=0) / (max_value *
-                                                             (1 - hp)) + 1
-    fixed_std_img = fix_strength * filled_std_img
-
-    # Step 5: 校正
-    corrected = max_img - (fixed_std_img - sigma_ref) * c_n_eff
-    corrected = np.clip(corrected, a_min=0, a_max=max_value)
-
-    return corrected
+    # step4.x + step5: 逐像素高光保护与最终 clip 交给 custom-op / numpy backend。
+    return custom_equalize_noise_correct(
+        max_img,
+        filled_std_img,
+        sigma_ref,
+        c_n_eff,
+        max_value,
+        highlight_preserve,
+    )
 
 
 def compute_adaptive_n_sigma(n_frames: int,
@@ -206,18 +207,20 @@ def threshold_max_merge(
         weight: 可选渐入渐出权重（标量）。
         morph_kernel: 形态学开运算核，用于清除孤立噪点。None 则跳过。
     """
-    mask = frame > (mean_img + n_sigma * std_img)
+    if morph_kernel is None:
+        custom_threshold_max_merge(frame, mean_img, std_img, result, n_sigma, weight)
+        return
 
-    if morph_kernel is not None:
-        if mask.ndim == 3:
-            for c in range(mask.shape[2]):
-                mask[:, :, c] = cv2.morphologyEx(
-                    mask[:, :, c].view(np.uint8),
-                    cv2.MORPH_OPEN, morph_kernel).view(bool)
-        else:
-            mask = cv2.morphologyEx(
-                mask.view(np.uint8),
+    mask = frame > (mean_img + n_sigma * std_img)
+    if mask.ndim == 3:
+        for c in range(mask.shape[2]):
+            mask[:, :, c] = cv2.morphologyEx(
+                mask[:, :, c].view(np.uint8),
                 cv2.MORPH_OPEN, morph_kernel).view(bool)
+    else:
+        mask = cv2.morphologyEx(
+            mask.view(np.uint8),
+            cv2.MORPH_OPEN, morph_kernel).view(bool)
 
     if weight is not None:
         signal = frame * weight
