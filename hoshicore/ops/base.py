@@ -260,21 +260,6 @@ class BaseOp(object):
             raise CancellationError("Cancelled during CPU execution")
         return result
 
-    async def _run_parallel_cpu(self, fn, *args, **kwargs):
-        """执行可能自行管理并行的 CPU 计算函数。
-
-        当前主要用于 custom-op / C 扩展 / 其他内部并行实现。
-        Windows frozen 环境下，为避免非主线程执行底层并行代码时死锁，
-        会退回主线程同步执行；非 frozen 环境正常卸载到线程池。
-        """
-        if getattr(sys, 'frozen', False) and sys.platform == 'win32':
-            result = fn(*args, **kwargs)
-        else:
-            result = await asyncio.to_thread(fn, *args, **kwargs)
-        if self._cancel_event is not None and self._cancel_event.is_set():
-            raise CancellationError("Cancelled during CPU execution")
-        return result
-
     def __str__(self):
         return self.__class__.__name__
 
