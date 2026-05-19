@@ -30,9 +30,7 @@ function(hnw_link_openmp target_name)
     else()
         find_package(OpenMP REQUIRED COMPONENTS CXX)
         target_link_libraries("${target_name}" PRIVATE OpenMP::OpenMP_CXX)
-        # MinGW on Windows: static link libgomp to eliminate DLL dependency
-        if(WIN32)
-            target_link_options("${target_name}" PRIVATE -static-libgomp)
-        endif()
+        # MinGW on Windows: links libgomp dynamically (libgomp-1.dll).
+        # make_package.py collects that DLL for distribution.
     endif()
 endfunction()

@@ -336,6 +336,11 @@ def _cmake_build_commands(
         cache_vars["CMAKE_PREFIX_PATH"] = env["HNW_LIBOMP_PREFIX"]
 
     for key, value in cache_vars.items():
+        # CMake parses -D values as cmake string literals on Windows; backslashes
+        # are treated as escape sequences there, so \S in a path triggers an error.
+        # Forward slashes are always accepted by CMake on all platforms.
+        if SYSTEM == "Windows":
+            value = value.replace("\\", "/")
         configure_cmd.append(f"-D{key}={value}")
 
     return configure_cmd, build_cmd, preset
