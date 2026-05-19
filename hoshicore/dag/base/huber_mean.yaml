@@ -11,7 +11,7 @@ configs:
   int_weight: { type: bool, default: true }
   mask: { type: image, required: false, default: null }  # 可选空间掩码，传入 MeanStackerOp
   huber_c: { type: float, default: 1.345 }
-  buffer_mode: { type: str, default: "disk" }  # disk/memory/replay
+  buffer_mode: { type: str, default: "disk", global: true }  # disk/memory/replay
 
 # ── 节点 ──
 #

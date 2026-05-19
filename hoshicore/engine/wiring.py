@@ -291,7 +291,15 @@ def instantiate_and_wire(
         # 检查 Op CONFIGS
         for key, spec in op_inst.CONFIGS.items():
             if key not in yaml_cfg_keys:
-                if "default" in spec:
+                if spec.get("global") and key in effective_configs:
+                    unwired_feeders.append(
+                        (f"{node_name}.{key}", effective_configs[key],
+                         op_inst.config[key]))
+                    logger.debug(
+                        f"Global config '{key}' of node '{node_name}' "
+                        f"resolved from effective_configs: "
+                        f"{effective_configs[key]}")
+                elif "default" in spec:
                     unwired_feeders.append(
                         (f"{node_name}.{key}", spec["default"],
                          op_inst.config[key]))
@@ -611,6 +619,11 @@ def _flatten_config_specs(
         else:
             if full_key in user_configs:
                 resolved[full_key] = user_configs[full_key]
+            elif (isinstance(spec, dict) and spec.get("global")
+                  and full_key != name and name in user_configs):
+                resolved[full_key] = user_configs[name]
+                logger.debug(f"Config '{full_key}' resolved via global leaf "
+                             f"fallback '{name}': {user_configs[name]}")
             elif isinstance(spec, dict) and "default" in spec:
                 resolved[full_key] = spec["default"]
                 logger.debug(f"Config '{full_key}' not provided, "
