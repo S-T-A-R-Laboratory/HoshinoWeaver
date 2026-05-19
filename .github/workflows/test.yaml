@@ -25,13 +25,29 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Build C++ custom ops
+        run: python csrc/build_ops.py --compiler gcc
+
+      - name: Run tests (compiled backend)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: pytest tests/ -v --tb=short --cov=hoshicore --cov-report=term-missing -x
+
+      - name: Run tests (numpy fallback)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          HNW_CUSTOM_OPS_FALLBACK: numpy
+        run: pytest tests/ -v --tb=short -x

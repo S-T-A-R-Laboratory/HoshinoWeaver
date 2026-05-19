@@ -142,11 +142,11 @@ def _make_sequence_feeders(
     导致被替换段中的依赖链路饥饿。
 
     例如 mix_startrail 中 inputs.fnames 同时推送到：
-        - data_loader.src（SegmentAdapter 消费，受 worker IPC 背压）
-        - weight_generator.sequence（SegmentAdapter 需要其输出）
+        - data_loader.src（下游 Op 消费，受 worker IPC 背压）
+        - weight_generator.sequence（下游 Op 需要其输出）
         - exif_loader.fnames（独立链路）
     若使用 asyncio.gather 统一推送，当 data_loader.src 满载时，
-    weight_generator 也无法获得输入 → SegmentAdapter 等待 weight → 停滞。
+    weight_generator 也无法获得输入 → 下游 Op 等待 weight → 停滞。
     """
     length = len(data)
     logger.info(f"[Feeder] Global input '{name}': "
