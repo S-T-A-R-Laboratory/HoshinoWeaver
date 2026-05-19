@@ -64,25 +64,23 @@ if _c_spec is not None:
     shared_hiddenimports.append('hoshicore._custom_op._C')
     # OpenMP runtime DLL collection:
     #   MSVC  → vcomp140.dll (implicit, collected via ctypes.util)
-    #   MinGW → libgomp-1.dll (dynamic link; located next to gcc.exe on PATH)
+    #   MinGW → libgomp-1.dll + GCC runtime DLLs copied by build_ops.py into _custom_op/
     try:
         from hoshicore._custom_op import build_info as _build_info
         _bi = _build_info()
-        if _bi.get('openmp'):
-            if _bi.get('compiler') == 'msvc':
-                import ctypes.util as _ctutil
-                _vcomp = _ctutil.find_library('vcomp140')
-                if _vcomp:
-                    shared_binaries.append((_vcomp, '.'))
-            elif _bi.get('compiler') == 'gcc' and _sys.platform == 'win32':
-                import shutil as _shutil, os.path as _osp
-                _gcc = _shutil.which('gcc')
-                if _gcc:
-                    _gomp = _osp.join(_osp.dirname(_gcc), 'libgomp-1.dll')
-                    if _osp.exists(_gomp):
-                        shared_binaries.append((_gomp, '.'))
+        if _bi.get('openmp') and _bi.get('compiler') == 'msvc':
+            import ctypes.util as _ctutil
+            _vcomp = _ctutil.find_library('vcomp140')
+            if _vcomp:
+                shared_binaries.append((_vcomp, '.'))
     except Exception:
         pass
+
+    # MinGW builds: build_ops.py copies runtime DLLs next to _C.pyd; collect them all.
+    import glob as _glob, os.path as _osp
+    _cop_dir = _osp.dirname(_osp.abspath(__import__('hoshicore._custom_op', fromlist=['_custom_op']).__file__))
+    for _dll in _glob.glob(_osp.join(_cop_dir, '*.dll')):
+        shared_binaries.append((_dll, '.'))
 
 # pyexiv2 loads exiv2api via sys.path.append + bare import;
 # PyInstaller can't trace that, so add the platform extension dir explicitly.

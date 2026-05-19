@@ -203,6 +203,55 @@ def _shared_module_patterns() -> tuple[str, ...]:
     return ("_C*.so", "_C*.pyd", "_C*.dylib")
 
 
+def _collect_mingw_deps(start: Path, bin_dir: Path, objdump: Path) -> list[str]:
+    """Recursively collect all MinGW DLL dependencies of a PE binary."""
+    visited: set[str] = set()
+    queue: list[Path] = [start]
+    while queue:
+        target = queue.pop()
+        result = subprocess.run(
+            [str(objdump), "-p", str(target)],
+            capture_output=True,
+            text=True,
+        )
+        for line in result.stdout.splitlines():
+            if "DLL Name:" not in line:
+                continue
+            dll_name = line.split("DLL Name:")[-1].strip()
+            if dll_name in visited:
+                continue
+            src = bin_dir / dll_name
+            if src.exists():
+                visited.add(dll_name)
+                queue.append(src)
+    return sorted(visited)
+
+
+def _copy_mingw_runtime_dlls(cc: str) -> None:
+    """Copy MinGW runtime DLLs next to the .pyd so it imports without PATH changes.
+
+    Only runs on Windows with a GCC compiler. Recursively resolves the full
+    dependency tree via objdump so transitive deps (e.g. libdl.dll pulled in
+    by libgomp-1.dll) are not missed.
+    """
+    if SYSTEM != "Windows":
+        return
+    if not cc or "gcc" not in Path(cc).name.lower():
+        return
+
+    bin_dir = Path(cc).parent
+    objdump = bin_dir / "objdump.exe"
+    pyd = next(PACKAGE_DIR.glob("_C*.pyd"), None)
+    if not pyd or not objdump.exists():
+        return
+
+    deps = _collect_mingw_deps(pyd, bin_dir, objdump)
+    for dll_name in deps:
+        shutil.copy2(bin_dir / dll_name, PACKAGE_DIR / dll_name)
+    if deps:
+        print(f"mingw_dlls_copied={','.join(deps)}")
+
+
 def _clean_shared_module_outputs() -> None:
     for pattern in _shared_module_patterns():
         for path in PACKAGE_DIR.glob(pattern):
@@ -524,6 +573,7 @@ def main() -> int:
             backend="cmake",
             stage="build",
         )
+        _copy_mingw_runtime_dlls(cc)
     except subprocess.CalledProcessError as exc:
         if not args.verbose_build:
             captured = getattr(exc, "stdout", None)
