@@ -8,6 +8,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from hoshicore._custom_op import camera_model_remap as custom_camera_model_remap
+
 from .geometry import CoordSystem, build_rotation_matrix
 from .projection import (make_intrinsic_matrix, project_vectors,
                          unproject_pixels)
@@ -121,6 +123,44 @@ class CameraModel(BaseCameraModel):
         return self.with_intrinsics(
             self.intrinsics.with_focal_length(focal_length_mm))
 
+    def _zero_distortion_rotation_dst_to_src(
+            self, camera: "CameraModel") -> NDArray[np.float32] | None:
+        if not self.distortion.is_zero or not camera.distortion.is_zero:
+            return None
+
+        src_rotation = np.eye(3, dtype=np.float32) if camera.R is None else np.asarray(
+            camera.R, dtype=np.float32)
+        dst_rotation = np.eye(3, dtype=np.float32) if self.R is None else np.asarray(
+            self.R, dtype=np.float32)
+        return src_rotation @ dst_rotation.T
+
+    def _project_image_from_camera_zero_distortion_fused(
+            self,
+            camera: "CameraModel",
+            img: NDArray[np.uint8],
+            output_size: tuple[int, int],
+            roi=None,
+            interpolation=cv2.INTER_LINEAR) -> NDArray[np.uint8] | None:
+        rotation_dst_to_src = self._zero_distortion_rotation_dst_to_src(camera)
+        if rotation_dst_to_src is None or roi is not None or interpolation != cv2.INTER_LINEAR:
+            return None
+
+        target_width, target_height = output_size
+        return custom_camera_model_remap(
+            image=img,
+            out_height=target_height,
+            out_width=target_width,
+            fx_src=float(camera.K[0, 0]),
+            fy_src=float(camera.K[1, 1]),
+            cx_src=float(camera.K[0, 2]),
+            cy_src=float(camera.K[1, 2]),
+            fx_dst=float(self.K[0, 0]),
+            fy_dst=float(self.K[1, 1]),
+            cx_dst=float(self.K[0, 2]),
+            cy_dst=float(self.K[1, 2]),
+            rotation_dst_to_src=rotation_dst_to_src,
+        )
+
     @classmethod
     def from_view(cls, view: "View", mode: str = "auto") -> "CameraModel":
         if mode == "auto":
@@ -160,6 +200,16 @@ class CameraModel(BaseCameraModel):
                                   interpolation=cv2.INTER_LINEAR):
         """Projects an image from `camera` into this camera's frame via remap."""
         target_width, target_height = output_size
+        fused = self._project_image_from_camera_zero_distortion_fused(
+            camera,
+            img,
+            output_size,
+            roi=roi,
+            interpolation=interpolation,
+        )
+        if fused is not None:
+            return fused
+
         u_dst = np.arange(target_width, dtype=np.float32)
         v_dst = np.arange(target_height, dtype=np.float32)
         u_grid, v_grid = np.meshgrid(u_dst, v_dst)
