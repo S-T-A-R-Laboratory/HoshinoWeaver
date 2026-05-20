@@ -26,7 +26,8 @@ function(hnw_link_openmp target_name)
         # MSVC: /openmp is a compile-only flag; vcomp140.dll is implicitly linked.
         # Cannot statically link MSVC OpenMP runtime in a Python extension (.pyd).
         # PyInstaller will collect vcomp140.dll automatically.
-        target_compile_options("${target_name}" PRIVATE /openmp)
+        # Use generator expression to avoid passing /openmp to nvcc.
+        target_compile_options("${target_name}" PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/openmp>)
     else()
         find_package(OpenMP REQUIRED COMPONENTS CXX)
         target_link_libraries("${target_name}" PRIVATE OpenMP::OpenMP_CXX)
