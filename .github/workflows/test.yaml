@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Install build tools
         run: |
@@ -44,13 +44,13 @@ jobs:
       - name: Run tests (compiled backend)
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: pytest tests/ -v --tb=short --cov=hoshicore --cov-report=term-missing -x
+        run: python -m pytest tests/ -v --tb=short --cov=hoshicore --cov-report=term-missing -x
 
       - name: Run tests (numpy fallback)
         env:
           PYTHONPATH: ${{ github.workspace }}
           HNW_CUSTOM_OPS_FALLBACK: numpy
-        run: pytest tests/ -v --tb=short -x
+        run: python -m pytest tests/ -v --tb=short -x
 
   test-windows:
     runs-on: windows-latest
@@ -79,7 +79,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Build C++ custom ops
         run: python csrc/build_ops.py --compiler msvc
@@ -87,10 +87,10 @@ jobs:
       - name: Run tests (compiled backend)
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: pytest tests/ -v --tb=short -x
+        run: python -m pytest tests/ -v --tb=short -x
 
       - name: Run tests (numpy fallback)
         env:
           PYTHONPATH: ${{ github.workspace }}
           HNW_CUSTOM_OPS_FALLBACK: numpy
-        run: pytest tests/ -v --tb=short -x
+        run: python -m pytest tests/ -v --tb=short -x
