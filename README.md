@@ -100,14 +100,14 @@ python csrc/build_ops.py
 
 ### 致谢
 
-* 星点对齐算法改进自 [LoveDaisy/star_alignment]()。
+* 星点对齐算法改进自 [LoveDaisy/star_alignment](https://github.com/LoveDaisy/star_alignment/)。
 * 感谢所有为本项目提供样片与建议的摄影师。
 
 ### 为什么叫 HoshinoWeaver？
 
 **Hoshino** 代表我们的目标（与致敬）；**Weaver** 代表我们的方式。
 
-> [!Info]
+> [!INFO]
 > “数字时代的摄影不再仅仅是捕捉，更是对数据的重新编织。我们希望通过这个工具，让每一位摄影师都能精密地控制每一根“数据经纬”，最终织出一幅属于自己的星河长卷。”
 
 ### Project Stargazers
