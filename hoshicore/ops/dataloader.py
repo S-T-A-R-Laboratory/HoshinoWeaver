@@ -1,28 +1,19 @@
 import asyncio
-from typing import Any
+from typing import Any, Awaitable, Mapping
 
 from loguru import logger
 
 from ..component.dataloader import ArrayLoader, BaseLoader, ImgFileListLoader
 from ..engine.registry import register_op
-from .base import BaseOp
+from .base import ParallelBaseOp
 
 
 @register_op()
-class ImgDataLoaderOp(BaseOp):
-    """
-    通用异步数据加载器，用于异步预取数据，提高数据加载效率。
+class ImgDataLoaderOp(ParallelBaseOp):
+    """通用数据加载器：并发解码输入文件，流式有序输出。
 
-    Args:
-        loader (BaseLoader): 实际数据加载源。
-        max_poolsize (int): 缓冲区最大存储样本数。
-
-    用法：
-        dataloader = AsyncDataLoader(loader, max_poolsize=4)
-        dataloader.start()
-        for data in dataloader:
-            ...
-        dataloader.stop()
+    利用 ParallelBaseOp 的流式并发模型，多帧 IO+decode 同时进行，
+    打破单帧串行的吞吐瓶颈。
     """
     INPUTS: dict[str, Any] = {
         "src": {
@@ -46,32 +37,14 @@ class ImgDataLoaderOp(BaseOp):
             "description": "数据序列"
         }
     }
-    MAX_SIZE: int = 1
+    CONCURRENCY = 4
 
-    def __init__(self, name: str):
-        super().__init__(name)
-
-    async def _async_execute(self, configs):
-        loader_class = self.build_loader_class(configs['loader_type'])
-        loader = loader_class(src=self.inputs['src'],
-                              length=self.length,
-                              config=configs)
-        self.tracker.create_bar(self.name,
-                                self.length or 0,
-                                desc=f"{self.name} [Load]")
-        try:
-            index = 0
-            async for item in loader:
-                await self._broadcast_outputs({"result": item})
-                self.tracker.update(self.name)
-                index += 1
-        except Exception as e:
-            logger.error(
-                f"Error loading item {index} in {self.__class__.__name__}: {e.__repr__()}"
-            )
-            raise e
-        finally:
-            self.tracker.close_bar(self.name)
+    async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
+                                    configs: dict[str, Any]) -> dict[str, Any]:
+        src_val = await data['src']
+        loader_cls = self.build_loader_class(configs['loader_type'])
+        result = await asyncio.to_thread(loader_cls.load, None, src_val)
+        return {"result": result}
 
     def build_loader_class(self, loader_type: str) -> BaseLoader:
         mapping = {
@@ -81,15 +54,3 @@ class ImgDataLoaderOp(BaseOp):
         if loader_type not in mapping:
             raise ValueError(f"Unsupported loader type: {loader_type}")
         return mapping[loader_type]
-
-    async def execute_single_frame(self, src_val: Any,
-                                   configs: dict[str, Any]) -> dict[str, Any]:
-        """Worker 用单帧加载接口：根据 loader_type 加载单个数据项。
-
-        此方法封装了 loader 分派逻辑，供 segment_worker 调用，
-        避免 worker 硬编码 loader 内部实现。
-        """
-        loader_type = configs.get("loader_type", "img_file_list")
-        loader_cls = self.build_loader_class(loader_type)
-        result = await asyncio.to_thread(loader_cls.load, None, src_val)
-        return {"result": result}

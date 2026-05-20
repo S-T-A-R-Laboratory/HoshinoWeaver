@@ -13,10 +13,13 @@ import PIL.Image
 import rawpy
 import tifffile
 from loguru import logger
+from turbojpeg import TurboJPEG, TJPF_BGR, TJPF_GRAY
 
 from .exif import ExifData, encode_exif_data
 from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, RAW_SUFFIX,
                     SAME_SUFFIX_MAPPING, is_support_format, time_cost_warpper)
+
+_tj = TurboJPEG()
 
 
 def load_img(file_path: str) -> Optional[np.ndarray]:
@@ -40,15 +43,28 @@ def load_img(file_path: str) -> Optional[np.ndarray]:
             logger.warning("Got an Image with not recommended suffix. \
                 We do not guarantee the stability of EXIF extraction and the output image quality."
                            )
-        if (suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX):
-            # TODO: not sure if uint32/float is available.
+        if suffix in ("jpg", "jpeg"):
+            with open(file_path, 'rb') as f:
+                buf = f.read()
+            img = _tj.decode(buf, pixel_format=TJPF_BGR)
+            if img is None:
+                # TODO: 暂未适配灰度
+                img = _tj.decode(buf, pixel_format=TJPF_GRAY)
+        elif suffix in ("tif", "tiff"):
+            img = tifffile.imread(file_path)
+            if img.ndim == 3:
+                if img.shape[2] == 3:
+                    img = img[:, :, ::-1].copy()
+                elif img.shape[2] == 4:
+                    # 暂时丢弃A维度
+                    img = img[:, :, [2, 1, 0]].copy()
+        elif (suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX):
             img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint16),
                                cv2.IMREAD_UNCHANGED)
             if img is None:
-                # some images can not be decoded using option dtype=np.uint16.
-                # this is a temp fix.
-                #logger.info(
-                #    "Uint16 decoding failed. Fallback to uint8 loading...")
+                # TODO: 需要确认是否还有其他数据可能fallback到uint8。
+                logger.warning(
+                    "Uint16 decoding failed. Fallback to uint8 loading...")
                 img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
                                    cv2.IMREAD_UNCHANGED)
         else:
@@ -90,27 +106,31 @@ def save_img(filename: str,
     logger.info(f"Saving image to {filename} ...")
     suffix = filename.upper().split(".")[-1]
 
-    # 将图像通过OpenCV进行编码
-    if suffix == "PNG":
-        ext = ".png"
-        params = [int(cv2.IMWRITE_PNG_COMPRESSION), png_compressing]
-    elif suffix in ["JPG", "JPEG"]:
-        # 导出 jpg 时，位深度强制校验为8
+    
+    if suffix in ["JPG", "JPEG"]:
+        # JPEG 走 turbojpeg
         assert img.dtype == np.uint8, "Invalid: JPEG only supports 8-bit image!"
-        ext = ".jpg"
-        params = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
-    elif suffix in ["TIF", "TIFF"]:
-        # 使用 tiff 时，默认无损不压缩
-        ext = ".tif"
-        params = [int(cv2.IMWRITE_TIFF_COMPRESSION), 1]
+        image_bytes = _tj.encode(img, quality=jpg_quality,
+                                 pixel_format=TJPF_BGR)
+        if exif is not None:
+            image_bytes = encode_exif_data(
+                np.frombuffer(image_bytes, dtype=np.uint8), exif)
     else:
-        raise NameError(f"Unsupported suffix \"{suffix}\".")
-    status, buf = cv2.imencode(ext, img, params)
-    assert status, "imencode failed."
-    if exif is not None:
-        image_bytes = encode_exif_data(buf, exif)
-    else:
-        image_bytes = buf.tobytes()
+        # 将图像通过OpenCV进行编码
+        if suffix == "PNG":
+            ext = ".png"
+            params = [int(cv2.IMWRITE_PNG_COMPRESSION), png_compressing]
+        elif suffix in ["TIF", "TIFF"]:
+            ext = ".tif"
+            params = [int(cv2.IMWRITE_TIFF_COMPRESSION), 1]
+        else:
+            raise NameError(f"Unsupported suffix \"{suffix}\".")
+        status, buf = cv2.imencode(ext, img, params)
+        assert status, "imencode failed."    
+        if exif is not None:
+            image_bytes = encode_exif_data(buf, exif)
+        else:
+            image_bytes = buf.tobytes()
 
     with open(filename, mode='wb') as f:
         f.write(image_bytes)

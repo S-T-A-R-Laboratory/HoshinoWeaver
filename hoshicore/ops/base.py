@@ -310,59 +310,80 @@ class ParallelBaseOp(BaseOp):
             self.tracker.close_bar(self.name)
 
     async def _execute_concurrent(self, configs: dict[str, Any]) -> None:
-        """并发执行：滑动窗口保证输出有序。
+        """流式并发执行。
 
-        支持定长和 sentinel 驱动两种模式：
-        - 定长模式：按 window_size 分批，每批固定数量任务。
-        - sentinel 模式：每批启动 window_size 个任务，遇到 StreamExhausted
-          的任务标记为 None，广播时跳过。批内有任何 sentinel 命中即结束外层循环。
+        输出缓冲上限 = CONCURRENCY 帧（由 slots semaphore 保证）。
 
-        注意：窗口内多任务并发调用 queue.get()，数据帧分配顺序依赖
-        CPython asyncio.Queue 的 FIFO 唤醒实现（基于 collections.deque）。
-        语言规范未明确保证此行为，但所有主流 CPython 版本均如此。
-        如需严格保证顺序，需要串行预取数据后并发处理，但这会改变
-        _async_execute_single 的接口签名（从 Awaitable 变为已解析值）。
+        数据帧分配顺序依赖 CPython asyncio.Queue 的 FIFO 唤醒实现
+        （基于 collections.deque）。语言规范未明确保证此行为，
+        但所有主流 CPython 版本均如此。
         """
         if self.length is not None:
             self.tracker.create_bar(self.name, self.length)
-        window_size = self.WINDOW_SIZE or (self.CONCURRENCY * 2)
-        semaphore = asyncio.Semaphore(self.CONCURRENCY)
-        _STOP = object()  # 内部标记：该槽位遇到 sentinel
 
-        for window_start in self._input_range():
-            if window_start % window_size != 0:
-                continue  # _input_range 逐步递增，只在窗口边界启动批次
-            if self.length is not None:
-                window_len = min(window_size, self.length - window_start)
-            else:
-                window_len = window_size
-            results: list = [_STOP] * window_len
+        _STOP = object()
+        pending: dict[int, Any] = {}
+        emit_event = asyncio.Event()
+        sentinel_event = asyncio.Event()
 
-            async def process_item(local_idx: int):
-                async with semaphore:
-                    data = self._async_convert_inputs()
-                    try:
-                        result = await self._async_execute_single(
-                            data, configs)
-                    except StreamExhausted:
-                        for awaitable in data.values():
-                            if hasattr(awaitable, 'close'):
-                                awaitable.close()
-                        return  # results[local_idx] 保持 _STOP
-                    results[local_idx] = result
+        # slots: producer acquire, emitter release → pending 上限 = CONCURRENCY
+        slots = asyncio.Semaphore(self.CONCURRENCY)
+
+        async def process_item(idx: int):
+            data = self._async_convert_inputs()
+            try:
+                result = await self._async_execute_single(data, configs)
+            except (StreamExhausted, CancellationError):
+                for awaitable in data.values():
+                    if hasattr(awaitable, 'close'):
+                        awaitable.close()
+                result = _STOP
+                sentinel_event.set()
+            pending[idx] = result
+            emit_event.set()
+
+        async def emit_loop():
+            next_emit = 0
+            while True:
+                while next_emit in pending:
+                    result = pending.pop(next_emit)
+                    if result is _STOP:
+                        slots.release()
+                        return
+                    await self._broadcast_outputs(result)
                     if self.length is not None:
                         self.tracker.update(self.name)
+                    next_emit += 1
+                    slots.release()
+                    if self.length is not None and next_emit >= self.length:
+                        return
+                emit_event.clear()
+                await emit_event.wait()
 
-            await asyncio.gather(*[process_item(i) for i in range(window_len)])
+        emit_task = asyncio.create_task(emit_loop())
+        tasks: list[asyncio.Task] = []
 
-            has_stop = False
-            for result in results:
-                if result is _STOP:
-                    has_stop = True
-                    continue
-                await self._broadcast_outputs(result)
-            if has_stop:
-                break  # 本窗口内有 sentinel → 序列结束
+        for idx in self._input_range():
+            if sentinel_event.is_set() or emit_task.done():
+                break
+            await slots.acquire()
+            if sentinel_event.is_set() or emit_task.done():
+                slots.release()
+                break
+            task = asyncio.create_task(process_item(idx))
+            tasks.append(task)
+
+        # 等待 in-flight tasks 完成（sentinel 回填保证不会永久阻塞）
+        for t in tasks:
+            if not t.done():
+                try:
+                    await asyncio.wait_for(t, timeout=5.0)
+                except (asyncio.TimeoutError, Exception):
+                    t.cancel()
+
+        emit_event.set()
+        if not emit_task.done():
+            await emit_task
 
         if self.length is not None:
             self.tracker.close_bar(self.name)
