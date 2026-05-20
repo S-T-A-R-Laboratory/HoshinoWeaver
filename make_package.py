@@ -82,6 +82,19 @@ if _c_spec is not None:
     for _dll in _glob.glob(_osp.join(_cop_dir, '*.dll')):
         shared_binaries.append((_dll, '.'))
 
+# libturbojpeg: loaded via ctypes at runtime, not traced by PyInstaller
+try:
+    import ctypes.util as _ctutil_tj, glob as _glob_tj, os.path as _osp_tj
+    _tj = _ctutil_tj.find_library('turbojpeg')
+    if _tj:
+        shared_binaries.append((_tj, '.'))
+    else:
+        import turbojpeg as _tjpkg
+        for _f in _glob_tj.glob(_osp_tj.join(_osp_tj.dirname(_tjpkg.__file__), '*turbojpeg*')):
+            shared_binaries.append((_f, '.'))
+except Exception:
+    pass
+
 # pyexiv2 loads exiv2api via sys.path.append + bare import;
 # PyInstaller can't trace that, so add the platform extension dir explicitly.
 import os as _os, sys as _sys, pyexiv2 as _pyexiv2
