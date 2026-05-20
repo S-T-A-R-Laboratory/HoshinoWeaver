@@ -701,6 +701,10 @@ class TestCustomOpsFallback(unittest.TestCase):
             def __getitem__(self, idx):
                 return self._items[idx]
 
+            async def iter_prefetch(self, start=0, stop=None):
+                for item in self._items[start:stop]:
+                    yield item
+
             def cleanup(self):
                 self.cleaned = True
 

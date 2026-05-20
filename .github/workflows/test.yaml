@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  test-linux:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Install build tools
         run: |
@@ -44,10 +44,53 @@ jobs:
       - name: Run tests (compiled backend)
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: pytest tests/ -v --tb=short --cov=hoshicore --cov-report=term-missing -x
+        run: python -m pytest tests/ -v --tb=short --cov=hoshicore --cov-report=term-missing -x
 
       - name: Run tests (numpy fallback)
         env:
           PYTHONPATH: ${{ github.workspace }}
           HNW_CUSTOM_OPS_FALLBACK: numpy
-        run: pytest tests/ -v --tb=short -x
+        run: python -m pytest tests/ -v --tb=short -x
+
+  test-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Build C++ custom ops
+        run: python csrc/build_ops.py --compiler msvc
+
+      - name: Run tests (compiled backend)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest tests/ -v --tb=short -x
+
+      - name: Run tests (numpy fallback)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          HNW_CUSTOM_OPS_FALLBACK: numpy
+        run: python -m pytest tests/ -v --tb=short -x

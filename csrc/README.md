@@ -132,39 +132,38 @@ python csrc/build_ops.py --dry-run
 
 ## 打包约定
 
-最终发布为 PyInstaller single-folder 模式。OpenMP 和 CUDA runtime 均**静态链接**到 `_C`
-扩展模块内，打包时只需收集 `_C.so`（Linux）/ `_C.pyd`（Windows）本身，
-无需额外携带 `libgomp.so`、`vcomp140.dll` 或 `cudart64_*.dll`。
+最终发布为 PyInstaller single-folder 模式。CUDA runtime 静态链接到 `_C`；
+OpenMP 在 Linux/Windows 为动态链接（PyInstaller 自动收集），macOS 为静态链接。
 
-### 静态链接策略
+### 链接策略
 
-| 依赖 | 编译方式 | 说明 |
+| 依赖 | 链接方式 | 说明 |
 |------|----------|------|
-| OpenMP (Linux + GCC) | `-static-libgomp` 或 link `libgomp.a` | 线程池实现烤进 `_C.so` |
-| OpenMP (Windows + MSVC) | `/openmp` + 静态 CRT（`/MT`）| `vcomp140.dll` 依赖消除；若用 LLVM OpenMP 则嵌入 libomp |
-| OpenMP (macOS) | 静态链接 Homebrew `libomp.a` | 需先 `brew install libomp`，编译时自动检测并静态链接 |
-| CUDA runtime | `CUDA_USE_STATIC_CUDA_RUNTIME=ON`，link `cudart_static` | NVIDIA 官方支持，消除 `libcudart.so` / `cudart64_*.dll` 依赖 |
+| OpenMP (Linux + GCC) | 动态（`libgomp.so`） | 系统自带，PyInstaller 自动收集到产物目录 |
+| OpenMP (Windows + MSVC) | 动态（`vcomp140.dll`） | VC++ Redistributable 组件，PyInstaller 自动收集 |
+| OpenMP (macOS) | 静态（Homebrew `libomp.a`） | 需先 `brew install libomp`，编译时自动检测并静态链接 |
+| CUDA runtime | 静态（`cudart_static`） | 消除 `libcudart.so` / `cudart64_*.dll` 依赖 |
 
 ### 无法静态链接的部分
 
 - **NVIDIA driver**（`libcuda.so` / `nvcuda.dll`）：属于内核态接口，必须由用户机器提供
 - 用户只需安装与本机 GPU 匹配的 NVIDIA 驱动，不需要 CUDA Toolkit
 
-### 验证依赖是否干净
+### 验证依赖
 
 ```bash
-# Linux — 确认不再依赖 libgomp / libcudart
+# Linux — 确认 cudart 已静态链接，libgomp 为动态（PyInstaller 会收集）
 ldd hoshicore/_custom_op/_C*.so | grep -E “cudart|gomp”
-# 预期：无输出
+# 预期：只看到 libgomp.so，不应出现 libcudart.so
 
 # Windows (Developer Command Prompt)
 dumpbin /dependents hoshicore/_custom_op/_C*.pyd
-# 预期：不出现 vcomp140.dll / cudart64_*.dll
+# 预期：出现 VCOMP140.DLL（正常），不应出现 cudart64_*.dll
 ```
 
 ### PyInstaller 收集
 
-静态链接后，`_C` 无额外运行时库依赖。spec file 只需确保 `_C` 模块本身被收集：
+OpenMP 动态库由 PyInstaller 自动收集。spec file 确保 `_C` 模块被包含即可：
 
 ```python
 # PyInstaller spec — hiddenimports 确保 _C 被打包
