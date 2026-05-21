@@ -42,7 +42,7 @@ from ..component.noise_equalization import (compute_adaptive_n_sigma,
                                             threshold_max_merge)
 from ..component.queue import StreamExhausted
 from ..engine.registry import register_op
-from .base import BaseOp
+from .base import BaseOp, ChunkIteratorBaseOp
 
 
 @register_op()
@@ -182,8 +182,11 @@ class DiskBufferWriterOp(BaseOp):
 
 
 @register_op()
-class SigmaClipIteratorOp(BaseOp):
+class SigmaClipIteratorOp(ChunkIteratorBaseOp):
     """迭代式 Sigma Clipping：基于 mean FGP 和磁盘缓冲帧进行多 pass 迭代。
+
+    使用 chunk-level multi-pass 模式：将 pass 循环嵌套进 chunk 循环内层，
+    使每个 chunk 的所有 pass 复用 OS page cache，IO 从 n_passes × data 降为 ~1 × data。
 
     接收：
         - fgp_total: FastGaussianParam（来自 MeanStackerOp.statistics）
@@ -196,8 +199,8 @@ class SigmaClipIteratorOp(BaseOp):
     """
 
     EXECUTOR = "cpu"
-    BUFFER_ITERATOR = True        # 段检测标记：消费 buffer 的迭代式 Reduce
-    ITERATOR_TYPE = "sigma_clip"  # 迭代类型标识（多阶段协议用）
+    ITERATOR_TYPE = "sigma_clip"
+    CHUNK_ROWS = 256
     CONFIGS: dict[str, dict[str, Any]] = {
         "fgp_total": {
             "type": "image",
@@ -238,102 +241,134 @@ class SigmaClipIteratorOp(BaseOp):
         },
     }
 
-    async def _async_execute(self, configs: dict[str, Any]) -> None:
+    def _init_chunk_state(self, configs, row_start, row_end, w):
         fgp_total: FastGaussianParam = configs['fgp_total']
-        frame_buffer: DiskFrameBuffer = configs['buffer_handle']
         rej_high: float = configs['rej_high']
         rej_low: float = configs['rej_low']
-        max_iter: int = configs['max_iter']
-        early_converge_ratio: float = configs['early_converge_ratio']
 
-        # 静态 mask：与 MeanStackerOp 保持一致，确保重放时排除相同区域
+        fgp_chunk = FastGaussianParam(
+            sum_mu=fgp_total.sum_mu[row_start:row_end].copy(),
+            square_sum=fgp_total.square_sum[row_start:row_end].copy(),
+            n=fgp_total.n[row_start:row_end].copy(),
+            ddof=fgp_total.ddof,
+            source_dtype=fgp_total.source_dtype,
+            inplace_calc=False,
+        )
+
+        # 静态 mask 切片
         raw_mask = configs.get('mask')
-        static_mask = None
+        static_mask_chunk = None
         if raw_mask is not None:
-            static_mask = raw_mask
-            if static_mask.ndim == 3:
-                static_mask = static_mask[..., 0]
-            static_mask = static_mask > 0.5
+            mask = raw_mask
+            if mask.ndim == 3:
+                mask = mask[..., 0]
+            static_mask_chunk = (mask > 0.5)[row_start:row_end]
 
-        try:
-            fgp_total.inplace_calc = False
-            ref_fgp = fgp_total
-            last_n = ref_fgp.n.copy()
-            accepted = None
+        clip_merger = SigmaClippingMerger(
+            ref_img=fgp_chunk,
+            rej_high=rej_high,
+            rej_low=rej_low,
+        )
 
-            for iteration in range(max_iter):
-                clip_merger = SigmaClippingMerger(
-                    ref_img=ref_fgp,
-                    rej_high=rej_high,
-                    rej_low=rej_low,
-                )
-                self.tracker.create_bar(
-                    self.name,
-                    len(frame_buffer),
-                    desc=f"{self.name} [Clip {iteration + 1}]")
+        return {
+            'fgp_chunk': fgp_chunk,
+            'clip_merger': clip_merger,
+            'last_n': fgp_chunk.n.copy(),
+            'static_mask': static_mask_chunk,
+            'accepted': None,
+        }
 
-                async for raw, weight in frame_buffer.iter_prefetch():
-                    # 合成 spatial_mask：静态 mask + 当前帧 empty_mask
-                    spatial_mask = None
-                    if static_mask is not None:
-                        if raw.ndim == 3 and raw.shape[2] >= 3:
-                            empty_mask = np.all(raw[..., :3] == 0, axis=-1)
-                            spatial_mask = static_mask & (~empty_mask)
-                        else:
-                            spatial_mask = static_mask
-                    elif raw.ndim == 3 and raw.shape[2] >= 3:
-                        empty_mask = np.all(raw[..., :3] == 0, axis=-1)
-                        if empty_mask.any():
-                            spatial_mask = ~empty_mask
-                    await self._run_cpu(clip_merger.merge, raw, weight,
-                                                 spatial_mask=spatial_mask)
-                    self.tracker.update(self.name)
+    def _max_passes(self, configs):
+        return configs['max_iter']
 
-                self.tracker.close_bar(self.name)
-
-                # accepted = fgp_total - rejected
-                accepted = fgp_total - clip_merger.result
-                accepted.apply_zero_var(fgp_total)
-
-                # 收敛检查
-                cur_n = accepted.n
-                converge_ratio = (np.sum(cur_n == last_n) /
-                                  np.prod(cur_n.shape))
-                logger.info(f"{self.name} converge ratio: "
-                                f"{converge_ratio * 100:.2f}%")
-                if converge_ratio >= early_converge_ratio:
-                    logger.info(f"{self.name} converged at iteration "
-                                f"{iteration + 1}.")
-                    break
-                last_n = cur_n.copy()
-                ref_fgp = accepted
-                logger.info(
-                    f"{self.name} iteration {iteration + 1}/{max_iter} done.")
+    def _merge_chunk(self, state, chunk_data, chunk_weight, frame_idx):
+        static_mask = state['static_mask']
+        spatial_mask = None
+        if static_mask is not None:
+            if chunk_data.ndim == 3 and chunk_data.shape[2] >= 3:
+                empty_mask = np.all(chunk_data[..., :3] == 0, axis=-1)
+                spatial_mask = static_mask & (~empty_mask)
             else:
-                logger.info(
-                    f"{self.name} reached max iterations ({max_iter}).")
+                spatial_mask = static_mask
+        elif chunk_data.ndim == 3 and chunk_data.shape[2] >= 3:
+            empty_mask = np.all(chunk_data[..., :3] == 0, axis=-1)
+            if empty_mask.any():
+                spatial_mask = ~empty_mask
 
-            # 输出
-            result = FloatImage(accepted.mu, dtype=accepted.source_dtype)
-            accepted.inplace_calc = False  # 输出前关闭 inplace_calc，避免下游误用导致数据被修改
-            await self._broadcast_outputs({
-                "result": result,
-                "statistics": accepted,
-            })
+        state['clip_merger'].merge(chunk_data, chunk_weight,
+                                   spatial_mask=spatial_mask)
 
-            logger.info(f"{self.name} sigma clipping complete.")
+    def _check_convergence(self, state, pass_idx):
+        fgp_chunk = state['fgp_chunk']
+        clip_merger = state['clip_merger']
 
-        except Exception as e:
-            logger.error(f"{self.name} failed: {e}")
-            raise
-        finally:
-            # 无条件清理 buffer：无论成功、失败还是中断
-            frame_buffer.cleanup()
+        accepted = fgp_chunk - clip_merger.result
+        accepted.apply_zero_var(fgp_chunk)
+        state['accepted'] = accepted
+
+        cur_n = accepted.n
+        ratio = np.sum(cur_n == state['last_n']) / cur_n.size
+        state['last_n'] = cur_n.copy()
+
+        converged = ratio >= self._configs['early_converge_ratio']
+        if converged:
+            logger.debug(
+                f"{self.name} chunk converged at pass {pass_idx + 1} "
+                f"(ratio={ratio * 100:.1f}%)")
+        return converged
+
+    def _prepare_next_pass(self, state, pass_idx):
+        accepted = state['accepted']
+        state['clip_merger'] = SigmaClippingMerger(
+            ref_img=accepted,
+            rej_high=self._configs['rej_high'],
+            rej_low=self._configs['rej_low'],
+        )
+
+    def _finalize_chunk(self, state):
+        if state['accepted'] is None:
+            accepted = state['fgp_chunk'] - state['clip_merger'].result
+            accepted.apply_zero_var(state['fgp_chunk'])
+            state['accepted'] = accepted
+        return state['accepted'].mu
+
+    def _wrap_output(self, result, configs):
+        fgp_total: FastGaussianParam = configs['fgp_total']
+
+        # 拼接 chunk-level accepted FGP 为完整 statistics
+        chunk_states = self._chunk_states
+        sum_mu = np.concatenate(
+            [s['accepted'].sum_mu for s in chunk_states], axis=0)
+        square_sum = np.concatenate(
+            [s['accepted'].square_sum for s in chunk_states], axis=0)
+        n = np.concatenate(
+            [s['accepted'].n for s in chunk_states], axis=0)
+
+        accepted_full = FastGaussianParam(
+            sum_mu=sum_mu,
+            square_sum=square_sum,
+            n=n,
+            ddof=fgp_total.ddof,
+            source_dtype=fgp_total.source_dtype,
+            inplace_calc=False,
+        )
+
+        result_img = FloatImage(result, dtype=fgp_total.source_dtype)
+        logger.info(f"{self.name} sigma clipping complete.")
+        return {"result": result_img, "statistics": accepted_full}
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        # 缓存 configs 供 _check_convergence / _prepare_next_pass 使用
+        self._configs = configs
+        configs['fgp_total'].inplace_calc = False
+        await super()._async_execute(configs)
 
 
 @register_op()
-class HuberMeanIteratorOp(BaseOp):
+class HuberMeanIteratorOp(ChunkIteratorBaseOp):
     """Huber 加权均值（Phase 2）：基于 mean FGP 和缓冲帧进行单 pass Huber 加权。
+
+    使用 chunk-level 模式减少内存峰值和 page cache 压力。
 
     接收：
         - fgp_total: FastGaussianParam（来自 MeanStackerOp.statistics，Phase 1）
@@ -342,13 +377,11 @@ class HuberMeanIteratorOp(BaseOp):
 
     输出：
         - result: Huber 加权均值图像 (FloatImage)
-
-    与 SigmaClipIteratorOp 的结构对称，但只需单 pass（无迭代）。
     """
 
     EXECUTOR = "cpu"
-    BUFFER_ITERATOR = True        # 段检测标记：消费 buffer 的迭代式 Reduce
-    ITERATOR_TYPE = "huber_mean"  # 迭代类型标识（多阶段协议用）
+    ITERATOR_TYPE = "huber_mean"
+    CHUNK_ROWS = 256
     CONFIGS: dict[str, dict[str, Any]] = {
         "fgp_total": {
             "type": "image",
@@ -369,41 +402,36 @@ class HuberMeanIteratorOp(BaseOp):
         },
     }
 
-    async def _async_execute(self, configs: dict[str, Any]) -> None:
+    def _init_chunk_state(self, configs, row_start, row_end, w):
         fgp_total: FastGaussianParam = configs['fgp_total']
-        frame_buffer: DiskFrameBuffer = configs['buffer_handle']
         huber_c: float = configs['huber_c']
 
-        try:
-            huber_merger = HuberWeightedMerger(
-                ref_stats=fgp_total,
-                huber_c=huber_c,
-            )
+        ref_chunk = FastGaussianParam(
+            sum_mu=fgp_total.sum_mu[row_start:row_end].copy(),
+            square_sum=fgp_total.square_sum[row_start:row_end].copy(),
+            n=fgp_total.n[row_start:row_end].copy(),
+            ddof=fgp_total.ddof,
+            source_dtype=fgp_total.source_dtype,
+            inplace_calc=False,
+        )
 
-            n_frames = len(frame_buffer)
-            self.tracker.create_bar(
-                self.name, n_frames,
-                desc=f"{self.name} [Huber]")
+        merger = HuberWeightedMerger(ref_stats=ref_chunk, huber_c=huber_c)
+        return {'merger': merger, 'source_dtype': fgp_total.source_dtype}
 
-            async for raw, weight in frame_buffer.iter_prefetch():
-                await self._run_cpu(huber_merger.merge, raw, weight)
-                self.tracker.update(self.name)
+    def _merge_chunk(self, state, chunk_data, chunk_weight, frame_idx):
+        state['merger'].merge(chunk_data, chunk_weight)
 
-            self.tracker.close_bar(self.name)
+    def _finalize_chunk(self, state):
+        result = state['merger'].merged_image
+        if result is None:
+            raise ValueError("HuberMeanIteratorOp: no frames processed in chunk")
+        return result.data
 
-            result = huber_merger.merged_image
-            if result is None:
-                raise ValueError(
-                    f"{self.name}: No valid frames processed.")
-
-            await self._broadcast_outputs({"result": result})
-            logger.info(f"{self.name} Huber mean complete.")
-
-        except Exception as e:
-            logger.error(f"{self.name} failed: {e}")
-            raise
-        finally:
-            frame_buffer.cleanup()
+    def _wrap_output(self, result, configs):
+        fgp_total: FastGaussianParam = configs['fgp_total']
+        result_img = FloatImage(result, dtype=fgp_total.source_dtype)
+        logger.info(f"{self.name} Huber mean complete.")
+        return {"result": result_img}
 
 
 @register_op()

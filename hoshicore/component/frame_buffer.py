@@ -106,14 +106,16 @@ class BaseFrameBuffer:
 
 
 class DiskFrameBuffer(BaseFrameBuffer):
-    """磁盘帧缓冲：将帧（及可选权重）写入临时 .npz 文件，按索引随机读取。
+    """磁盘帧缓冲：将帧写入 .npy 文件，读取时通过 mmap 零拷贝访问。
+
+    权重分流：ndarray 权重存为独立 .npy 文件；标量/None 权重直接内存持有。
 
     用法：
         buffer = DiskFrameBuffer()
         buffer.append(frame1, weight1)
         buffer.append(frame2)
 
-        frame, weight = buffer[0]   # 从磁盘读取
+        frame, weight = buffer[0]   # mmap 读取
         buffer.cleanup()             # 删除所有临时文件
     """
 
@@ -124,7 +126,9 @@ class DiskFrameBuffer(BaseFrameBuffer):
         os.makedirs(self.temp_path, exist_ok=True)
         self.prefix = base64.urlsafe_b64encode(os.urandom(6)).decode("ascii")
         self._count = 0
-        self._paths: list[Path] = []
+        self._frame_paths: list[Path] = []
+        self._weight_paths: list[Optional[Path]] = []
+        self._scalar_weights: list[Optional[float]] = []
         self._cleaned = False
 
     def append(self, frame: np.ndarray,
@@ -135,36 +139,39 @@ class DiskFrameBuffer(BaseFrameBuffer):
             frame: 图像数据 (np.ndarray)。
             weight: 可选权重，标量或与 frame 同形状的 ndarray。
         """
-        path = self.temp_path / f"{self.prefix}_{self._count:05d}.npz"
-        if weight is not None:
-            if isinstance(weight, (int, float)):
-                weight = np.array(weight)
-            np.savez(path, frame=frame, weight=weight)
+        frame_path = self.temp_path / f"{self.prefix}_{self._count:05d}.npy"
+        np.save(frame_path, frame)
+        self._frame_paths.append(frame_path)
+
+        if isinstance(weight, np.ndarray):
+            weight_path = self.temp_path / f"{self.prefix}_{self._count:05d}_w.npy"
+            np.save(weight_path, weight)
+            self._weight_paths.append(weight_path)
+            self._scalar_weights.append(None)
         else:
-            np.savez(path, frame=frame)
-        self._paths.append(path)
+            self._weight_paths.append(None)
+            self._scalar_weights.append(float(weight) if weight is not None else None)
+
         self._count += 1
 
-    def __getitem__(self, idx: int) -> tuple[np.ndarray, Optional[np.ndarray]]:
-        """按索引从磁盘读取帧和权重。
+    def __getitem__(self, idx: int) -> tuple[np.ndarray, Optional[Union[float, np.ndarray]]]:
+        """按索引 mmap 读取帧和权重。
 
         Args:
             idx: 帧索引。
 
         Returns:
-            (frame, weight) 元组。weight 为 None 表示该帧无权重。
+            (frame, weight) 元组。frame 为 mmap 只读视图。
         """
         if idx < 0 or idx >= self._count:
             raise IndexError(
                 f"DiskFrameBuffer index {idx} out of range [0, {self._count})"
             )
-        data = np.load(self._paths[idx])
-        frame = data['frame']
-        weight = data['weight'] if 'weight' in data else None
-        data.close()  # 释放 NpzFile 持有的文件句柄和内部缓存
-        # 标量权重还原
-        if weight is not None and weight.ndim == 0:
-            weight = float(weight)
+        frame = np.load(self._frame_paths[idx], mmap_mode='r')
+        if self._weight_paths[idx] is not None:
+            weight = np.load(self._weight_paths[idx], mmap_mode='r')
+        else:
+            weight = self._scalar_weights[idx]
         return frame, weight
 
     def __len__(self) -> int:
@@ -174,12 +181,20 @@ class DiskFrameBuffer(BaseFrameBuffer):
         """删除所有临时缓冲文件。"""
         if self._cleaned:
             return
-        for p in self._paths:
+        for p in self._frame_paths:
             try:
                 p.unlink()
             except OSError:
                 pass
-        self._paths.clear()
+        for p in self._weight_paths:
+            if p is not None:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+        self._frame_paths.clear()
+        self._weight_paths.clear()
+        self._scalar_weights.clear()
         self._count = 0
         self._cleaned = True
         logger.debug(
@@ -187,7 +202,7 @@ class DiskFrameBuffer(BaseFrameBuffer):
 
     def __del__(self):
         """安全网：防止异常中断（如用户 Ctrl-C）导致临时文件泄漏。"""
-        if not self._cleaned and self._paths:
+        if not self._cleaned and self._frame_paths:
             self._do_cleanup()
 
 

@@ -40,12 +40,12 @@ class TestDiskFrameBuffer:
         buf.acquire()
         buf.append(np.zeros((2, 2, 1), dtype=np.uint8))
         buf.append(np.zeros((2, 2, 1), dtype=np.uint8))
-        npz_files_before = list(tmp_path.glob("*.npz"))
-        assert len(npz_files_before) == 2
+        npy_files_before = list(tmp_path.glob("*.npy"))
+        assert len(npy_files_before) == 2
 
         buf.cleanup()
-        npz_files_after = list(tmp_path.glob("*.npz"))
-        assert len(npz_files_after) == 0
+        npy_files_after = list(tmp_path.glob("*.npy"))
+        assert len(npy_files_after) == 0
 
     def test_weight_ndarray(self, tmp_path):
         buf = DiskFrameBuffer(temp_path=tmp_path)
@@ -66,7 +66,7 @@ class TestRefCounting:
         buf.acquire()
         buf.append(np.zeros((2, 2, 1), dtype=np.uint8))
         buf.cleanup()
-        assert list(tmp_path.glob("*.npz")) == []
+        assert list(tmp_path.glob("*.npy")) == []
 
     def test_two_consumers_first_cleanup_keeps_files(self, tmp_path):
         buf = DiskFrameBuffer(temp_path=tmp_path)
@@ -75,10 +75,10 @@ class TestRefCounting:
         buf.append(np.zeros((2, 2, 1), dtype=np.uint8))
 
         buf.cleanup()  # consumer 1 done
-        assert len(list(tmp_path.glob("*.npz"))) == 1  # files still exist
+        assert len(list(tmp_path.glob("*.npy"))) == 1  # files still exist
 
         buf.cleanup()  # consumer 2 done
-        assert list(tmp_path.glob("*.npz")) == []  # now cleaned up
+        assert list(tmp_path.glob("*.npy")) == []  # now cleaned up
 
     def test_three_consumers(self, tmp_path):
         buf = DiskFrameBuffer(temp_path=tmp_path)
@@ -88,11 +88,11 @@ class TestRefCounting:
         buf.append(np.zeros((2, 2, 1), dtype=np.uint8))
 
         buf.cleanup()
-        assert len(list(tmp_path.glob("*.npz"))) == 1
+        assert len(list(tmp_path.glob("*.npy"))) == 1
         buf.cleanup()
-        assert len(list(tmp_path.glob("*.npz"))) == 1
+        assert len(list(tmp_path.glob("*.npy"))) == 1
         buf.cleanup()
-        assert list(tmp_path.glob("*.npz")) == []
+        assert list(tmp_path.glob("*.npy")) == []
 
     def test_exception_safety(self, tmp_path):
         """If one consumer hits an exception and calls cleanup, the other still works."""
@@ -111,7 +111,7 @@ class TestRefCounting:
 
         # Consumer B finishes
         buf.cleanup()  # ref 1→0 → files deleted
-        assert list(tmp_path.glob("*.npz")) == []
+        assert list(tmp_path.glob("*.npy")) == []
 
 
 class TestMemoryFrameBuffer:

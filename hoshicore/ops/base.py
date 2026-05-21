@@ -3,6 +3,8 @@ import itertools
 import sys
 from typing import Any, Awaitable, Mapping, Optional, Sequence
 
+import numpy as np
+
 from loguru import logger
 
 from ..component.progress import DummyTracker
@@ -391,6 +393,102 @@ class ParallelBaseOp(BaseOp):
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
                                     configs: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("Subclass must implement this method")
+
+
+class ChunkIteratorBaseOp(BaseOp):
+    """Chunk-level 迭代基类：将 buffer 重放按空间分块处理。
+
+    主循环骨架：
+        for chunk in chunks:
+            state = _init_chunk_state(...)
+            for pass in passes:
+                for frame in frames:
+                    _merge_chunk(state, frame[row_start:row_end], weight)
+                if _check_convergence(state): break
+            result_chunks.append(_finalize_chunk(state))
+        result = concatenate(result_chunks)
+
+    核心收益：multi-pass 算法的 IO 从 n_passes × data 降为 ~1 × data
+    （chunk 内所有 pass 复用 OS page cache）。
+    """
+    BUFFER_ITERATOR = True
+    CHUNK_ROWS: int = 256
+    CHUNK_OVERLAP: int = 0
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        frame_buffer = configs['buffer_handle']
+        chunk_rows = configs.get('chunk_rows', self.CHUNK_ROWS)
+        overlap = self.CHUNK_OVERLAP
+
+        first_frame, _ = frame_buffer[0]
+        h, w = first_frame.shape[:2]
+        n_chunks = (h + chunk_rows - 1) // chunk_rows
+        n_frames = len(frame_buffer)
+        result_chunks: list[np.ndarray] = []
+        self._chunk_states: list[Any] = []
+
+        self.tracker.create_bar(self.name, n_chunks, unit="chunks")
+        try:
+            for chunk_idx in range(n_chunks):
+                row_start = max(0, chunk_idx * chunk_rows - overlap)
+                row_end = min(h, (chunk_idx + 1) * chunk_rows + overlap)
+                out_start = (chunk_idx * chunk_rows) - row_start
+                out_end = out_start + min(chunk_rows, h - chunk_idx * chunk_rows)
+
+                state = self._init_chunk_state(configs, row_start, row_end, w)
+
+                for pass_idx in range(self._max_passes(configs)):
+                    for frame_idx in range(n_frames):
+                        raw, weight = frame_buffer[frame_idx]
+                        chunk_data = raw[row_start:row_end]
+                        chunk_weight = (
+                            weight[row_start:row_end]
+                            if isinstance(weight, np.ndarray) else weight)
+                        await self._run_cpu(
+                            self._merge_chunk, state, chunk_data,
+                            chunk_weight, frame_idx)
+
+                    if self._check_convergence(state, pass_idx):
+                        break
+                    self._prepare_next_pass(state, pass_idx)
+
+                chunk_result = self._finalize_chunk(state)
+                result_chunks.append(chunk_result[out_start:out_end])
+                self._chunk_states.append(state)
+                self.tracker.update(self.name)
+
+            result = np.concatenate(result_chunks, axis=0)
+            await self._broadcast_outputs(
+                self._wrap_output(result, configs))
+        finally:
+            self.tracker.close_bar(self.name)
+            frame_buffer.cleanup()
+
+    # --- 子类钩子 ---
+
+    def _init_chunk_state(self, configs: dict[str, Any],
+                          row_start: int, row_end: int, w: int) -> Any:
+        raise NotImplementedError
+
+    def _merge_chunk(self, state: Any, chunk_data: np.ndarray,
+                     chunk_weight, frame_idx: int) -> None:
+        raise NotImplementedError
+
+    def _max_passes(self, configs: dict[str, Any]) -> int:
+        return 1
+
+    def _check_convergence(self, state: Any, pass_idx: int) -> bool:
+        return False
+
+    def _prepare_next_pass(self, state: Any, pass_idx: int) -> None:
+        pass
+
+    def _finalize_chunk(self, state: Any) -> np.ndarray:
+        raise NotImplementedError
+
+    def _wrap_output(self, result: np.ndarray,
+                     configs: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
 
 
 class FilterBaseOp(BaseOp):
