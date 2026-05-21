@@ -139,14 +139,13 @@ python -m bench.data_tools.generate_starfield_dataset --name align_u16_32f --fra
 - `compare_remap` 的口径是“当前 CPU 原方案总时间”对比 “Triton GPU 原型总时间”。
 - `compare_homography` 只覆盖纯 warp kernel，不代表整条无相机参数对齐路径。
 - 当前正式保留的 GPU custom-op 只有 fused `camera_model_remap`；`homography` custom-op 试验已撤回。
-- `median_reduce_chunk_baseline` 对齐当前 `MedianReduceOp` 主线的 chunk 处理：逐块分配 `float32` stack、逐帧拷贝切片、再执行 `np.median(axis=0)`。
 
 示例：
 
 ```bash
 python -m bench.cpu.kernels --frames 128 --height 1080 --width 1920 --dtype uint16 --input-mode synthetic
 python -m bench.cpu.kernels --frames 64 --height 2048 --width 3072 --dtype uint16 --input-mode synthetic --cases fgp_masked_mean_merge_stream_numpy,fgp_masked_mean_merge_stream_compiled,sigma_clip_fused_merge_stream_numpy,sigma_clip_fused_merge_stream_compiled,sigma_clip_fused_masked_merge_stream_numpy,sigma_clip_fused_masked_merge_stream_compiled,fgp_add_partial_reduce_numpy,fgp_add_partial_reduce_compiled
-python -m bench.cpu.kernels --frames 16 --height 2048 --width 3072 --dtype uint16 --input-mode synthetic --cases median_reduce_chunk_baseline --chunk-rows 32
+python -m bench.cpu.kernels --frames 16 --height 2048 --width 3072 --dtype uint16 --input-mode synthetic --cases median_reduce_chunk_numpy,median_reduce_chunk_compiled --chunk-rows 32
 python -m bench.cpu.max_stack --frames 100 --height 4000 --width 6000 --dtype uint8 --workers 4 --openmp-threads auto --input-mode cache
 python -m bench.cpu.fgp_accumulate --frames 100 --height 4000 --width 6000 --dtype uint8 --openmp-threads auto --input-mode cache
 python -m bench.cpu.max_stack --frames 1000 --input-dir bench/data/cache/max_u8_100x24mp_cache --output-json bench-results/max-1000.json

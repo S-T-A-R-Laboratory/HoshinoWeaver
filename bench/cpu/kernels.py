@@ -434,34 +434,6 @@ def bench_huber_pass(frames: list[np.ndarray], weights: list[float], int_weight:
     _ = huber.merged_image
 
 
-def bench_median_reduce_chunk_baseline(
-    frames: list[np.ndarray],
-    chunk_rows: int,
-) -> None:
-    """Mirror the current MedianReduceOp inner chunk loop.
-
-    This is intentionally a baseline-only benchmark: it preallocates a float32
-    stack per chunk, copies each frame slice into that stack, then runs
-    `np.median(..., axis=0)`. The goal is to quantify the real mainline cost
-    before deciding whether a native implementation is justified.
-    """
-    first = frames[0]
-    h, w = first.shape[:2]
-    channels = first.shape[2] if first.ndim == 3 else None
-
-    for row_start in range(0, h, chunk_rows):
-        row_end = min(row_start + chunk_rows, h)
-        actual_rows = row_end - row_start
-        if channels is None:
-            stack = np.empty((len(frames), actual_rows, w), dtype=np.float32)
-        else:
-            stack = np.empty((len(frames), actual_rows, w, channels),
-                             dtype=np.float32)
-        for frame_idx, frame in enumerate(frames):
-            stack[frame_idx] = frame[row_start:row_end].astype(np.float32)
-        _ = np.median(stack, axis=0)
-
-
 def build_median_chunk_stacks(
     frames: list[np.ndarray],
     chunk_rows: int,
@@ -469,17 +441,18 @@ def build_median_chunk_stacks(
     first = frames[0]
     h, w = first.shape[:2]
     channels = first.shape[2] if first.ndim == 3 else None
+    dtype = first.dtype
     stacks: list[np.ndarray] = []
     for row_start in range(0, h, chunk_rows):
         row_end = min(row_start + chunk_rows, h)
         actual_rows = row_end - row_start
         if channels is None:
-            stack = np.empty((len(frames), actual_rows, w), dtype=np.float32)
+            stack = np.empty((len(frames), actual_rows, w), dtype=dtype)
         else:
             stack = np.empty((len(frames), actual_rows, w, channels),
-                             dtype=np.float32)
+                             dtype=dtype)
         for frame_idx, frame in enumerate(frames):
-            stack[frame_idx] = frame[row_start:row_end].astype(np.float32)
+            stack[frame_idx] = frame[row_start:row_end]
         stacks.append(stack)
     return stacks
 
@@ -632,8 +605,6 @@ def main() -> None:
         ),
         "sigma_clip_pass": lambda: bench_sigma_clip_pass(frames, weights, True),
         "huber_pass": lambda: bench_huber_pass(frames, weights, True),
-        "median_reduce_chunk_baseline": lambda: bench_median_reduce_chunk_baseline(
-            frames, args.chunk_rows),
         "median_reduce_chunk_numpy": lambda: bench_median_reduce_chunk_backend(
             median_chunk_stacks,
             backend="numpy",
@@ -642,8 +613,6 @@ def main() -> None:
             median_chunk_stacks,
             backend="compiled",
         ),
-        "median_chunk": lambda: bench_median_reduce_chunk_baseline(
-            frames, args.chunk_rows),
     }
     selected_cases = requested_cases or list(registry.keys())
     for case_name in selected_cases:
