@@ -26,6 +26,7 @@ routes:
 # ── 全局配置 ──
 configs:
   int_weight: { type: bool, default: true }
+  enable_exif: { type: bool, default: true }
   exif_reduce_type: { type: str, default: "sum" }
   output_dtype: { type: str, default: "uint16" }
   jpg_quality: { type: int, default: 85 }
@@ -38,6 +39,7 @@ configs:
   distortion: { type: list, default: null }
   output_filename:  { type: str,   required: true }
   mask: { type: str, required: false, default: null }
+  enable_ground: { type: bool, default: true }
 
 # ── 路由专属配置 ──
 route_configs:
@@ -86,6 +88,7 @@ nodes:
 
   exif_loader:
     op: ExifReadOp
+    enable: configs.enable_exif
     inputs:
       fnames: inputs.fnames
     outputs:
@@ -170,6 +173,7 @@ nodes:
 
   ground_stacker:
     op: stacker.meta.yaml # fixed-op；route_key 选择 route_configs 分支
+    enable: configs.enable_ground
     route_key: ground_stacker
     routes:
       stacker: routes.ground_stacker # 透传父图选择到子图 stacker route

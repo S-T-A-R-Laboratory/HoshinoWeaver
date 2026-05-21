@@ -28,6 +28,7 @@ route_configs:
 # ── 全局配置 ──
 configs:
   int_weight:       { type: bool, default: true }
+  enable_exif:      { type: bool, default: true }
   exif_reduce_type: { type: str,  default: "sum" }
   output_filename:  { type: str,   required: true }
   output_dtype:     { type: str,  default: "uint8" }
@@ -72,6 +73,7 @@ nodes:
       result: { type: image }
 
   exif_loader:
+    enable: configs.enable_exif
     op: ExifReadOp
     inputs:
       fnames: inputs.fnames

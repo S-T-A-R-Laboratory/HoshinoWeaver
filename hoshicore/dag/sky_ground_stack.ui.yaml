@@ -69,6 +69,14 @@ configs:
     description: "天空对齐基准图像。空缺默认使用第一张"
     widget: file_picker
     accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+  enable_exif:
+    label: "同步 EXIF 信息"
+    description: "在输出文件中写入 EXIF 信息"
+    widget: switch
+  enable_ground:
+    label: "叠加地面图像"
+    description: "同时叠加地面图像"
+    widget: switch
   distortion:
     hidden: true
   exif_reduce_type:
@@ -88,10 +96,10 @@ route_configs:
 layout:
   groups:
     - name: "对齐设置"
-      keys: [align_method, align_base, same_camera, mask]
+      keys: [align_method, align_base, same_camera, mask, enable_ground]
     - name: "输出设置"
       keys: [int_weight]
-  order: [sky_stacker, ground_stacker, align_method, same_camera, mask, int_weight]
+  order: [sky_stacker, ground_stacker, align_method, same_camera, mask, enable_ground, int_weight]
 
 outputs:
   - "!include": fragments/image_output.ui.yaml

@@ -109,6 +109,10 @@ configs:
     description: "已有 Master Flat 文件路径"
     widget: file_picker
     accept: ".tif,.tiff,.fits"
+  enable_exif:
+    label: "同步 EXIF 信息"
+    description: "在输出文件中写入 EXIF 信息"
+    widget: switch
   exif_reduce_type:
     hidden: true
   loader_type:

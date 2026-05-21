@@ -8,7 +8,7 @@
 YAML ── meta_resolve() ──► 标准 spec ── flatten_sub_dags() ──► 展平 spec ── validate_and_build_order() ──► ValidatedDag ── wiring ──► 运行
 ```
 
-- `meta_resolve()`：仅对 Meta YAML（含 `routes`/`route_key`/`enabled`）执行路由编译和节点开关
+- `meta_resolve()`：仅对 Meta YAML（含 `routes`/`route_key`/`enable`）执行路由编译和节点开关
 - `flatten_sub_dags()`：递归展开 `.yaml` SubDAG 引用为带命名空间前缀的扁平节点
 - `validate_and_build_order()`：合法性检查 + 拓扑执行顺序推导（不实例化 Op）
 - `wiring`：实例化 Op、连接队列、生成 feeder 协程
@@ -232,7 +232,7 @@ inputs:    { ... }                  # 同标准 YAML
 routes:    { ... }                  # 路由定义（Meta 专属）
 configs:   { ... }                  # 全局配置
 route_configs: { ... }             # 路由专属配置（Meta 专属）
-nodes:     { ... }                  # 节点定义（支持 route_key / enabled）
+nodes:     { ... }                  # 节点定义（支持 route_key / enable）
 outputs:   { ... }                  # 同标准 YAML
 ```
 
@@ -297,9 +297,18 @@ route_configs:
 
 **Auto-wire 规则**：顶层 `route_configs[route_key][choice]` 中声明的参数，若在节点 `route_configs[choice]` 中未显式布线，自动生成 `configs.<route_key>.<choice>.<param>` 引用。只需写**非默认布线**的条目。
 
-### 5.5 节点开关（`enabled` / `bypass`）
+### 5.5 节点开关（`enable` / `bypass` / prune）
 
-声明 `enabled: configs.<bool_key>` 的节点可被运行时开关。
+声明 `enable: configs.<bool_key>` 的节点可被运行时开关。关闭时的行为由是否声明 `bypass` 决定：
+
+**enable 值来源**：
+- 优先从 `global_configs` 传入的运行时值
+- 其次使用 YAML `configs` 中声明的 `default`
+- 都未提供 → `MetaResolveError`
+
+#### Bypass（穿透）模式
+
+声明了 `bypass: <input_key>` 时，`enabled=false` 触发穿透语义：
 
 ```yaml
 configs:
@@ -308,8 +317,8 @@ configs:
 nodes:
   resize:
     op: ImageResizeOp
-    enabled: configs.enable_resize
-    bypass: data                     # 多 input 时需显式声明
+    enable: configs.enable_resize
+    bypass: data                     # 声明 bypass → 穿透模式
     inputs:
       data: prev_step.result
     configs:
@@ -318,19 +327,56 @@ nodes:
       result: { type: sequence }
 ```
 
-`meta_resolve()` 解析 `enabled` 引用：
-- 值为 `true` → 保留节点，移除 `enabled`/`bypass` 字段
-- 值为 `false` → 编译期 bypass：重写所有消费者的 link 为 bypass 源，删除节点
+- 删除节点
+- 将所有消费该节点输出的下游 link 重写为 bypass input 的上游源
+- 数据从 bypass input 直连下游（节点被"穿透"）
 
-**bypass 对推断规则**：
-1. 声明了 `bypass: <input_key>` → 使用该 input，配对第一个 output
-2. `inputs` 只有一个 entry → 自动配对第一个 output
-3. 多个 input 且未声明 `bypass` → `MetaResolveError`
+**bypass 对规则**：`bypass` 值指定要穿透的 input key，配对第一个 output。
 
-**enabled 值来源**：
-- 优先从 `global_configs` 传入的运行时值
-- 其次使用 YAML `configs` 中声明的 `default`
-- 都未提供 → `MetaResolveError`
+#### Prune（断路）模式
+
+未声明 `bypass` 时，`enabled=false` 触发断路语义：
+
+```yaml
+configs:
+  enable_exif: { type: bool, default: true }
+
+nodes:
+  exif_loader:
+    op: ExifReadOp
+    enable: configs.enable_exif      # 无 bypass → 断路模式
+    inputs:
+      fnames: inputs.fnames
+    outputs:
+      result: { type: sequence }
+```
+
+- 删除节点，**不重写下游连线**
+- 下游对该节点输出的引用根据级联规则处理
+
+**级联规则**：
+
+1. 下游节点有**多个 inputs** → 对应连线标记 `__inactive__`（要求 Op 声明 `required: false`，否则编译报错）
+2. 下游节点只有**单个 input** → 级联删除该下游节点，递归应用相同规则
+3. 级联到全局 `outputs`：
+   - output 声明 `required: false` → 静默移除
+   - output 为 required（默认）→ 编译报错
+
+**效果**：被断路节点及其下游不可达链路不会被实例化和执行（由 `build.py` 的死节点消除保证）。
+
+#### Optional outputs
+
+`outputs` 支持 object 格式声明可选输出，配合 prune 使用：
+
+```yaml
+outputs:
+  main_result: main_saver.return_code           # 默认 required
+  optional_result:
+    src: optional_saver.return_code
+    required: false                              # prune 时可静默移除
+```
+
+`meta_resolve()` 会将 object 格式规范化为纯 link 字符串，下游 build/wiring 层无需感知。
 
 ---
 
@@ -620,7 +666,7 @@ results = await run_from_yaml(
 | 拓扑排序失败（环或阻塞） | build | DagSpecError |
 | route_key 引用的路由未定义 | meta | MetaResolveError |
 | route choice 无效 | meta | MetaResolveError |
-| enabled 引用非 configs 命名空间 | meta | MetaResolveError |
+| enable 引用非 configs 命名空间 | meta | MetaResolveError |
 | bypass 推断失败（多 input 未声明） | meta | MetaResolveError |
 | SubDAG required input 未被父图布线 | flatten | ValueError |
 | SubDAG config 无 default 且未被父图覆盖 | flatten | ValueError |
