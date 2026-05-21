@@ -49,6 +49,9 @@ def _load_compiled_module_result() -> tuple[Any | None, str | None]:
         return None, f"{type(exc).__name__}: {exc}"
 
 
+_SUPPORTED_DTYPES = (np.uint8, np.uint16, np.float32, np.float64)
+
+
 def _validate_stack(stack: np.ndarray) -> np.ndarray:
     stack_arr = np.asarray(stack)
     if stack_arr.ndim not in {3, 4}:
@@ -57,8 +60,11 @@ def _validate_stack(stack: np.ndarray) -> np.ndarray:
         )
     if stack_arr.shape[0] <= 0:
         raise ValueError("median_reduce_chunk: frame axis must be non-empty")
-    if not np.issubdtype(stack_arr.dtype, np.floating):
-        raise ValueError("median_reduce_chunk: floating-point stack required")
+    if stack_arr.dtype not in _SUPPORTED_DTYPES:
+        raise ValueError(
+            "median_reduce_chunk: unsupported dtype; "
+            "expected uint8/uint16/float32/float64"
+        )
     if not stack_arr.flags.c_contiguous:
         stack_arr = np.ascontiguousarray(stack_arr)
     return stack_arr
@@ -88,7 +94,11 @@ def _apply_compiled_threads(op_name: str, sample: np.ndarray) -> None:
 
 def median_reduce_chunk_numpy(stack: np.ndarray) -> np.ndarray:
     stack_arr = _validate_stack(stack)
-    return np.median(stack_arr, axis=0)
+    result = np.median(stack_arr, axis=0)
+    # np.median always returns float64; cast back to match compiled backend behavior
+    if result.dtype != stack_arr.dtype:
+        result = result.astype(stack_arr.dtype)
+    return result
 
 
 def median_reduce_chunk_compiled(stack: np.ndarray) -> np.ndarray:
