@@ -108,6 +108,7 @@ class TestRefCounting:
         # Consumer B can still read
         got, _ = buf[0]
         np.testing.assert_array_equal(got, frame)
+        del got  # release mmap before cleanup — Windows holds a file lock until mmap is freed
 
         # Consumer B finishes
         buf.cleanup()  # ref 1→0 → files deleted
@@ -159,4 +160,64 @@ class TestMemoryFrameBuffer:
         got_frame, got_weight = buf[0]
         np.testing.assert_array_equal(got_frame, frame)
         np.testing.assert_allclose(got_weight, weight)
+        buf.cleanup()
+
+
+class TestGetRows:
+    def test_disk_get_rows_returns_correct_slice(self, tmp_path):
+        buf = DiskFrameBuffer(temp_path=tmp_path)
+        buf.acquire()
+        frame = np.arange(60, dtype=np.uint8).reshape(5, 4, 3)
+        buf.append(frame)
+        chunk, weight = buf.get_rows(0, 1, 3)
+        np.testing.assert_array_equal(chunk, frame[1:3])
+        assert weight is None
+        buf.cleanup()
+
+    def test_disk_get_rows_returns_copy_not_view(self, tmp_path):
+        buf = DiskFrameBuffer(temp_path=tmp_path)
+        buf.acquire()
+        frame = np.zeros((4, 4, 3), dtype=np.uint8)
+        buf.append(frame)
+        chunk, _ = buf.get_rows(0, 0, 2)
+        chunk[:] = 99
+        # original frame on disk should be unaffected
+        reloaded, _ = buf[0]
+        assert reloaded[0, 0, 0] == 0
+        buf.cleanup()
+
+    def test_disk_get_rows_scalar_weight(self, tmp_path):
+        buf = DiskFrameBuffer(temp_path=tmp_path)
+        buf.acquire()
+        frame = np.ones((4, 4, 3), dtype=np.uint8)
+        buf.append(frame, weight=0.7)
+        _, weight = buf.get_rows(0, 0, 2)
+        assert weight == pytest.approx(0.7)
+        buf.cleanup()
+
+    def test_disk_get_rows_ndarray_weight_sliced(self, tmp_path):
+        buf = DiskFrameBuffer(temp_path=tmp_path)
+        buf.acquire()
+        frame = np.ones((4, 4, 3), dtype=np.uint8)
+        weight = np.arange(48, dtype=np.float32).reshape(4, 4, 3)
+        buf.append(frame, weight=weight)
+        _, got_weight = buf.get_rows(0, 1, 3)
+        np.testing.assert_array_equal(got_weight, weight[1:3])
+        buf.cleanup()
+
+    def test_memory_get_rows_returns_correct_slice(self):
+        buf = MemoryFrameBuffer()
+        buf.acquire()
+        frame = np.arange(60, dtype=np.uint8).reshape(5, 4, 3)
+        buf.append(frame)
+        chunk, weight = buf.get_rows(0, 2, 4)
+        np.testing.assert_array_equal(chunk, frame[2:4])
+        assert weight is None
+        buf.cleanup()
+
+    def test_base_get_rows_index_error(self, tmp_path):
+        buf = DiskFrameBuffer(temp_path=tmp_path)
+        buf.acquire()
+        with pytest.raises(IndexError):
+            buf.get_rows(0, 0, 2)
         buf.cleanup()

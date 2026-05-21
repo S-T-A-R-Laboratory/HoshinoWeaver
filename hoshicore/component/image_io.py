@@ -81,7 +81,6 @@ def load_img(file_path: str) -> Optional[np.ndarray]:
         return None
 
 
-@time_cost_warpper
 def save_img(filename: str,
              img: np.ndarray,
              png_compressing: int = 0,

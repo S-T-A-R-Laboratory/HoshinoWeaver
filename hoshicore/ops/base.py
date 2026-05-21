@@ -415,38 +415,40 @@ class ChunkIteratorBaseOp(BaseOp):
     CHUNK_ROWS: int = 256
     CHUNK_OVERLAP: int = 0
 
+    def __init__(self, name: str):
+        super().__init__(name)
+        self._chunk_states: list[Any] = []
+
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         frame_buffer = configs['buffer_handle']
         chunk_rows = configs.get('chunk_rows', self.CHUNK_ROWS)
         overlap = self.CHUNK_OVERLAP
 
-        first_frame, _ = frame_buffer[0]
-        h, w = first_frame.shape[:2]
-        n_chunks = (h + chunk_rows - 1) // chunk_rows
-        n_frames = len(frame_buffer)
-        result_chunks: list[np.ndarray] = []
-        self._chunk_states: list[Any] = []
-
-        self.tracker.create_bar(self.name, n_chunks, unit="chunks")
         try:
-            for chunk_idx in range(n_chunks):
-                row_start = max(0, chunk_idx * chunk_rows - overlap)
-                row_end = min(h, (chunk_idx + 1) * chunk_rows + overlap)
+            first_frame, _ = frame_buffer[0]
+            h, w = first_frame.shape[:2]
+            del first_frame  # release mmap immediately — prevents Windows file-lock on cleanup
+            n_chunks = (h + chunk_rows - 1) // chunk_rows
+            result_chunks: list[np.ndarray] = []
+            self._chunk_states = []
+
+            row_ranges = [
+                (max(0, cidx * chunk_rows - overlap),
+                 min(h, (cidx + 1) * chunk_rows + overlap))
+                for cidx in range(n_chunks)
+            ]
+
+            self.tracker.create_bar(self.name, n_chunks, unit="chunks")
+            chunk_idx = 0
+            async for chunk_stack in frame_buffer.iter_chunk_prefetch(row_ranges):
+                row_start, row_end = row_ranges[chunk_idx]
                 out_start = (chunk_idx * chunk_rows) - row_start
                 out_end = out_start + min(chunk_rows, h - chunk_idx * chunk_rows)
 
                 state = self._init_chunk_state(configs, row_start, row_end, w)
 
                 for pass_idx in range(self._max_passes(configs)):
-                    for frame_idx in range(n_frames):
-                        raw, weight = frame_buffer[frame_idx]
-                        chunk_data = raw[row_start:row_end]
-                        chunk_weight = (
-                            weight[row_start:row_end]
-                            if isinstance(weight, np.ndarray) else weight)
-                        await self._run_cpu(
-                            self._merge_chunk, state, chunk_data,
-                            chunk_weight, frame_idx)
+                    await self._run_cpu(self._run_pass, state, chunk_stack)
 
                     if self._check_convergence(state, pass_idx):
                         break
@@ -456,6 +458,7 @@ class ChunkIteratorBaseOp(BaseOp):
                 result_chunks.append(chunk_result[out_start:out_end])
                 self._chunk_states.append(state)
                 self.tracker.update(self.name)
+                chunk_idx += 1
 
             result = np.concatenate(result_chunks, axis=0)
             await self._broadcast_outputs(
@@ -489,6 +492,11 @@ class ChunkIteratorBaseOp(BaseOp):
     def _wrap_output(self, result: np.ndarray,
                      configs: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
+
+    def _run_pass(self, state: Any, chunk_stack: list) -> None:
+        """Merge all frames for one pass. Called inside _run_cpu."""
+        for frame_idx, (chunk_data, chunk_weight) in enumerate(chunk_stack):
+            self._merge_chunk(state, chunk_data, chunk_weight, frame_idx)
 
 
 class FilterBaseOp(BaseOp):

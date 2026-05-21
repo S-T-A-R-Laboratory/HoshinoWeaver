@@ -276,27 +276,28 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
             'last_n': fgp_chunk.n.copy(),
             'static_mask': static_mask_chunk,
             'accepted': None,
+            '_mask_cache': {},
         }
 
     def _max_passes(self, configs):
         return configs['max_iter']
 
     def _merge_chunk(self, state, chunk_data, chunk_weight, frame_idx):
-        static_mask = state['static_mask']
-        spatial_mask = None
-        if static_mask is not None:
+        cache = state['_mask_cache']
+        if frame_idx not in cache:
+            static_mask = state['static_mask']
+            spatial_mask = None
             if chunk_data.ndim == 3 and chunk_data.shape[2] >= 3:
                 empty_mask = np.all(chunk_data[..., :3] == 0, axis=-1)
-                spatial_mask = static_mask & (~empty_mask)
-            else:
+                if static_mask is not None:
+                    spatial_mask = static_mask & (~empty_mask)
+                elif empty_mask.any():
+                    spatial_mask = ~empty_mask
+            elif static_mask is not None:
                 spatial_mask = static_mask
-        elif chunk_data.ndim == 3 and chunk_data.shape[2] >= 3:
-            empty_mask = np.all(chunk_data[..., :3] == 0, axis=-1)
-            if empty_mask.any():
-                spatial_mask = ~empty_mask
-
+            cache[frame_idx] = spatial_mask
         state['clip_merger'].merge(chunk_data, chunk_weight,
-                                   spatial_mask=spatial_mask)
+                                   spatial_mask=cache[frame_idx])
 
     def _check_convergence(self, state, pass_idx):
         fgp_chunk = state['fgp_chunk']

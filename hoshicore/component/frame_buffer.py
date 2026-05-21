@@ -104,6 +104,73 @@ class BaseFrameBuffer:
             if next_task is not None:
                 prefetch_task = next_task
 
+    def get_rows(
+        self,
+        idx: int,
+        row_start: int,
+        row_end: int,
+    ) -> tuple[np.ndarray, Optional[Union[float, np.ndarray]]]:
+        """Return a copy of rows [row_start:row_end] for frame idx.
+
+        Default implementation loads the full frame and slices.
+        DiskFrameBuffer overrides this to use mmap partial reads.
+        """
+        frame, weight = self[idx]
+        chunk_frame = frame[row_start:row_end].copy()
+        if isinstance(weight, np.ndarray):
+            chunk_weight = weight[row_start:row_end].copy()
+        else:
+            chunk_weight = weight
+        return chunk_frame, chunk_weight
+
+    async def iter_chunk_prefetch(
+        self,
+        row_ranges: list[tuple[int, int]],
+    ) -> AsyncIterator[list[tuple[np.ndarray, Optional[Union[float, np.ndarray]]]]]:
+        """异步预读迭代器（chunk 级别）：将下一 chunk 的 IO 与当前 chunk 的计算重叠。
+
+        对每个 (row_start, row_end) 区间，并行加载所有帧的行切片，
+        使下一 chunk 的磁盘读取与当前 chunk 的 CPU 计算同时进行。
+
+        用法::
+
+            row_ranges = [(0, 256), (256, 512), ...]
+            async for chunk_stack in frame_buffer.iter_chunk_prefetch(row_ranges):
+                await self._run_cpu(self._run_pass, state, chunk_stack)
+
+        Args:
+            row_ranges: 每个 chunk 的行区间列表，元素为 (row_start, row_end)。
+
+        Yields:
+            每个 chunk 对应的 list[(frame_rows, weight_rows)]，长度等于 len(self)。
+        """
+        if not row_ranges:
+            return
+        n_frames = len(self)
+
+        def _load_chunk(row_start: int, row_end: int):
+            return [self.get_rows(i, row_start, row_end) for i in range(n_frames)]
+
+        rs, re = row_ranges[0]
+        prefetch_task: asyncio.Task = asyncio.create_task(
+            asyncio.to_thread(_load_chunk, rs, re)
+        )
+
+        for i, (rs, re) in enumerate(row_ranges):
+            next_i = i + 1
+            if next_i < len(row_ranges):
+                next_rs, next_re = row_ranges[next_i]
+                next_task: asyncio.Task = asyncio.create_task(
+                    asyncio.to_thread(_load_chunk, next_rs, next_re)
+                )
+            else:
+                next_task = None
+
+            yield await prefetch_task
+
+            if next_task is not None:
+                prefetch_task = next_task
+
 
 class DiskFrameBuffer(BaseFrameBuffer):
     """磁盘帧缓冲：将帧写入 .npy 文件，读取时通过 mmap 零拷贝访问。
@@ -173,6 +240,26 @@ class DiskFrameBuffer(BaseFrameBuffer):
         else:
             weight = self._scalar_weights[idx]
         return frame, weight
+    def get_rows(
+        self,
+        idx: int,
+        row_start: int,
+        row_end: int,
+    ) -> tuple[np.ndarray, Optional[Union[float, np.ndarray]]]:
+        """mmap the frame, copy only the needed rows, release mmap immediately.
+
+        The immediate `del arr` is important on Windows: keeping the mmap open
+        holds a file lock that prevents cleanup from calling unlink().
+        """
+        frame, weight = self[idx]          # bounds check + mmap + weight 一次
+        result = frame[row_start:row_end].copy()
+        del frame                           # 显式释放 frame mmap（Windows 文件锁）
+        if isinstance(weight, np.ndarray):
+            chunk_weight = weight[row_start:row_end].copy()
+            del weight                      # 显式释放 weight mmap
+        else:
+            chunk_weight = weight
+        return result, chunk_weight
 
     def __len__(self) -> int:
         return self._count
