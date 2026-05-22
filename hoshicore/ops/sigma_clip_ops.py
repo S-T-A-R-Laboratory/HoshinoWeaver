@@ -33,6 +33,10 @@ import numpy as np
 from loguru import logger
 
 from .._custom_op import median_reduce_chunk as custom_median_reduce_chunk
+from .._custom_op.ops.sigma_clip import (
+    sigma_clip_iterative_chunk as custom_sigma_clip_iterative_chunk,
+    _load_compiled_module_result as _sc_load_compiled,
+)
 from ..component.data_container import FastGaussianParam, FloatImage
 from ..component.frame_buffer import (BaseFrameBuffer, DiskFrameBuffer,
                                       MemoryFrameBuffer, SourceReplayBuffer)
@@ -270,11 +274,20 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
                 mask = mask[..., 0]
             static_mask_chunk = (mask > 0.5)[row_start:row_end]
 
-        clip_merger = SigmaClippingMerger(
-            ref_img=fgp_chunk,
-            rej_high=rej_high,
-            rej_low=rej_low,
+        # Check if C++ kernel can be used for this chunk
+        first_frame_dtype = fgp_total.source_dtype
+        use_cpp = (
+            self._cpp_kernel_available()
+            and first_frame_dtype in (np.dtype('uint8'), np.dtype('uint16'))
         )
+
+        clip_merger = None
+        if not use_cpp:
+            clip_merger = SigmaClippingMerger(
+                ref_img=fgp_chunk,
+                rej_high=rej_high,
+                rej_low=rej_low,
+            )
 
         return {
             'fgp_chunk': fgp_chunk,
@@ -283,10 +296,97 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
             'static_mask': static_mask_chunk,
             'accepted': None,
             '_mask_cache': {},
+            '_use_cpp': use_cpp,
+            '_cpp_done': False,
         }
+
+    @staticmethod
+    def _cpp_kernel_available() -> bool:
+        module, _ = _sc_load_compiled()
+        return module is not None and hasattr(module, "sigma_clip_iterative_chunk")
 
     def _max_passes(self, configs):
         return configs['max_iter']
+
+    def _run_pass(self, state, chunk_stack):
+        """Override: use C++ kernel for all iterations in one call."""
+        if state['_use_cpp'] and not state['_cpp_done']:
+            self._run_pass_cpp(state, chunk_stack)
+            return
+        # Fallback: per-frame merge (one pass)
+        for frame_idx, (chunk_data, chunk_weight) in enumerate(chunk_stack):
+            self._merge_chunk(state, chunk_data, chunk_weight, frame_idx)
+
+    def _run_pass_cpp(self, state, chunk_stack):
+        """C++ path: stack all frames, compute mask, call kernel."""
+        n_frames = len(chunk_stack)
+        first_data = chunk_stack[0][0]
+        h, w = first_data.shape[:2]
+        channels = first_data.shape[2] if first_data.ndim == 3 else 1
+        is_rgb = first_data.ndim == 3 and first_data.shape[2] >= 3
+        plane_size = h * w * channels
+
+        # Stack all frames into (n_frames, plane_size)
+        stack_2d = np.empty((n_frames, plane_size), dtype=first_data.dtype)
+        for f, (chunk_data, _) in enumerate(chunk_stack):
+            stack_2d[f] = chunk_data.reshape(-1)
+
+        # Build per-frame mask
+        static_mask = state['static_mask']
+        chunk_mask = None
+        if static_mask is not None or is_rgb:
+            chunk_mask = np.ones((n_frames, plane_size), dtype=np.uint8)
+            static_flat = None
+            if static_mask is not None:
+                if channels > 1:
+                    static_flat = np.broadcast_to(
+                        static_mask[..., np.newaxis],
+                        (h, w, channels)).reshape(-1).astype(np.uint8)
+                else:
+                    static_flat = static_mask.reshape(-1).astype(np.uint8)
+
+            for f, (chunk_data, _) in enumerate(chunk_stack):
+                if static_flat is not None:
+                    chunk_mask[f] &= static_flat
+                if is_rgb:
+                    empty = np.all(chunk_data[..., :3] == 0, axis=-1)
+                    if empty.any():
+                        if channels > 1:
+                            empty_flat = np.broadcast_to(
+                                empty[..., np.newaxis],
+                                (h, w, channels)).reshape(-1)
+                        else:
+                            empty_flat = empty.reshape(-1)
+                        chunk_mask[f] &= (~empty_flat).astype(np.uint8)
+
+            if chunk_mask.all():
+                chunk_mask = None
+
+        # Prepare FGP totals
+        fgp_chunk = state['fgp_chunk']
+        total_sum = fgp_chunk.sum_mu.reshape(-1).astype(np.float64)
+        total_sq = fgp_chunk.square_sum.reshape(-1).astype(np.float64)
+        total_n = fgp_chunk.n.reshape(-1).astype(np.float64)
+
+        # Call C++ kernel (all iterations internally)
+        acc_sum, acc_sq, acc_n = custom_sigma_clip_iterative_chunk(
+            stack_2d, total_sum, total_sq, total_n,
+            self._configs['rej_high'], self._configs['rej_low'],
+            self._configs['max_iter'], mask=chunk_mask)
+
+        # Build accepted FGP from results
+        chunk_shape = first_data.shape
+        accepted = FastGaussianParam(
+            sum_mu=acc_sum.reshape(chunk_shape).astype(fgp_chunk.sum_mu.dtype),
+            square_sum=acc_sq.reshape(chunk_shape).astype(fgp_chunk.square_sum.dtype),
+            n=acc_n.reshape(chunk_shape).astype(fgp_chunk.n.dtype),
+            ddof=fgp_chunk.ddof,
+            source_dtype=fgp_chunk.source_dtype,
+            inplace_calc=False,
+        )
+        accepted.apply_zero_var(fgp_chunk)
+        state['accepted'] = accepted
+        state['_cpp_done'] = True
 
     def _merge_chunk(self, state, chunk_data, chunk_weight, frame_idx):
         cache = state['_mask_cache']
@@ -306,6 +406,9 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
                                    spatial_mask=cache[frame_idx])
 
     def _check_convergence(self, state, pass_idx):
+        if state['_cpp_done']:
+            return True
+
         fgp_chunk = state['fgp_chunk']
         clip_merger = state['clip_merger']
 
@@ -368,6 +471,174 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
         # 缓存 configs 供 _check_convergence / _prepare_next_pass 使用
         self._configs = configs
         configs['fgp_total'].inplace_calc = False
+        await super()._async_execute(configs)
+
+
+@register_op()
+class SigmaClipFusedChunkOp(ChunkIteratorBaseOp):
+    """融合式 Sigma Clipping：直接从 buffer 计算 mean FGP + 迭代 clip。
+
+    省去独立的 MeanStackerOp，在一次 chunk 扫描中完成 FGP 累加和迭代剔除。
+    使用 C++ sigma_clip_fused_chunk kernel（available 时）或 numpy fallback。
+    """
+
+    EXECUTOR = "cpu"
+    ITERATOR_TYPE = "sigma_clip_fused"
+    CHUNK_ROWS = 256
+    CONFIGS: dict[str, dict[str, Any]] = {
+        "buffer_handle": {
+            "type": "image",
+            "required": True,
+        },
+        "rej_high": {
+            "type": "float",
+            "default": 3.0,
+        },
+        "rej_low": {
+            "type": "float",
+            "default": 3.0,
+        },
+        "max_iter": {
+            "type": "int",
+            "default": 5,
+        },
+        "mask": {
+            "type": "image",
+            "required": False,
+            "default": None,
+        },
+    }
+    OUTPUTS = {
+        "result": {
+            "type": "image",
+        },
+        "statistics": {
+            "type": "image",
+        },
+    }
+
+    def _init_chunk_state(self, configs, row_start, row_end, w):
+        # 静态 mask 切片
+        raw_mask = configs.get('mask')
+        static_mask_chunk = None
+        if raw_mask is not None:
+            mask = raw_mask
+            if mask.ndim == 3:
+                mask = mask[..., 0]
+            static_mask_chunk = (mask > 0.5)[row_start:row_end]
+
+        return {
+            'row_start': row_start,
+            'row_end': row_end,
+            'w': w,
+            'static_mask': static_mask_chunk,
+            'accepted': None,
+            '_done': False,
+        }
+
+    def _max_passes(self, configs):
+        return 1
+
+    def _run_pass(self, state, chunk_stack):
+        from .._custom_op.ops.sigma_clip import sigma_clip_fused_chunk
+
+        n_frames = len(chunk_stack)
+        first_data = chunk_stack[0][0]
+        h, w = first_data.shape[:2]
+        channels = first_data.shape[2] if first_data.ndim == 3 else 1
+        is_rgb = first_data.ndim == 3 and first_data.shape[2] >= 3
+        plane_size = h * w * channels
+
+        # Stack all frames
+        stack_2d = np.empty((n_frames, plane_size), dtype=first_data.dtype)
+        for f, (chunk_data, _) in enumerate(chunk_stack):
+            stack_2d[f] = chunk_data.reshape(-1)
+
+        # Build per-frame mask (static + RGB empty)
+        static_mask = state['static_mask']
+        chunk_mask = None
+        if static_mask is not None or is_rgb:
+            chunk_mask = np.ones((n_frames, plane_size), dtype=np.uint8)
+            static_flat = None
+            if static_mask is not None:
+                if channels > 1:
+                    static_flat = np.broadcast_to(
+                        static_mask[..., np.newaxis],
+                        (h, w, channels)).reshape(-1).astype(np.uint8)
+                else:
+                    static_flat = static_mask.reshape(-1).astype(np.uint8)
+
+            for f, (chunk_data, _) in enumerate(chunk_stack):
+                if static_flat is not None:
+                    chunk_mask[f] &= static_flat
+                if is_rgb:
+                    empty = np.all(chunk_data[..., :3] == 0, axis=-1)
+                    if empty.any():
+                        if channels > 1:
+                            empty_flat = np.broadcast_to(
+                                empty[..., np.newaxis],
+                                (h, w, channels)).reshape(-1)
+                        else:
+                            empty_flat = empty.reshape(-1)
+                        chunk_mask[f] &= (~empty_flat).astype(np.uint8)
+
+            if chunk_mask.all():
+                chunk_mask = None
+
+        # Call fused kernel (computes mean + iterative clip)
+        acc_sum, acc_sq, acc_n = sigma_clip_fused_chunk(
+            stack_2d, self._configs['rej_high'], self._configs['rej_low'],
+            self._configs['max_iter'], mask=chunk_mask)
+
+        chunk_shape = first_data.shape
+        source_dtype = first_data.dtype
+        accepted = FastGaussianParam(
+            sum_mu=acc_sum.reshape(chunk_shape),
+            square_sum=acc_sq.reshape(chunk_shape),
+            n=acc_n.reshape(chunk_shape),
+            ddof=1,
+            source_dtype=source_dtype,
+            inplace_calc=False,
+        )
+        state['accepted'] = accepted
+        state['_done'] = True
+
+    def _merge_chunk(self, state, chunk_data, chunk_weight, frame_idx):
+        pass  # Not used — _run_pass handles everything
+
+    def _check_convergence(self, state, pass_idx):
+        return state['_done']
+
+    def _finalize_chunk(self, state):
+        return state['accepted'].mu
+
+    def _wrap_output(self, result, configs):
+        chunk_states = self._chunk_states
+        sum_mu = np.concatenate(
+            [s['accepted'].sum_mu for s in chunk_states], axis=0)
+        square_sum = np.concatenate(
+            [s['accepted'].square_sum for s in chunk_states], axis=0)
+        n = np.concatenate(
+            [s['accepted'].n for s in chunk_states], axis=0)
+
+        # Infer source_dtype from first chunk
+        source_dtype = chunk_states[0]['accepted'].source_dtype
+
+        accepted_full = FastGaussianParam(
+            sum_mu=sum_mu,
+            square_sum=square_sum,
+            n=n,
+            ddof=1,
+            source_dtype=source_dtype,
+            inplace_calc=False,
+        )
+
+        result_img = FloatImage(result, dtype=source_dtype)
+        logger.info(f"{self.name} fused sigma clipping complete.")
+        return {"result": result_img, "statistics": accepted_full}
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        self._configs = configs
         await super()._async_execute(configs)
 
 

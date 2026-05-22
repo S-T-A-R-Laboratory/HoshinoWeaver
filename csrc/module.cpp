@@ -5,6 +5,7 @@
 #include "ops/max/max_ops.h"
 #include "ops/median/median_ops.h"
 #include "ops/noise/noise_ops.h"
+#include "ops/sigma_clip/sigma_clip_chunk_ops.h"
 #if HNW_ENABLE_CUDA
 #include "ops/cuda/camera_model_remap_fused_ops.h"
 #endif
@@ -19,6 +20,7 @@ PYBIND11_MODULE(_C, m) {
     bind_max_ops(m);
     bind_median_ops(m);
     bind_noise_ops(m);
+    bind_sigma_clip_chunk_ops(m);
 #if HNW_ENABLE_CUDA
     bind_camera_model_remap_fused_ops(m);
 #endif

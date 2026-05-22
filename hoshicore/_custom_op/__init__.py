@@ -20,8 +20,10 @@ from hoshicore._custom_op.api import (
     huber_weighted_accumulate,
     max_combine,
     median_reduce_chunk,
+    sigma_clip_fused_chunk,
     sigma_clip_fused_masked_merge,
     sigma_clip_fused_merge,
+    sigma_clip_iterative_chunk,
     threshold_max_merge,
 )
 
@@ -36,7 +38,9 @@ __all__ = [
     "huber_weighted_accumulate",
     "max_combine",
     "median_reduce_chunk",
+    "sigma_clip_fused_chunk",
     "sigma_clip_fused_masked_merge",
     "sigma_clip_fused_merge",
+    "sigma_clip_iterative_chunk",
     "threshold_max_merge",
 ]

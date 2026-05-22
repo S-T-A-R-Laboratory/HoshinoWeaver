@@ -44,6 +44,7 @@ import hoshicore._custom_op.ops.fgp as fgp_ops
 import hoshicore._custom_op.ops.max as max_ops
 import hoshicore._custom_op.ops.median as median_ops
 import hoshicore._custom_op.ops.noise as noise_ops
+import hoshicore._custom_op.ops.sigma_clip as sigma_clip_chunk_ops
 from hoshicore.component.data_container import DTYPE_MAX_VALUE
 
 
@@ -470,6 +471,58 @@ def bench_median_reduce_chunk_backend(
         _ = reduce_chunk(stack)
 
 
+def build_sigma_clip_chunk_stack(
+    frames: list[np.ndarray], chunk_rows: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Build a 2D chunk stack + FGP totals for sigma_clip_chunk benchmarking."""
+    first = frames[0]
+    h, w = first.shape[:2]
+    channels = first.shape[2] if first.ndim == 3 else 1
+    # Use chunk_rows from the middle of the image
+    row_start = max(0, h // 2 - chunk_rows // 2)
+    row_end = min(h, row_start + chunk_rows)
+    actual_rows = row_end - row_start
+    plane_size = actual_rows * w * channels
+
+    n_frames = len(frames)
+    stack_2d = np.empty((n_frames, plane_size), dtype=first.dtype)
+    for f, frame in enumerate(frames):
+        stack_2d[f] = frame[row_start:row_end].reshape(-1)
+
+    stack_f64 = stack_2d.astype(np.float64)
+    total_sum = stack_f64.sum(axis=0)
+    total_sq = (stack_f64 ** 2).sum(axis=0)
+    total_n = np.full(plane_size, float(n_frames))
+    return stack_2d, total_sum, total_sq, total_n
+
+
+def bench_sigma_clip_chunk_backend(
+    stack_2d: np.ndarray,
+    total_sum: np.ndarray,
+    total_sq: np.ndarray,
+    total_n: np.ndarray,
+    *,
+    backend: str,
+) -> None:
+    fn = {
+        "numpy": sigma_clip_chunk_ops.sigma_clip_iterative_chunk_numpy,
+        "compiled": sigma_clip_chunk_ops.sigma_clip_iterative_chunk_compiled,
+    }[backend]
+    _ = fn(stack_2d, total_sum, total_sq, total_n, 3.0, 3.0, 5)
+
+
+def bench_sigma_clip_fused_chunk_backend(
+    stack_2d: np.ndarray,
+    *,
+    backend: str,
+) -> None:
+    fn = {
+        "numpy": sigma_clip_chunk_ops.sigma_clip_fused_chunk_numpy,
+        "compiled": sigma_clip_chunk_ops.sigma_clip_fused_chunk_compiled,
+    }[backend]
+    _ = fn(stack_2d, 3.0, 3.0, 5)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--frames", type=int, default=64)
@@ -507,6 +560,8 @@ def main() -> None:
     fgp_partials = build_fgp_partials(frames)
     threshold_frames, threshold_mean_img, threshold_std_img = build_threshold_max_stats(frames)
     median_chunk_stacks = build_median_chunk_stacks(frames, args.chunk_rows)
+    sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n = build_sigma_clip_chunk_stack(
+        frames, args.chunk_rows)
     equalize_noise_payloads = build_equalize_noise_inputs(frames)
     sigma_stats = build_mean_stats(frames, weights, True)
     huber_ref_mean = sigma_stats.mu.astype(np.float32)
@@ -611,6 +666,22 @@ def main() -> None:
         ),
         "median_reduce_chunk_compiled": lambda: bench_median_reduce_chunk_backend(
             median_chunk_stacks,
+            backend="compiled",
+        ),
+        "sigma_clip_chunk_numpy": lambda: bench_sigma_clip_chunk_backend(
+            sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n,
+            backend="numpy",
+        ),
+        "sigma_clip_chunk_compiled": lambda: bench_sigma_clip_chunk_backend(
+            sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n,
+            backend="compiled",
+        ),
+        "sigma_clip_fused_chunk_numpy": lambda: bench_sigma_clip_fused_chunk_backend(
+            sc_chunk_stack,
+            backend="numpy",
+        ),
+        "sigma_clip_fused_chunk_compiled": lambda: bench_sigma_clip_fused_chunk_backend(
+            sc_chunk_stack,
             backend="compiled",
         ),
     }

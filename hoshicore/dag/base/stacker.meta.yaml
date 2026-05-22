@@ -9,12 +9,13 @@ inputs:
 routes:
   stacker:
     options:
-      mean:       MeanStackerOp
-      sigma_clip: sigma_clip.yaml
-      median:     median_stack_core.yaml
-      huber_mean: huber_mean.yaml
-      max_mix:    mix_core.yaml
-      max:        TrailStackerOp
+      mean:             MeanStackerOp
+      sigma_clip:       sigma_clip.yaml
+      sigma_clip_fused: sigma_clip_fused.yaml
+      median:           median_stack_core.yaml
+      huber_mean:       huber_mean.yaml
+      max_mix:          mix_core.yaml
+      max:              TrailStackerOp
     default: mean
 
 # ── 全局配置 ──
@@ -30,6 +31,10 @@ route_configs:
       rej_low:              { type: float, default: 3.0 }
       max_iter:             { type: int,   default: 5 }
       early_converge_ratio: { type: float, default: 0.99 }
+    sigma_clip_fused:
+      rej_high:    { type: float, default: 3.0 }
+      rej_low:     { type: float, default: 3.0 }
+      max_iter:    { type: int,   default: 5 }
     median:
       chunk_rows: { type: int, default: 32 }
     huber_mean:
@@ -58,6 +63,8 @@ nodes:
         int_weight: configs.int_weight
         mask: configs.mask
         # rej_high, rej_low, max_iter, early_converge_ratio — auto-wired
+      sigma_clip_fused: {}
+        # rej_high, rej_low, max_iter — auto-wired
       median: {}
         # chunk_rows — auto-wired；median 不使用 int_weight / mask
       huber_mean:
