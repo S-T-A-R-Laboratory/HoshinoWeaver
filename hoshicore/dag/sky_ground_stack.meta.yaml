@@ -14,6 +14,8 @@ routes:
       sigma_clip: null
       huber_mean: null
       median: null
+      max_mix: null
+      max: null
     default: sigma_clip
   ground_stacker:
     options:
@@ -21,11 +23,14 @@ routes:
       sigma_clip: null
       huber_mean: null
       median: null
+      max_mix: null
+      max: null
     default: mean
 
 # ── 全局配置 ──
 configs:
   int_weight: { type: bool, default: true }
+  enable_exif: { type: bool, default: true }
   exif_reduce_type: { type: str, default: "sum" }
   output_dtype: { type: str, default: "uint16" }
   jpg_quality: { type: int, default: 85 }
@@ -38,6 +43,7 @@ configs:
   distortion: { type: list, default: null }
   output_filename:  { type: str,   required: true }
   mask: { type: str, required: false, default: null }
+  enable_ground: { type: bool, default: true }
 
 # ── 路由专属配置 ──
 route_configs:
@@ -46,21 +52,31 @@ route_configs:
       rej_high: { type: float, default: 3.0 }
       rej_low: { type: float, default: 3.0 }
       max_iter: { type: int, default: 5 }
-      early_converge_ratio: { type: float, default: 0.99 }
       temp_path: { type: str, default: null }
     huber_mean:
       huber_c: { type: float, default: 1.345 }
       temp_path: { type: str, default: null }
+    max_mix:
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
+      temp_path: { type: str, default: null }
+      minus_only: { type: bool, default: true }
   ground_stacker:
     sigma_clip:
       rej_high: { type: float, default: 3.0 }
       rej_low: { type: float, default: 3.0 }
       max_iter: { type: int, default: 5 }
-      early_converge_ratio: { type: float, default: 0.99 }
       temp_path: { type: str, default: null }
     huber_mean:
       huber_c: { type: float, default: 1.345 }
       temp_path: { type: str, default: null }
+    max_mix:
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
+      temp_path: { type: str, default: null }
+      minus_only: { type: bool, default: true }
 
 # ── 节点 ──
 #
@@ -86,6 +102,7 @@ nodes:
 
   exif_loader:
     op: ExifReadOp
+    enable: configs.enable_exif
     inputs:
       fnames: inputs.fnames
     outputs:
@@ -158,18 +175,23 @@ nodes:
       sigma_clip:
         int_weight: configs.int_weight
         mask: load_mask.result
-        # rej_high, rej_low, max_iter, early_converge_ratio — auto-wired
+        # rej_high, rej_low, max_iter — auto-wired
       huber_mean:
         int_weight: configs.int_weight
         mask: load_mask.result
         # huber_c — auto-wired
       median:
         mask: load_mask.result
+      max_mix:
+        int_weight: configs.int_weight
+      max:
+        int_weight: configs.int_weight
     outputs:
       result: { type: image }
 
   ground_stacker:
     op: stacker.meta.yaml # fixed-op；route_key 选择 route_configs 分支
+    enable: configs.enable_ground
     route_key: ground_stacker
     routes:
       stacker: routes.ground_stacker # 透传父图选择到子图 stacker route
@@ -182,20 +204,33 @@ nodes:
       sigma_clip:
         int_weight: configs.int_weight
         mask: mask_invert.result
-        # rej_high, rej_low, max_iter, early_converge_ratio — auto-wired
+        # rej_high, rej_low, max_iter — auto-wired
       huber_mean:
         int_weight: configs.int_weight
         mask: mask_invert.result
         # huber_c — auto-wired
       median:
         mask: mask_invert.result
+      max_mix:
+        int_weight: configs.int_weight
+      max:
+        int_weight: configs.int_weight
     outputs:
       result: { type: image }
+
+  result_apply_mask:
+    op: ApplyMaskOp
+    inputs:
+      image: sky_stacker.result
+    configs:
+      mask: load_mask.result
+    outputs:
+      result: { type: sequence }    
 
   image_add:
     op: ImageAddOp
     configs:
-      image_a: sky_stacker.result
+      image_a: result_apply_mask.result
       image_b: ground_stacker.result
     outputs:
       result: { type: image }

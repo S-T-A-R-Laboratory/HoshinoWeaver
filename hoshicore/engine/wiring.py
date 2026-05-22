@@ -232,15 +232,15 @@ def instantiate_and_wire(
     for node_name in dag.exec_order:
         node_spec = nodes_spec[node_name]
         for loc, src in _iter_node_src_links(node_spec):
-            # SubDAG 展开产生的 __inactive__ 标记：跳过布线，标记队列非活跃
+            # __inactive__ 标记：跳过布线，标记队列非活跃
             if src == INACTIVE_MARKER:
                 section, arg_name = loc.split(".", 1)
                 op_inst = instances[node_name]
                 if section == "inputs" and arg_name in op_inst.inputs:
                     op_inst.inputs[arg_name].active = False
                     logger.debug(
-                        f"Skipped inactive input '{node_name}.{arg_name}' "
-                        f"(from SubDAG flattening)")
+                        f"Skipped inactive input '{node_name}.{arg_name}'")
+                # configs 的 __inactive__ 在 auto-inject 阶段处理（注入 Op 默认值）
                 continue
 
             parsed = _parse_link(src)
@@ -277,11 +277,14 @@ def instantiate_and_wire(
         op_inst = instances[node_name]
         node_spec = nodes_spec[node_name]
 
-        # 收集 YAML 中已布线的 config / input 键
+        # 收集 YAML 中已布线的 config / input 键（__inactive__ 视为未布线）
         yaml_cfg_keys: set[str] = set()
         cfg_section = node_spec.get("configs")
         if isinstance(cfg_section, dict):
-            yaml_cfg_keys = set(cfg_section.keys())
+            yaml_cfg_keys = {
+                k for k, v in cfg_section.items()
+                if v != INACTIVE_MARKER
+            }
 
         yaml_inp_keys: set[str] = set()
         inp_section = node_spec.get("inputs")

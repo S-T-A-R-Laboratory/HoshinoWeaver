@@ -37,6 +37,7 @@ from hoshicore.component.norma.types import CameraModel, Intrinsics
 import hoshicore.ops.sigma_clip_ops as sigma_clip_ops
 from hoshicore.ops.sigma_clip_ops import MedianReduceOp
 from hoshicore.ops.sigma_clip_ops import ThresholdMaxIteratorOp
+import hoshicore._custom_op.ops.sigma_clip as sigma_clip_chunk_ops
 from hoshicore.ops.trailstacker import MeanStackerOp
 
 
@@ -890,6 +891,112 @@ class TestCustomOpsFallback(unittest.TestCase):
             np.square(img, dtype=np.uint64) * rejected.astype(np.uint64),
         )
         np.testing.assert_array_equal(count, rejected)
+
+    def test_sigma_clip_chunk_rejects_outliers(self) -> None:
+        """Chunk kernel correctly rejects outlier pixels."""
+        np.random.seed(123)
+        n_frames = 30
+        plane_size = 8
+        stack = np.random.randint(190, 210, (n_frames, plane_size)).astype(np.uint16)
+        stack[5, 2] = 900
+        stack[10, 2] = 850
+        stack[15, 5] = 50
+
+        total_sum = stack.sum(axis=0).astype(np.float64)
+        total_sq = (stack.astype(np.float64) ** 2).sum(axis=0)
+        total_n = np.full(plane_size, float(n_frames))
+
+        c_sum, c_sq, c_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5)
+        n_sum, n_sq, n_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk_numpy(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5)
+
+        np.testing.assert_array_equal(c_n, n_n)
+        np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
+        self.assertEqual(c_n[2], 28.0)
+        self.assertEqual(c_n[5], 29.0)
+        for i in [0, 1, 3, 4, 6, 7]:
+            self.assertEqual(c_n[i], 30.0)
+
+    def test_sigma_clip_chunk_with_static_mask(self) -> None:
+        """Chunk kernel respects a static mask (same for all frames)."""
+        np.random.seed(789)
+        n_frames = 20
+        plane_size = 8
+        stack = np.random.randint(100, 120, (n_frames, plane_size)).astype(np.uint16)
+        stack[5, 3] = 900
+
+        mask = np.ones((n_frames, plane_size), dtype=np.uint8)
+        mask[:, 3] = 0
+        mask[:, 7] = 0
+
+        stack_f64 = stack.astype(np.float64)
+        mask_f64 = mask.astype(np.float64)
+        total_sum = (stack_f64 * mask_f64).sum(axis=0)
+        total_sq = (stack_f64 ** 2 * mask_f64).sum(axis=0)
+        total_n = mask_f64.sum(axis=0)
+
+        c_sum, c_sq, c_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5, mask=mask)
+        n_sum, n_sq, n_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk_numpy(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5, mask=mask)
+
+        np.testing.assert_array_equal(c_n, n_n)
+        np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
+        self.assertEqual(c_n[3], 0.0)
+        self.assertEqual(c_n[7], 0.0)
+        for i in [0, 1, 2, 4, 5, 6]:
+            self.assertEqual(c_n[i], 20.0)
+
+    def test_sigma_clip_chunk_with_perframe_mask(self) -> None:
+        """Chunk kernel handles per-frame masks."""
+        np.random.seed(321)
+        n_frames = 20
+        plane_size = 6
+        stack = np.random.randint(95, 105, (n_frames, plane_size)).astype(np.uint16)
+        stack[0, 2] = 250
+
+        mask = np.ones((n_frames, plane_size), dtype=np.uint8)
+        mask[0, 0] = 0
+        mask[0, 1] = 0
+
+        stack_f64 = stack.astype(np.float64)
+        mask_f64 = mask.astype(np.float64)
+        total_sum = (stack_f64 * mask_f64).sum(axis=0)
+        total_sq = (stack_f64 ** 2 * mask_f64).sum(axis=0)
+        total_n = mask_f64.sum(axis=0)
+
+        c_sum, c_sq, c_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5, mask=mask)
+        n_sum, n_sq, n_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk_numpy(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5, mask=mask)
+
+        np.testing.assert_array_equal(c_n, n_n)
+        np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
+        self.assertEqual(c_n[0], 19.0)
+        self.assertEqual(c_n[1], 19.0)
+        self.assertEqual(c_n[2], 19.0)
+
+    def test_sigma_clip_fused_chunk_with_mask(self) -> None:
+        """Fused chunk kernel respects mask."""
+        np.random.seed(654)
+        n_frames = 25
+        plane_size = 10
+        stack = np.random.randint(80, 120, (n_frames, plane_size)).astype(np.uint16)
+        stack[3, 4] = 250
+
+        mask = np.ones((n_frames, plane_size), dtype=np.uint8)
+        mask[:, 8] = 0
+
+        c_sum, c_sq, c_n = sigma_clip_chunk_ops.sigma_clip_fused_chunk(
+            stack, 3.0, 3.0, 5, mask=mask)
+        n_sum, n_sq, n_n = sigma_clip_chunk_ops.sigma_clip_fused_chunk_numpy(
+            stack, 3.0, 3.0, 5, mask=mask)
+
+        np.testing.assert_array_equal(c_n, n_n)
+        np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
+        self.assertEqual(c_n[8], 0.0)
+        self.assertLess(c_n[4], 25.0)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@ import itertools
 import sys
 from typing import Any, Awaitable, Mapping, Optional, Sequence
 
+import numpy as np
+
 from loguru import logger
 
 from ..component.progress import DummyTracker
@@ -310,59 +312,80 @@ class ParallelBaseOp(BaseOp):
             self.tracker.close_bar(self.name)
 
     async def _execute_concurrent(self, configs: dict[str, Any]) -> None:
-        """并发执行：滑动窗口保证输出有序。
+        """流式并发执行。
 
-        支持定长和 sentinel 驱动两种模式：
-        - 定长模式：按 window_size 分批，每批固定数量任务。
-        - sentinel 模式：每批启动 window_size 个任务，遇到 StreamExhausted
-          的任务标记为 None，广播时跳过。批内有任何 sentinel 命中即结束外层循环。
+        输出缓冲上限 = CONCURRENCY 帧（由 slots semaphore 保证）。
 
-        注意：窗口内多任务并发调用 queue.get()，数据帧分配顺序依赖
-        CPython asyncio.Queue 的 FIFO 唤醒实现（基于 collections.deque）。
-        语言规范未明确保证此行为，但所有主流 CPython 版本均如此。
-        如需严格保证顺序，需要串行预取数据后并发处理，但这会改变
-        _async_execute_single 的接口签名（从 Awaitable 变为已解析值）。
+        数据帧分配顺序依赖 CPython asyncio.Queue 的 FIFO 唤醒实现
+        （基于 collections.deque）。语言规范未明确保证此行为，
+        但所有主流 CPython 版本均如此。
         """
         if self.length is not None:
             self.tracker.create_bar(self.name, self.length)
-        window_size = self.WINDOW_SIZE or (self.CONCURRENCY * 2)
-        semaphore = asyncio.Semaphore(self.CONCURRENCY)
-        _STOP = object()  # 内部标记：该槽位遇到 sentinel
 
-        for window_start in self._input_range():
-            if window_start % window_size != 0:
-                continue  # _input_range 逐步递增，只在窗口边界启动批次
-            if self.length is not None:
-                window_len = min(window_size, self.length - window_start)
-            else:
-                window_len = window_size
-            results: list = [_STOP] * window_len
+        _STOP = object()
+        pending: dict[int, Any] = {}
+        emit_event = asyncio.Event()
+        sentinel_event = asyncio.Event()
 
-            async def process_item(local_idx: int):
-                async with semaphore:
-                    data = self._async_convert_inputs()
-                    try:
-                        result = await self._async_execute_single(
-                            data, configs)
-                    except StreamExhausted:
-                        for awaitable in data.values():
-                            if hasattr(awaitable, 'close'):
-                                awaitable.close()
-                        return  # results[local_idx] 保持 _STOP
-                    results[local_idx] = result
+        # slots: producer acquire, emitter release → pending 上限 = CONCURRENCY
+        slots = asyncio.Semaphore(self.CONCURRENCY)
+
+        async def process_item(idx: int):
+            data = self._async_convert_inputs()
+            try:
+                result = await self._async_execute_single(data, configs)
+            except (StreamExhausted, CancellationError):
+                for awaitable in data.values():
+                    if hasattr(awaitable, 'close'):
+                        awaitable.close()
+                result = _STOP
+                sentinel_event.set()
+            pending[idx] = result
+            emit_event.set()
+
+        async def emit_loop():
+            next_emit = 0
+            while True:
+                while next_emit in pending:
+                    result = pending.pop(next_emit)
+                    if result is _STOP:
+                        slots.release()
+                        return
+                    await self._broadcast_outputs(result)
                     if self.length is not None:
                         self.tracker.update(self.name)
+                    next_emit += 1
+                    slots.release()
+                    if self.length is not None and next_emit >= self.length:
+                        return
+                emit_event.clear()
+                await emit_event.wait()
 
-            await asyncio.gather(*[process_item(i) for i in range(window_len)])
+        emit_task = asyncio.create_task(emit_loop())
+        tasks: list[asyncio.Task] = []
 
-            has_stop = False
-            for result in results:
-                if result is _STOP:
-                    has_stop = True
-                    continue
-                await self._broadcast_outputs(result)
-            if has_stop:
-                break  # 本窗口内有 sentinel → 序列结束
+        for idx in self._input_range():
+            if sentinel_event.is_set() or emit_task.done():
+                break
+            await slots.acquire()
+            if sentinel_event.is_set() or emit_task.done():
+                slots.release()
+                break
+            task = asyncio.create_task(process_item(idx))
+            tasks.append(task)
+
+        # 等待 in-flight tasks 完成（sentinel 回填保证不会永久阻塞）
+        for t in tasks:
+            if not t.done():
+                try:
+                    await asyncio.wait_for(t, timeout=5.0)
+                except (asyncio.TimeoutError, Exception):
+                    t.cancel()
+
+        emit_event.set()
+        if not emit_task.done():
+            await emit_task
 
         if self.length is not None:
             self.tracker.close_bar(self.name)
@@ -370,6 +393,110 @@ class ParallelBaseOp(BaseOp):
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
                                     configs: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("Subclass must implement this method")
+
+
+class ChunkIteratorBaseOp(BaseOp):
+    """Chunk-level 迭代基类：将 buffer 重放按空间分块处理。
+
+    主循环骨架：
+        for chunk in chunks:
+            state = _init_chunk_state(...)
+            for pass in passes:
+                for frame in frames:
+                    _merge_chunk(state, frame[row_start:row_end], weight)
+                if _check_convergence(state): break
+            result_chunks.append(_finalize_chunk(state))
+        result = concatenate(result_chunks)
+
+    核心收益：multi-pass 算法的 IO 从 n_passes × data 降为 ~1 × data
+    （chunk 内所有 pass 复用 OS page cache）。
+    """
+    BUFFER_ITERATOR = True
+    CHUNK_ROWS: int = 256
+    CHUNK_OVERLAP: int = 0
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self._chunk_states: list[Any] = []
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        frame_buffer = configs['buffer_handle']
+        chunk_rows = configs.get('chunk_rows', self.CHUNK_ROWS)
+        overlap = self.CHUNK_OVERLAP
+
+        try:
+            first_frame, _ = frame_buffer[0]
+            h, w = first_frame.shape[:2]
+            del first_frame  # release mmap immediately — prevents Windows file-lock on cleanup
+            n_chunks = (h + chunk_rows - 1) // chunk_rows
+            result_chunks: list[np.ndarray] = []
+            self._chunk_states = []
+
+            row_ranges = [
+                (max(0, cidx * chunk_rows - overlap),
+                 min(h, (cidx + 1) * chunk_rows + overlap))
+                for cidx in range(n_chunks)
+            ]
+
+            self.tracker.create_bar(self.name, n_chunks, unit="chunks")
+            chunk_idx = 0
+            async for chunk_stack in frame_buffer.iter_chunk_prefetch(row_ranges):
+                row_start, row_end = row_ranges[chunk_idx]
+                out_start = (chunk_idx * chunk_rows) - row_start
+                out_end = out_start + min(chunk_rows, h - chunk_idx * chunk_rows)
+
+                state = self._init_chunk_state(configs, row_start, row_end, w)
+
+                for pass_idx in range(self._max_passes(configs)):
+                    await self._run_cpu(self._run_pass, state, chunk_stack)
+
+                    if self._check_convergence(state, pass_idx):
+                        break
+                    self._prepare_next_pass(state, pass_idx)
+
+                chunk_result = self._finalize_chunk(state)
+                result_chunks.append(chunk_result[out_start:out_end])
+                self._chunk_states.append(state)
+                self.tracker.update(self.name)
+                chunk_idx += 1
+
+            result = np.concatenate(result_chunks, axis=0)
+            await self._broadcast_outputs(
+                self._wrap_output(result, configs))
+        finally:
+            self.tracker.close_bar(self.name)
+            frame_buffer.cleanup()
+
+    # --- 子类钩子 ---
+
+    def _init_chunk_state(self, configs: dict[str, Any],
+                          row_start: int, row_end: int, w: int) -> Any:
+        raise NotImplementedError
+
+    def _merge_chunk(self, state: Any, chunk_data: np.ndarray,
+                     chunk_weight, frame_idx: int) -> None:
+        raise NotImplementedError
+
+    def _max_passes(self, configs: dict[str, Any]) -> int:
+        return 1
+
+    def _check_convergence(self, state: Any, pass_idx: int) -> bool:
+        return False
+
+    def _prepare_next_pass(self, state: Any, pass_idx: int) -> None:
+        pass
+
+    def _finalize_chunk(self, state: Any) -> np.ndarray:
+        raise NotImplementedError
+
+    def _wrap_output(self, result: np.ndarray,
+                     configs: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def _run_pass(self, state: Any, chunk_stack: list) -> None:
+        """Merge all frames for one pass. Called inside _run_cpu."""
+        for frame_idx, (chunk_data, chunk_weight) in enumerate(chunk_stack):
+            self._merge_chunk(state, chunk_data, chunk_weight, frame_idx)
 
 
 class FilterBaseOp(BaseOp):

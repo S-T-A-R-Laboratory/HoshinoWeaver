@@ -54,6 +54,12 @@ class StarAlignmentOp(BaseOp):
         "aligned_exifs": {"type": "sequence"},
     }
 
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        # 持有 1 张参考帧 + 1 张当前帧的对齐输出
+        # TODO: 对齐本身资源未计算
+        return (2 * frame_bytes, 0)
+
     def _infer_output_length(self, input_lengths):
         return None
 

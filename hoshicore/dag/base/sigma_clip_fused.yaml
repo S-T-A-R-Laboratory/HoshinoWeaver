@@ -1,0 +1,47 @@
+description: "Fused Sigma Clipping sub-DAG: DiskBuffer + SigmaClipFusedChunkOp"
+version: "1"
+
+# ── 全局输入 ──
+inputs:
+  data: { type: sequence }
+  fnames: { type: sequence, required: false }
+
+# ── 全局配置 ──
+configs:
+  rej_high: { type: float, default: 3.0 }
+  rej_low: { type: float, default: 3.0 }
+  max_iter: { type: int, default: 5 }
+  mask: {type: image, default: null}
+  buffer_mode: { type: str, default: "disk", global: true }
+
+# ── 节点 ──
+#
+#  inputs.data ──► disk_buffer ──► sigma_clip_fused ──► result / statistics
+
+nodes:
+  disk_buffer:
+    op: DiskBufferWriterOp
+    inputs:
+      data: inputs.data
+      fnames: inputs.fnames
+    configs:
+      buffer_mode: configs.buffer_mode
+    outputs:
+      buffer_handle: { type: image }
+
+  sigma_clip_fused:
+    op: SigmaClipFusedChunkOp
+    configs:
+      buffer_handle: disk_buffer.buffer_handle
+      rej_high: configs.rej_high
+      rej_low: configs.rej_low
+      max_iter: configs.max_iter
+      mask: configs.mask
+    outputs:
+      result: { type: image }
+      statistics: { type: image }
+
+# ── 全局输出 ──
+outputs:
+  result: sigma_clip_fused.result
+  statistics: sigma_clip_fused.statistics

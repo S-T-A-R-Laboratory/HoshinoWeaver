@@ -43,6 +43,13 @@ class SatelliteCleanOp(BaseOp):
         "result": {"type": "sequence"},
     }
 
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        # deque 持有 W 帧 + _process_center 中 W 帧对齐副本用于 median
+        # TODO: 对齐的资源开销未计入
+        w = configs.get("window_size", 3)
+        return (w * 2 * frame_bytes, 0)
+
     def _infer_output_length(self, input_lengths):
         return input_lengths.get('data')
 

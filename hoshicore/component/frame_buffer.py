@@ -104,16 +104,85 @@ class BaseFrameBuffer:
             if next_task is not None:
                 prefetch_task = next_task
 
+    def get_rows(
+        self,
+        idx: int,
+        row_start: int,
+        row_end: int,
+    ) -> tuple[np.ndarray, Optional[Union[float, np.ndarray]]]:
+        """Return a copy of rows [row_start:row_end] for frame idx.
+
+        Default implementation loads the full frame and slices.
+        DiskFrameBuffer overrides this to use mmap partial reads.
+        """
+        frame, weight = self[idx]
+        chunk_frame = frame[row_start:row_end].copy()
+        if isinstance(weight, np.ndarray):
+            chunk_weight = weight[row_start:row_end].copy()
+        else:
+            chunk_weight = weight
+        return chunk_frame, chunk_weight
+
+    async def iter_chunk_prefetch(
+        self,
+        row_ranges: list[tuple[int, int]],
+    ) -> AsyncIterator[list[tuple[np.ndarray, Optional[Union[float, np.ndarray]]]]]:
+        """异步预读迭代器（chunk 级别）：将下一 chunk 的 IO 与当前 chunk 的计算重叠。
+
+        对每个 (row_start, row_end) 区间，并行加载所有帧的行切片，
+        使下一 chunk 的磁盘读取与当前 chunk 的 CPU 计算同时进行。
+
+        用法::
+
+            row_ranges = [(0, 256), (256, 512), ...]
+            async for chunk_stack in frame_buffer.iter_chunk_prefetch(row_ranges):
+                await self._run_cpu(self._run_pass, state, chunk_stack)
+
+        Args:
+            row_ranges: 每个 chunk 的行区间列表，元素为 (row_start, row_end)。
+
+        Yields:
+            每个 chunk 对应的 list[(frame_rows, weight_rows)]，长度等于 len(self)。
+        """
+        if not row_ranges:
+            return
+        n_frames = len(self)
+
+        def _load_chunk(row_start: int, row_end: int):
+            return [self.get_rows(i, row_start, row_end) for i in range(n_frames)]
+
+        rs, re = row_ranges[0]
+        prefetch_task: asyncio.Task = asyncio.create_task(
+            asyncio.to_thread(_load_chunk, rs, re)
+        )
+
+        for i, (rs, re) in enumerate(row_ranges):
+            next_i = i + 1
+            if next_i < len(row_ranges):
+                next_rs, next_re = row_ranges[next_i]
+                next_task: asyncio.Task = asyncio.create_task(
+                    asyncio.to_thread(_load_chunk, next_rs, next_re)
+                )
+            else:
+                next_task = None
+
+            yield await prefetch_task
+
+            if next_task is not None:
+                prefetch_task = next_task
+
 
 class DiskFrameBuffer(BaseFrameBuffer):
-    """磁盘帧缓冲：将帧（及可选权重）写入临时 .npz 文件，按索引随机读取。
+    """磁盘帧缓冲：将帧写入 .npy 文件，读取时通过 mmap 零拷贝访问。
+
+    权重分流：ndarray 权重存为独立 .npy 文件；标量/None 权重直接内存持有。
 
     用法：
         buffer = DiskFrameBuffer()
         buffer.append(frame1, weight1)
         buffer.append(frame2)
 
-        frame, weight = buffer[0]   # 从磁盘读取
+        frame, weight = buffer[0]   # mmap 读取
         buffer.cleanup()             # 删除所有临时文件
     """
 
@@ -124,7 +193,9 @@ class DiskFrameBuffer(BaseFrameBuffer):
         os.makedirs(self.temp_path, exist_ok=True)
         self.prefix = base64.urlsafe_b64encode(os.urandom(6)).decode("ascii")
         self._count = 0
-        self._paths: list[Path] = []
+        self._frame_paths: list[Path] = []
+        self._weight_paths: list[Optional[Path]] = []
+        self._scalar_weights: list[Optional[float]] = []
         self._cleaned = False
 
     def append(self, frame: np.ndarray,
@@ -135,37 +206,60 @@ class DiskFrameBuffer(BaseFrameBuffer):
             frame: 图像数据 (np.ndarray)。
             weight: 可选权重，标量或与 frame 同形状的 ndarray。
         """
-        path = self.temp_path / f"{self.prefix}_{self._count:05d}.npz"
-        if weight is not None:
-            if isinstance(weight, (int, float)):
-                weight = np.array(weight)
-            np.savez(path, frame=frame, weight=weight)
+        frame_path = self.temp_path / f"{self.prefix}_{self._count:05d}.npy"
+        np.save(frame_path, frame)
+        self._frame_paths.append(frame_path)
+
+        if isinstance(weight, np.ndarray):
+            weight_path = self.temp_path / f"{self.prefix}_{self._count:05d}_w.npy"
+            np.save(weight_path, weight)
+            self._weight_paths.append(weight_path)
+            self._scalar_weights.append(None)
         else:
-            np.savez(path, frame=frame)
-        self._paths.append(path)
+            self._weight_paths.append(None)
+            self._scalar_weights.append(float(weight) if weight is not None else None)
+
         self._count += 1
 
-    def __getitem__(self, idx: int) -> tuple[np.ndarray, Optional[np.ndarray]]:
-        """按索引从磁盘读取帧和权重。
+    def __getitem__(self, idx: int) -> tuple[np.ndarray, Optional[Union[float, np.ndarray]]]:
+        """按索引 mmap 读取帧和权重。
 
         Args:
             idx: 帧索引。
 
         Returns:
-            (frame, weight) 元组。weight 为 None 表示该帧无权重。
+            (frame, weight) 元组。frame 为 mmap 只读视图。
         """
         if idx < 0 or idx >= self._count:
             raise IndexError(
                 f"DiskFrameBuffer index {idx} out of range [0, {self._count})"
             )
-        data = np.load(self._paths[idx])
-        frame = data['frame']
-        weight = data['weight'] if 'weight' in data else None
-        data.close()  # 释放 NpzFile 持有的文件句柄和内部缓存
-        # 标量权重还原
-        if weight is not None and weight.ndim == 0:
-            weight = float(weight)
+        frame = np.load(self._frame_paths[idx], mmap_mode='r')
+        if self._weight_paths[idx] is not None:
+            weight = np.load(self._weight_paths[idx], mmap_mode='r')
+        else:
+            weight = self._scalar_weights[idx]
         return frame, weight
+    def get_rows(
+        self,
+        idx: int,
+        row_start: int,
+        row_end: int,
+    ) -> tuple[np.ndarray, Optional[Union[float, np.ndarray]]]:
+        """mmap the frame, copy only the needed rows, release mmap immediately.
+
+        The immediate `del arr` is important on Windows: keeping the mmap open
+        holds a file lock that prevents cleanup from calling unlink().
+        """
+        frame, weight = self[idx]          # bounds check + mmap + weight 一次
+        result = frame[row_start:row_end].copy()
+        del frame                           # 显式释放 frame mmap（Windows 文件锁）
+        if isinstance(weight, np.ndarray):
+            chunk_weight = weight[row_start:row_end].copy()
+            del weight                      # 显式释放 weight mmap
+        else:
+            chunk_weight = weight
+        return result, chunk_weight
 
     def __len__(self) -> int:
         return self._count
@@ -174,12 +268,20 @@ class DiskFrameBuffer(BaseFrameBuffer):
         """删除所有临时缓冲文件。"""
         if self._cleaned:
             return
-        for p in self._paths:
+        for p in self._frame_paths:
             try:
                 p.unlink()
             except OSError:
                 pass
-        self._paths.clear()
+        for p in self._weight_paths:
+            if p is not None:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+        self._frame_paths.clear()
+        self._weight_paths.clear()
+        self._scalar_weights.clear()
         self._count = 0
         self._cleaned = True
         logger.debug(
@@ -187,7 +289,7 @@ class DiskFrameBuffer(BaseFrameBuffer):
 
     def __del__(self):
         """安全网：防止异常中断（如用户 Ctrl-C）导致临时文件泄漏。"""
-        if not self._cleaned and self._paths:
+        if not self._cleaned and self._frame_paths:
             self._do_cleanup()
 
 

@@ -21,6 +21,12 @@ routes:
       median:
         label: "中位数"
         description: "逐像素取中位数，天然抗异常值"
+      max_mix:
+        label: "最大值混合"
+        description: "最大值+噪声均衡，保留轨迹并平衡亮度"
+      max:
+        label: "最大值"
+        description: "逐像素取最大值，保留轨迹"
   ground_stacker:
     label: "地面叠加算法"
     widget: tabs
@@ -37,12 +43,16 @@ routes:
       median:
         label: "中位数"
         description: "逐像素取中位数，天然抗异常值"
+      max_mix:
+        label: "最大值混合"
+        description: "最大值+噪声均衡，保留轨迹并平衡亮度"
+      max:
+        label: "最大值"
+        description: "逐像素取最大值，保留轨迹"
 
 configs:
   int_weight:
-    label: "整数权重"
-    description: "启用使用整数累加，改善精度，速度更快"
-    widget: switch
+    hidden: true
   output_dtype:
     hidden: true
   output_filename:
@@ -69,6 +79,14 @@ configs:
     description: "天空对齐基准图像。空缺默认使用第一张"
     widget: file_picker
     accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+  enable_exif:
+    label: "同步 EXIF 信息"
+    description: "在输出文件中写入 EXIF 信息"
+    widget: switch
+  enable_ground:
+    label: "叠加地面图像"
+    description: "同时叠加地面图像"
+    widget: switch
   distortion:
     hidden: true
   exif_reduce_type:
@@ -88,10 +106,10 @@ route_configs:
 layout:
   groups:
     - name: "对齐设置"
-      keys: [align_method, align_base, same_camera, mask]
+      keys: [align_method, align_base, same_camera, mask, enable_ground]
     - name: "输出设置"
       keys: [int_weight]
-  order: [sky_stacker, ground_stacker, align_method, same_camera, mask, int_weight]
+  order: [sky_stacker, ground_stacker, align_method, same_camera, mask, enable_ground, int_weight]
 
 outputs:
   - "!include": fragments/image_output.ui.yaml

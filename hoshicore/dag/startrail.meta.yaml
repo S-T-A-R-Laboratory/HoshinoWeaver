@@ -23,6 +23,7 @@ configs:
   sat_window_size:        { type: int,  default: 3 }
   mask: { type: str, required: false, default: null }
   int_weight:       { type: bool,  default: true }
+  enable_exif:      { type: bool,  default: true }
   exif_reduce_type: { type: str,   default: "sum" }
   loader_type:      { type: str,   default: "img_file_list" }
   loader_configs:   { type: dict,  default: {} }
@@ -69,6 +70,7 @@ nodes:
   star_shrink:
     op: StarShrinkOp
     enable: configs.enable_star_shrink
+    bypass: data
     inputs:
       data: data_loader.result
     outputs:
@@ -77,6 +79,7 @@ nodes:
   satellite_clean:
     op: satellite_clean.yaml
     enable: configs.enable_satellite_clean
+    bypass: data
     inputs:
       data: star_shrink.result
     configs:
@@ -117,6 +120,7 @@ nodes:
 
   exif_loader:
     op: ExifReadOp
+    enable: configs.enable_exif
     inputs:
       fnames: inputs.fnames
     outputs:

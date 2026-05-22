@@ -52,7 +52,7 @@ Meta YAML ── meta_resolve() ──► Standard spec ── flatten_sub_dags(
 
 | Module | Role |
 |--------|------|
-| `meta.py` | Compiles Meta YAML (routes, enabled flags) into standard DAG spec |
+| `meta.py` | Compiles Meta YAML (routes, enable flags) into standard DAG spec |
 | `flatten.py` | Recursively expands `.yaml` SubDAG references into namespaced flat nodes |
 | `build.py` | Validates DAG spec, builds dependency graph (networkx), produces topological order |
 | `wiring.py` | Instantiates Ops, connects async queues, creates feeder coroutines |

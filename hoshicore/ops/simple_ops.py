@@ -435,7 +435,10 @@ class MaskInvertOp(BaseOp):
 
 @register_op()
 class ImageAddOp(BaseOp):
-    """两路图像逐像素相加。用于互补 mask 分离叠加后的合成。"""
+    """两路图像逐像素相加。用于互补 mask 分离叠加后的合成。
+
+    当 image_b 为 None 时直接输出 image_a（支持 prune 断路场景）。
+    """
 
     CONFIGS: dict[str, Any] = {
         "image_a": {
@@ -444,7 +447,7 @@ class ImageAddOp(BaseOp):
         },
         "image_b": {
             "type": "image",
-            "required": True
+            "default": None
         },
     }
     OUTPUTS: dict[str, Any] = {
@@ -456,6 +459,9 @@ class ImageAddOp(BaseOp):
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         a = configs['image_a']
         b = configs['image_b']
+        if b is None:
+            await self._broadcast_outputs({"result": a})
+            return
         a_arr = a.data if isinstance(a, FloatImage) else a
         b_arr = b.data if isinstance(b, FloatImage) else b
         result_arr = np.add(a_arr, b_arr)

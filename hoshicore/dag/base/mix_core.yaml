@@ -9,7 +9,6 @@ inputs:
 
 # ── 全局配置 ──
 configs:
-  int_weight:  { type: bool,  default: true }
   rej_high:    { type: float, default: 3.0 }
   rej_low:     { type: float, default: 3.0 }
   max_iter:    { type: int,   default: 5 }
@@ -37,12 +36,11 @@ nodes:
       result: { type: image }
 
   sigma_clip:
-    op: sigma_clip.yaml
+    op: sigma_clip_fused.yaml
     inputs:
       data: inputs.data
       fnames: inputs.fnames
     configs:
-      int_weight: configs.int_weight
       rej_high: configs.rej_high
       rej_low: configs.rej_low
       max_iter: configs.max_iter

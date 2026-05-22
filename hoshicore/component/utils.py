@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import inspect
 import multiprocessing as mp
 import os
 import platform
 import sys
 import time
-from pathlib import Path
 from functools import wraps
 from math import floor, sqrt
+from pathlib import Path
 from typing import Callable, Optional, Union
 
 import numpy as np
@@ -31,7 +32,7 @@ RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng", "rw2", "raf"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
-VERSION = "1.0.0-alpha.1"
+VERSION = "1.0.0-beta.0"
 RELEASE_NAME = "Vega"
 ORG_NAME = f"STARLab"
 SOFTWARE_NAME = f"HoshinoWeaver"
@@ -84,7 +85,7 @@ def time_cost_warpper(func: Callable) -> Callable:
         logger.info(
             f"{cls_name}{func.__name__} time cost: {(time.time()-t0):.2f}s.")
 
-    if asyncio.iscoroutinefunction(func):
+    if inspect.iscoroutinefunction(func):
 
         @wraps(func)
         async def async_wrapper(*args, **kwargs):

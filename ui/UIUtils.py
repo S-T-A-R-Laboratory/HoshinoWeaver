@@ -515,6 +515,9 @@ class SlotHandler(QMainWindow):
 
     @Slot()
     def star_trail_start_process(self):
+        if self.window._status == 'running':
+            self.cancel_task()
+            return
         if self.window._status_n['status'] == '未就绪':
             self.window.status_text.setStyleSheet(
                 "#status_text {color:rgba(200,0,0,200)}")
@@ -552,6 +555,7 @@ class SlotHandler(QMainWindow):
         # 设置界面不可操作
         self.set_widget_handleable(handleable=False, task_type='star_trail')
         self.window._status = 'running'
+        self._set_start_btn_stop_mode(True)
 
         # 创建 Qt 进度追踪器并连接信号
         qt_tracker = QtSignalTracker()
@@ -595,7 +599,11 @@ class SlotHandler(QMainWindow):
             self.window._status_n['status'] = '任务完成'
             self.window._status_n['tips_2'] = ''
         except asyncio.CancelledError:
-            pass
+            self.view_file(file_path='')
+            self.window._status = 'cancelled'
+            self.window._status_n['status'] = '任务取消'
+            self.window._status_n['tips'] = '已停止叠加'
+            self.window._status_n['tips_2'] = ''
         except Exception as e:
             logger.error(f"任务执行失败: {e}")
             self.window.status_text.setStyleSheet(
@@ -615,8 +623,22 @@ class SlotHandler(QMainWindow):
                 f"完整异常链:\n{_format_exception_chain(e)}")
             msg_box.exec()
         finally:
+            self._set_start_btn_stop_mode(False)
             self.set_widget_handleable(handleable=True)
             self.update_status_display()
+
+    def _set_start_btn_stop_mode(self, stop: bool):
+        btn = self.window.btn_star_trail_start
+        if stop:
+            icon = QIcon()
+            icon.addFile(u":/icons/resource/icon/stop.png", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+            btn.setIcon(icon)
+            btn.setToolTip("停止")
+        else:
+            icon = QIcon()
+            icon.addFile(u":/icons/resource/icon/start.png", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+            btn.setIcon(icon)
+            btn.setToolTip("开始叠加")
 
     @Slot()
     def cancel_task(self):
@@ -626,11 +648,6 @@ class SlotHandler(QMainWindow):
                 self.window._cancel_event.set()
             # 取消 asyncio task 以打断 gather 层面的 await
             self.window._task.cancel()
-            # 取消任务后 修改tips为已停止，修改状态为cancelled，不展示任何图像，恢复按钮为可点击，修改开始按钮为"开始叠加"
-            self.display_star_trail_tips('已停止叠加！', color='red')
-            self.view_file(file_path='')
-            self.window._status = 'cancelled'
-            self.set_widget_handleable(handleable=True)
 
     @Slot()
     def display_star_trail_tips(self, text, color='red'):
@@ -751,11 +768,11 @@ class SlotHandler(QMainWindow):
         dis_handleable_widget_content = {
             'star_trail_fast_preview': [
                 '01', '02', '03', '06', '07', '08', '09', '10', '11', '12',
-                '17', '18'
+                '17'
             ],
             'star_trail': [
                 '01', '02', '03', '06', '07', '08', '09', '10', '11', '12',
-                '17', '18'
+                '17'
             ]
         }
 

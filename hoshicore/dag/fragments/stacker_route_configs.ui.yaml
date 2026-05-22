@@ -19,13 +19,6 @@ sigma_clip:
     min: 1
     max: 10
     step: 1
-  early_converge_ratio:
-    label: "提前终止阈值"
-    description: "连续保留像素比例超过此值时提前终止"
-    widget: slider
-    min: 0.9
-    max: 1.0
-    step: 0.01
   temp_path:
     hidden: true
 huber_mean:
@@ -36,3 +29,30 @@ huber_mean:
     min: 0.1
     max: 5.0
     step: 0.05
+max_mix:
+  rej_low:
+    label: "排异阈值下界"
+    description: "低于均值多少个标准差σ视为异常值"
+    widget: slider
+    min: 0
+    max: 5.0
+    step: 0.1
+  rej_high:
+    label: "排异阈值上界"
+    description: "高于均值多少个标准差σ视为异常值"
+    widget: slider
+    min: 0
+    max: 5.0
+    step: 0.1
+  max_iter:
+    label: "最大迭代次数"
+    widget: slider
+    min: 1
+    max: 10
+    step: 1
+  temp_path:
+    hidden: true
+  minus_only:
+      label: "平衡亮度"
+      description: "仅平衡最大值结果亮度，不额外执行最大值叠加的统计学还原"
+      widget: switch
