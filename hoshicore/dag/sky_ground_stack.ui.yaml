@@ -21,6 +21,12 @@ routes:
       median:
         label: "中位数"
         description: "逐像素取中位数，天然抗异常值"
+      max_mix:
+        label: "最大值混合"
+        description: "最大值+噪声均衡，保留轨迹并平衡亮度"
+      max:
+        label: "最大值"
+        description: "逐像素取最大值，保留轨迹"
   ground_stacker:
     label: "地面叠加算法"
     widget: tabs
@@ -37,6 +43,12 @@ routes:
       median:
         label: "中位数"
         description: "逐像素取中位数，天然抗异常值"
+      max_mix:
+        label: "最大值混合"
+        description: "最大值+噪声均衡，保留轨迹并平衡亮度"
+      max:
+        label: "最大值"
+        description: "逐像素取最大值，保留轨迹"
 
 configs:
   int_weight:

@@ -14,6 +14,8 @@ routes:
       sigma_clip: null
       huber_mean: null
       median: null
+      max_mix: null
+      max: null
     default: sigma_clip
   ground_stacker:
     options:
@@ -21,6 +23,8 @@ routes:
       sigma_clip: null
       huber_mean: null
       median: null
+      max_mix: null
+      max: null
     default: mean
 
 # ── 全局配置 ──
@@ -53,6 +57,13 @@ route_configs:
     huber_mean:
       huber_c: { type: float, default: 1.345 }
       temp_path: { type: str, default: null }
+    max_mix:
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
+      early_converge_ratio: { type: float, default: 0.99 }
+      temp_path: { type: str, default: null }
+      minus_only: { type: bool, default: true }
   ground_stacker:
     sigma_clip:
       rej_high: { type: float, default: 3.0 }
@@ -63,6 +74,13 @@ route_configs:
     huber_mean:
       huber_c: { type: float, default: 1.345 }
       temp_path: { type: str, default: null }
+    max_mix:
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
+      early_converge_ratio: { type: float, default: 0.99 }
+      temp_path: { type: str, default: null }
+      minus_only: { type: bool, default: true }
 
 # ── 节点 ──
 #
@@ -168,6 +186,10 @@ nodes:
         # huber_c — auto-wired
       median:
         mask: load_mask.result
+      max_mix:
+        int_weight: configs.int_weight
+      max:
+        int_weight: configs.int_weight
     outputs:
       result: { type: image }
 
@@ -193,6 +215,10 @@ nodes:
         # huber_c — auto-wired
       median:
         mask: mask_invert.result
+      max_mix:
+        int_weight: configs.int_weight
+      max:
+        int_weight: configs.int_weight
     outputs:
       result: { type: image }
 
