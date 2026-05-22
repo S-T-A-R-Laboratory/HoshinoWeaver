@@ -410,6 +410,34 @@ class TestCustomOpsFallback(unittest.TestCase):
 
         np.testing.assert_allclose(got, expected, rtol=1e-6, atol=1e-6)
 
+    def test_median_reduce_chunk_integer_types(self) -> None:
+        """Test uint8/uint16 with both odd and even frame counts."""
+        for dtype in (np.uint8, np.uint16):
+            # Odd frame count: exact median, no averaging
+            stack_odd = np.array(
+                [[[10, 50], [30, 40]],
+                 [[20, 40], [70, 10]],
+                 [[60, 80], [50, 90]]],
+                dtype=dtype,
+            )
+            got = median_reduce_chunk(stack_odd)
+            expected = np.median(stack_odd, axis=0).astype(dtype)
+            np.testing.assert_array_equal(got, expected,
+                                          err_msg=f"{dtype.__name__} odd-N")
+
+            # Even frame count: average of two middle values (truncated)
+            stack_even = np.array(
+                [[[10, 50], [30, 40]],
+                 [[20, 40], [70, 10]],
+                 [[60, 80], [50, 90]],
+                 [[0, 70], [20, 60]]],
+                dtype=dtype,
+            )
+            got = median_reduce_chunk(stack_even)
+            expected = np.median(stack_even, axis=0).astype(dtype)
+            np.testing.assert_array_equal(got, expected,
+                                          err_msg=f"{dtype.__name__} even-N")
+
     def test_median_reduce_chunk_can_force_numpy_fallback(self) -> None:
         stack = np.array(
             [
@@ -467,9 +495,9 @@ class TestCustomOpsFallback(unittest.TestCase):
                 self.assertEqual(patched_custom.call_count, 2)
 
         asyncio.run(run_case())
-        expected = np.median(np.stack(frames, axis=0).astype(np.float32), axis=0)
+        expected = np.median(np.stack(frames, axis=0), axis=0).astype(np.uint16)
         self.assertIn("result", outputs)
-        np.testing.assert_allclose(outputs["result"].data, expected, rtol=1e-6, atol=1e-6)
+        np.testing.assert_array_equal(outputs["result"].data, expected)
 
     def test_fgp_accumulate_matches_python_unweighted(self) -> None:
         base = FastGaussianParam(

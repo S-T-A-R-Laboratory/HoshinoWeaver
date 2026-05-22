@@ -506,15 +506,14 @@ class MedianReduceOp(BaseOp):
                 if first_frame.ndim == 3:
                     stack = np.empty(
                         (n_frames, actual_rows, w, channels),
-                        dtype=np.float32)
+                        dtype=source_dtype)
                 else:
                     stack = np.empty(
-                        (n_frames, actual_rows, w), dtype=np.float32)
+                        (n_frames, actual_rows, w), dtype=source_dtype)
 
                 for frame_idx in range(n_frames):
                     frame_data, _ = frame_buffer[frame_idx]
-                    stack[frame_idx] = frame_data[
-                        row_start:row_end].astype(np.float32)
+                    stack[frame_idx] = frame_data[row_start:row_end]
 
                 # 沿帧轴取中位数
                 chunk_median = await self._run_cpu(self._reduce_chunk, stack)

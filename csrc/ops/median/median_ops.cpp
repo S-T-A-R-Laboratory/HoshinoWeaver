@@ -1,8 +1,10 @@
 #include "median_ops.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <pybind11/numpy.h>
@@ -20,6 +22,16 @@ namespace {
 #else
 #define HNW_RESTRICT
 #endif
+
+template <typename T>
+inline T median_average(T low, T high) {
+    if constexpr (std::is_floating_point_v<T>) {
+        return (low + high) * static_cast<T>(0.5);
+    } else {
+        // Integer types: use widened arithmetic to avoid overflow
+        return static_cast<T>((static_cast<int64_t>(low) + static_cast<int64_t>(high)) / 2);
+    }
+}
 
 template <typename T>
 void median_reduce_chunk_kernel(
@@ -59,7 +71,7 @@ void median_reduce_chunk_kernel(
                 scratch.begin() + (mid - 1),
                 scratch.begin() + mid);
             const T low = scratch[static_cast<size_t>(mid - 1)];
-            out_ptr[idx] = static_cast<T>((low + high) * static_cast<T>(0.5));
+            out_ptr[idx] = median_average(low, high);
         }
     }
 #else
@@ -84,7 +96,7 @@ void median_reduce_chunk_kernel(
             scratch.begin() + (mid - 1),
             scratch.begin() + mid);
         const T low = scratch[static_cast<size_t>(mid - 1)];
-        out_ptr[idx] = static_cast<T>((low + high) * static_cast<T>(0.5));
+        out_ptr[idx] = median_average(low, high);
     }
 #endif
 }
@@ -114,6 +126,14 @@ py::array_t<T> median_reduce_chunk_impl(
 }
 
 py::array median_reduce_chunk_dispatch(const py::array& stack) {
+    if (py::isinstance<py::array_t<uint8_t>>(stack)) {
+        return median_reduce_chunk_impl<uint8_t>(
+            stack.cast<py::array_t<uint8_t>>());
+    }
+    if (py::isinstance<py::array_t<uint16_t>>(stack)) {
+        return median_reduce_chunk_impl<uint16_t>(
+            stack.cast<py::array_t<uint16_t>>());
+    }
     if (py::isinstance<py::array_t<float>>(stack)) {
         return median_reduce_chunk_impl<float>(
             stack.cast<py::array_t<float>>());
@@ -123,7 +143,7 @@ py::array median_reduce_chunk_dispatch(const py::array& stack) {
             stack.cast<py::array_t<double>>());
     }
     throw std::invalid_argument(
-        "median_reduce_chunk: only float32/float64 stacks are supported");
+        "median_reduce_chunk: unsupported dtype; expected uint8/uint16/float32/float64");
 }
 
 }  // namespace
