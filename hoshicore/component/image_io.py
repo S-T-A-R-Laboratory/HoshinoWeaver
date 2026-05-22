@@ -13,13 +13,19 @@ import PIL.Image
 import rawpy
 import tifffile
 from loguru import logger
-from turbojpeg import TurboJPEG, TJPF_BGR, TJPF_GRAY
+
+try:
+    from turbojpeg import TurboJPEG, TJPF_BGR, TJPF_GRAY
+    _tj = TurboJPEG()
+    _HAS_TURBOJPEG = True
+except Exception:
+    _tj = None
+    TJPF_BGR = TJPF_GRAY = None  # type: ignore[assignment]
+    _HAS_TURBOJPEG = False
 
 from .exif import ExifData, encode_exif_data
 from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, RAW_SUFFIX,
                     SAME_SUFFIX_MAPPING, is_support_format, time_cost_warpper)
-
-_tj = TurboJPEG()
 
 
 def load_img(file_path: str) -> Optional[np.ndarray]:
@@ -44,12 +50,16 @@ def load_img(file_path: str) -> Optional[np.ndarray]:
                 We do not guarantee the stability of EXIF extraction and the output image quality."
                            )
         if suffix in ("jpg", "jpeg"):
-            with open(file_path, 'rb') as f:
-                buf = f.read()
-            img = _tj.decode(buf, pixel_format=TJPF_BGR)
-            if img is None:
-                # TODO: 暂未适配灰度
-                img = _tj.decode(buf, pixel_format=TJPF_GRAY)
+            if _HAS_TURBOJPEG:
+                with open(file_path, 'rb') as f:
+                    buf = f.read()
+                img = _tj.decode(buf, pixel_format=TJPF_BGR)
+                if img is None:
+                    # TODO: 暂未适配灰度
+                    img = _tj.decode(buf, pixel_format=TJPF_GRAY)
+            else:
+                img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
+                                   cv2.IMREAD_UNCHANGED)
         elif suffix in ("tif", "tiff"):
             img = tifffile.imread(file_path)
             if img.ndim == 3:
@@ -106,17 +116,21 @@ def save_img(filename: str,
     suffix = filename.upper().split(".")[-1]
 
     
-    if suffix in ["JPG", "JPEG"]:
+    if suffix in ["JPG", "JPEG"] and _HAS_TURBOJPEG:
         # JPEG 走 turbojpeg
         assert img.dtype == np.uint8, "Invalid: JPEG only supports 8-bit image!"
-        image_bytes = _tj.encode(img, quality=jpg_quality,
+        image_bytes = _tj.encode(img, quality=jpg_quality,  # type: ignore[union-attr]
                                  pixel_format=TJPF_BGR)
         if exif is not None:
             image_bytes = encode_exif_data(
                 np.frombuffer(image_bytes, dtype=np.uint8), exif)
     else:
         # 将图像通过OpenCV进行编码
-        if suffix == "PNG":
+        if suffix in ["JPG", "JPEG"]:
+            assert img.dtype == np.uint8, "Invalid: JPEG only supports 8-bit image!"
+            ext = ".jpg"
+            params = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
+        elif suffix == "PNG":
             ext = ".png"
             params = [int(cv2.IMWRITE_PNG_COMPRESSION), png_compressing]
         elif suffix in ["TIF", "TIFF"]:

@@ -107,10 +107,12 @@ class TrailStackerOp(BaseOp):
                     h, w = cur_img.shape[:2]
                     if base_mask is None:
                         base_mask = np.ones((h, w), dtype=bool)
-                    elif base_mask.shape != (h, w):
-                        base_mask = cv2.resize(
-                            base_mask.astype(np.float32), (w, h),
-                            interpolation=cv2.INTER_NEAREST) > 0.5
+                    else:
+                        if base_mask.shape != (h, w):
+                            base_mask = cv2.resize(
+                                base_mask.astype(np.float32), (w, h),
+                                interpolation=cv2.INTER_NEAREST)
+                        base_mask = base_mask > 0.5
                     mask_needs_resize = False
 
                 # 每帧独立计算有效 mask：base mask 与本帧空白区域取交
@@ -121,9 +123,10 @@ class TrailStackerOp(BaseOp):
                     frame_mask = base_mask
 
                 try:
-                    await self._run_cpu(
-                        merger.merge, cur_img, weight,
-                        spatial_mask=frame_mask)
+                    await self._run_cpu(merger.merge,
+                                        cur_img,
+                                        weight,
+                                        spatial_mask=frame_mask)
                 except AssertionError as e:
                     err_msg_collector.append(
                         f"Shape of {cur_filename} does not match.")
