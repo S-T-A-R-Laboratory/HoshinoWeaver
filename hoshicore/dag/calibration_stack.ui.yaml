@@ -129,7 +129,6 @@ route_configs:
   sigma_clip:
     max_iter:
       max: 20
-    early_converge_ratio: null
 
 layout:
   groups:

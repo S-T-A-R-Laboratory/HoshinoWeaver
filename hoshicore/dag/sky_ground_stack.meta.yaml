@@ -52,7 +52,6 @@ route_configs:
       rej_high: { type: float, default: 3.0 }
       rej_low: { type: float, default: 3.0 }
       max_iter: { type: int, default: 5 }
-      early_converge_ratio: { type: float, default: 0.99 }
       temp_path: { type: str, default: null }
     huber_mean:
       huber_c: { type: float, default: 1.345 }
@@ -61,7 +60,6 @@ route_configs:
       rej_high: { type: float, default: 3.0 }
       rej_low: { type: float, default: 3.0 }
       max_iter: { type: int, default: 5 }
-      early_converge_ratio: { type: float, default: 0.99 }
       temp_path: { type: str, default: null }
       minus_only: { type: bool, default: true }
   ground_stacker:
@@ -69,7 +67,6 @@ route_configs:
       rej_high: { type: float, default: 3.0 }
       rej_low: { type: float, default: 3.0 }
       max_iter: { type: int, default: 5 }
-      early_converge_ratio: { type: float, default: 0.99 }
       temp_path: { type: str, default: null }
     huber_mean:
       huber_c: { type: float, default: 1.345 }
@@ -78,7 +75,6 @@ route_configs:
       rej_high: { type: float, default: 3.0 }
       rej_low: { type: float, default: 3.0 }
       max_iter: { type: int, default: 5 }
-      early_converge_ratio: { type: float, default: 0.99 }
       temp_path: { type: str, default: null }
       minus_only: { type: bool, default: true }
 
@@ -179,7 +175,7 @@ nodes:
       sigma_clip:
         int_weight: configs.int_weight
         mask: load_mask.result
-        # rej_high, rej_low, max_iter, early_converge_ratio — auto-wired
+        # rej_high, rej_low, max_iter — auto-wired
       huber_mean:
         int_weight: configs.int_weight
         mask: load_mask.result
@@ -208,7 +204,7 @@ nodes:
       sigma_clip:
         int_weight: configs.int_weight
         mask: mask_invert.result
-        # rej_high, rej_low, max_iter, early_converge_ratio — auto-wired
+        # rej_high, rej_low, max_iter — auto-wired
       huber_mean:
         int_weight: configs.int_weight
         mask: mask_invert.result
@@ -222,10 +218,19 @@ nodes:
     outputs:
       result: { type: image }
 
+  result_apply_mask:
+    op: ApplyMaskOp
+    inputs:
+      image: sky_stacker.result
+    configs:
+      mask: load_mask.result
+    outputs:
+      result: { type: sequence }    
+
   image_add:
     op: ImageAddOp
     configs:
-      image_a: sky_stacker.result
+      image_a: result_apply_mask.result
       image_b: ground_stacker.result
     outputs:
       result: { type: image }

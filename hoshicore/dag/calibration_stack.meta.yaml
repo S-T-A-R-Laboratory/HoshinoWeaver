@@ -53,7 +53,7 @@ routes:
     options:
       mean: MeanStackerOp
       median: median_stack_core.yaml
-      sigma_clip: sigma_clip.yaml
+      sigma_clip: sigma_clip_fused.yaml
       huber_mean: huber_mean.yaml
     default: mean
 

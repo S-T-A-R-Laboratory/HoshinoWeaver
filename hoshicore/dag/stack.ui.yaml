@@ -24,9 +24,7 @@ routes:
 
 configs:
   int_weight:
-    label: "整数权重"
-    description: "启用使用整数累加，改善精度，速度更快"
-    widget: switch
+    hidden: true
   enable_exif:
     label: "同步 EXIF 信息"
     description: "在输出文件中写入 EXIF 信息"

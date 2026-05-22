@@ -52,9 +52,7 @@ routes:
 
 configs:
   int_weight:
-    label: "整数权重"
-    description: "启用使用整数累加，改善精度，速度更快"
-    widget: switch
+    hidden: true
   output_dtype:
     hidden: true
   output_filename:

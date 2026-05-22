@@ -14,7 +14,7 @@ routes:
         description: "仅计算最大值，经典星轨效果"
       mix:
         label: "噪声均衡"
-        description: "Sigma 裁剪后求均值，抑制地面噪声同时保留星轨"
+        description: "去除常规星轨引入的网格噪声，亮度对齐平均值"
       #tmax:
       #  label: "阈值提取"
       #  description: "阈值裁剪后最大值，减少噪声贡献"
@@ -41,20 +41,18 @@ configs:
     widget: switch
   sat_window_size:
     label: "去卫星窗口"
-    description: "滑动窗口总长"
+    description: "卫星线去除使用的滑动窗口照片张数"
     widget: slider
     min: 3
     max: 9
     step: 2
   mask:
     label: "天空区域掩模"
-    description: "白色区域为天空，黑色区域为地面"
+    description: "只框选天空，以更好检测星点。白色区域为天空，黑色区域为地面"
     widget: file_picker
     accept: ".tif,.tiff,.png,.jpg"
   int_weight:
-    label: "整数权重"
-    description: "启用使用整数累加，改善精度，速度更快"
-    widget: switch
+    hidden: true
   enable_exif:
     label: "同步 EXIF 信息"
     description: "在输出文件中写入 EXIF 信息"

@@ -11,7 +11,7 @@ configs:
   rej_high: { type: float, default: 3.0 }
   rej_low: { type: float, default: 3.0 }
   max_iter: { type: int, default: 5 }
-  chunk_rows: { type: int, default: 32 }
+  mask: {type: image, default: null}
   buffer_mode: { type: str, default: "disk", global: true }
 
 # ── 节点 ──
@@ -36,7 +36,7 @@ nodes:
       rej_high: configs.rej_high
       rej_low: configs.rej_low
       max_iter: configs.max_iter
-      chunk_rows: configs.chunk_rows
+      mask: configs.mask
     outputs:
       result: { type: image }
       statistics: { type: image }
