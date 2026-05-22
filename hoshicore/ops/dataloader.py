@@ -39,6 +39,10 @@ class ImgDataLoaderOp(ParallelBaseOp):
     }
     CONCURRENCY = 4
 
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        return (cls.CONCURRENCY * frame_bytes, 0)
+
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
                                     configs: dict[str, Any]) -> dict[str, Any]:
         src_val = await data['src']

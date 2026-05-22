@@ -240,6 +240,12 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
             "type": "image",  # FastGaussianParam
         },
     }
+    
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        # TODO: frame_bytes压缩太多信息，无法准确估计，此处是经验值。
+        # 待 preflight 资源预分配完善后再调整。
+        return (cls.CHUNK_ROWS * n_frames * 2000, 0)
 
     def _init_chunk_state(self, configs, row_start, row_end, w):
         fgp_total: FastGaussianParam = configs['fgp_total']

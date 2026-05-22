@@ -113,6 +113,12 @@ def preflight_check(
         total_mem += mem
         total_disk += disk
 
+    # 2b. 图级别队列开销（每个 sequence 输出端口 maxsize=1 帧，扇出按引用只计一次）
+    queue_mem = _estimate_queue_overhead(dag, registry, frame_bytes)
+    if queue_mem > 0:
+        logger.info(f"[Preflight] 队列开销: {queue_mem / 1e9:.2f} GB")
+    total_mem += queue_mem
+
     # 3. 获取可用资源
     avail_mem = psutil.virtual_memory().available
     temp_path = effective_configs.get("temp_path") or tempfile.gettempdir()
@@ -171,6 +177,33 @@ def apply_fallbacks(
         msg = (f"[Preflight] {fb.config_key}: "
                f"{fb.current_value} → {fb.proposed_value}（{fb.reason}）")
         report.applied_fallbacks.append(msg)
+
+
+def _estimate_queue_overhead(
+    dag: ValidatedDag,
+    registry: dict[str, type[BaseOp]],
+    frame_bytes: int,
+) -> int:
+    """估算 DAG 队列中 in-flight 帧的内存开销。
+
+    广播传递引用（非拷贝），扇出场景同一数据源只计一次。
+    每个节点的每个 sequence 类型输出端口贡献 1 帧（maxsize=1）。
+    """
+    queue_frames = 0
+
+    for node_name in dag.exec_order:
+        node_spec = dag.nodes[node_name]
+        op_name = node_spec["op"]
+        op_cls = registry.get(op_name)
+        if op_cls is None:
+            continue
+
+        outputs_decl = getattr(op_cls, "OUTPUTS", {})
+        for port_spec in outputs_decl.values():
+            if isinstance(port_spec, dict) and port_spec.get("type") == "sequence":
+                queue_frames += 1
+
+    return queue_frames * frame_bytes
 
 
 def _resolve_node_configs(
