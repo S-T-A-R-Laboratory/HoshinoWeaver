@@ -2,38 +2,20 @@
 
 from __future__ import annotations
 
-import importlib
-import os
-import sys
 from functools import lru_cache
-from typing import Any, Callable
+from functools import partial
+from typing import Callable
 
 import cv2
 import numpy as np
 
-
-def _debug_enabled() -> bool:
-    return os.environ.get("HNW_CUSTOM_OPS_DEBUG", "0") not in {"", "0", "false", "False"}
-
-
-def _debug_log(message: str) -> None:
-    if _debug_enabled():
-        print(f"[hoshicore._custom_op.remap] {message}", file=sys.stderr)
+from hoshicore._custom_op._dispatch import debug_enabled as _debug_enabled
+from hoshicore._custom_op._dispatch import debug_log
+from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
+from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
 
 
-def _fallback_preference() -> str:
-    raw = os.environ.get("HNW_CUSTOM_OPS_FALLBACK", "auto").strip().lower()
-    if raw in {"auto", "numpy"}:
-        return raw
-    return "auto"
-
-
-@lru_cache(maxsize=1)
-def _load_compiled_module_result() -> tuple[Any | None, str | None]:
-    try:
-        return importlib.import_module("hoshicore._custom_op._C"), None
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+_debug_log = partial(debug_log, "remap")
 
 
 def _validate_rotation(rotation_dst_to_src: np.ndarray) -> np.ndarray:

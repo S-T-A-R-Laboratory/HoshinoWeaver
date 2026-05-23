@@ -2,30 +2,15 @@
 
 from __future__ import annotations
 
-import importlib
-import os
-import sys
-from functools import lru_cache
-from typing import Any
+from functools import partial
 
 import numpy as np
 
-
-def _debug_enabled() -> bool:
-    return os.environ.get("HNW_CUSTOM_OPS_DEBUG", "0") not in {"", "0", "false", "False"}
-
-
-def _debug_log(message: str) -> None:
-    if _debug_enabled():
-        print(f"[hoshicore._custom_op.sigma_clip] {message}", file=sys.stderr)
+from hoshicore._custom_op._dispatch import debug_log
+from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
 
 
-@lru_cache(maxsize=1)
-def _load_compiled_module_result() -> tuple[Any | None, str | None]:
-    try:
-        return importlib.import_module("hoshicore._custom_op._C"), None
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+_debug_log = partial(debug_log, "sigma_clip")
 
 
 _SUPPORTED_DTYPES = (np.uint8, np.uint16)
