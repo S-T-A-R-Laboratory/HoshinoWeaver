@@ -84,15 +84,54 @@ enable_satellite_clean:
 
 ## 3. 条件可见性准则
 
-当 UI 元素的相关性取决于其他参数的值时，应使用条件渲染（`visible_when`），避免呈现无效/不相关的控件：
-
-| 场景 | 规则 |
-|------|------|
-| `enable_X = false` | 隐藏或禁用与 X 功能相关的所有参数和子面板 |
-| route 选择某 option | 仅显示该 option 对应的 route_configs 参数组 |
-| 参数仅在特定 route option 下有意义 | 使用 `visible_when: { route: key, option: value }` |
+当 UI 元素的相关性取决于其他参数的值时，应使用条件渲染（`visible_when`），避免呈现无效/不相关的控件。
 
 **原则**：用户在任意时刻看到的控件应当全部是"当前有效的"。不呈现"改了也没用"的参数。
+
+### 语法
+
+在 `.ui.yaml` 的 `configs` 或 `routes` 条目中添加 `visible_when` 字段：
+
+```yaml
+visible_when: { key: "<config_key 或 route_key>", eq: <期望值> }
+```
+
+- `key`：引用同一 ui.yaml 中的另一个 config 键名或 route 键名
+- `eq`：期望值（bool / string）。当 key 当前值 == eq 时，控件可见
+- `neq`（可选）：不等于。当 key 当前值 != neq 时，控件可见
+
+### 行为
+
+- 隐藏时控件值保留，`collect_configs` 仍传递用户设定值
+- route_configs 的「选中才渲染」是内置行为，无需额外声明
+- `visible_when` 用于跨 config/route 之间的联动
+
+### 适用场景
+
+| 场景 | 示例 |
+|------|------|
+| 开关关闭时隐藏相关参数 | `sat_window_size` 依赖 `enable_satellite_clean` |
+| 开关关闭时隐藏整个路由选项卡 | `ground_stacker` 依赖 `enable_ground` |
+| 路由选项为特定值时才显示参数 | `bias_master_path` 依赖 `bias_stacker == "master"` |
+
+### 示例
+
+```yaml
+# 开关联动：关闭去卫星线时，隐藏窗口大小参数
+configs:
+  sat_window_size:
+    visible_when: { key: "enable_satellite_clean", eq: true }
+
+# 路由联动：仅选择"已有主帧"时显示路径选择器
+configs:
+  bias_master_path:
+    visible_when: { key: "bias_stacker", eq: "master" }
+
+# 开关联动整个路由：关闭叠加地面时隐藏地面算法选项卡
+routes:
+  ground_stacker:
+    visible_when: { key: "enable_ground", eq: true }
+```
 
 ---
 

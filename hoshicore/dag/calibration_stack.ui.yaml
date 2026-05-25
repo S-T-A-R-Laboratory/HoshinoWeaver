@@ -99,16 +99,19 @@ configs:
     label: "Bias 主帧路径"
     description: "选择已有主帧时，指定其文件路径"
     widget: file_picker
+    visible_when: { key: "bias_stacker", eq: "master" }
     accept: ".tif,.tiff,.fits"
   dark_master_path:
     label: "Dark 主帧路径"
     description: "选择已有主帧时，指定其文件路径"
     widget: file_picker
+    visible_when: { key: "dark_stacker", eq: "master" }
     accept: ".tif,.tiff,.fits"
   flat_master_path:
     label: "Flat 主帧路径"
     description: "选择已有主帧时，指定其文件路径"
     widget: file_picker
+    visible_when: { key: "flat_stacker", eq: "master" }
     accept: ".tif,.tiff,.fits"
   enable_exif:
     label: "写入 EXIF"

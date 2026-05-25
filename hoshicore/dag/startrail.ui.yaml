@@ -43,6 +43,7 @@ configs:
     label: "去卫星窗口大小"
     description: "检测窗口帧数。越大去除越彻底，但可能会增大时间开销。推荐设置为 3。"
     widget: slider
+    visible_when: { key: "enable_satellite_clean", eq: true }
     min: 3
     max: 9
     step: 2

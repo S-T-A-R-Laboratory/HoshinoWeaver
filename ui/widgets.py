@@ -43,6 +43,7 @@ class ConfigSpec:
     # Populated by PanelSchema after parsing so the widget can initialize the
     # right handle from meta.yaml rather than a hard-coded max.
     bind_default: Any = None
+    visible_when: dict | None = None
 
 
 @dataclass
@@ -59,6 +60,7 @@ class RouteSpec:
     widget: str = "tabs"
     options: dict[str, RouteOptionSpec] = field(default_factory=dict)
     default: str = ""
+    visible_when: dict | None = None
 
 
 

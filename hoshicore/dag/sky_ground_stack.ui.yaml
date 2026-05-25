@@ -30,6 +30,7 @@ routes:
   ground_stacker:
     label: "地面叠加算法"
     widget: tabs
+    visible_when: { key: "enable_ground", eq: true }
     options:
       mean:
         label: "均值"
