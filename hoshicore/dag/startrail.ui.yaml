@@ -10,19 +10,19 @@ routes:
     widget: tabs
     options:
       fifo:
-        label: "仅最大值"
-        description: "仅计算最大值，经典星轨效果"
+        label: "最大值叠加"
+        description: "常规星轨算法，逐像素取最大值叠加。速度快，但对应用镜头校正的素材可能出现边角偏亮或环状纹理"
       mix:
-        label: "噪声均衡"
-        description: "去除常规星轨引入的网格噪声，亮度对齐平均值"
+        label: "噪声均匀化"
+        description: "改进星轨算法，在最大值基础上校正因镜头校正引入的空间亮度不均和高频纹理"
       #tmax:
       #  label: "阈值提取"
       #  description: "阈值裁剪后最大值，减少噪声贡献"
 
 configs:
   fin:
-    label: "渐入渐出比例"
-    description: "渐入渐出帧数比例"
+    label: "渐入/渐出"
+    description: "左端=轨迹起始淡入比例，右端=轨迹末尾淡出比例。"
     widget: range_slider
     bind: fout
     min: 0
@@ -32,30 +32,30 @@ configs:
   fout:
     hidden: true
   enable_star_shrink:
-    label: "启用缩星"
-    description: "叠加星轨时缩小星点，使星轨更细腻"
+    label: "缩星"
+    description: "缩小星点，使轨迹更稀疏。适用于星点密集的原始图像。"
     widget: switch
   enable_satellite_clean:
-    label: "卫星线去除"
-    description: "启用滑动窗口中位数法去除卫星/飞机轨迹"
+    label: "去卫星线"
+    description: "去除卫星/飞机轨迹。"
     widget: switch
   sat_window_size:
-    label: "去卫星窗口"
-    description: "卫星线去除使用的滑动窗口照片张数"
+    label: "去卫星窗口大小"
+    description: "检测窗口帧数。越大去除越彻底，但可能会增大时间开销。推荐设置为 3。"
     widget: slider
     min: 3
     max: 9
     step: 2
   mask:
-    label: "天空区域掩模"
-    description: "只框选天空，以更好检测星点。白色区域为天空，黑色区域为地面"
+    label: "天空区域遮罩"
+    description: "选择一张天空区域遮罩图像（白色=天空，黑色=地面）。该遮罩用于限定星点检测区域。"
     widget: file_picker
     accept: ".tif,.tiff,.png,.jpg"
   int_weight:
     hidden: true
   enable_exif:
-    label: "同步 EXIF 信息"
-    description: "在输出文件中写入 EXIF 信息"
+    label: "写入 EXIF"
+    description: "在输出文件中保留拍摄参数。关闭后输出不含 EXIF 信息"
     widget: switch
   output_dtype:
     hidden: true
@@ -75,21 +75,22 @@ configs:
 route_configs:
   mix:
     rej_low:
-      label: "低亮度排异 σ 阈值"
-      description: "低于均值多少个标准差视为异常值"
+      label: "暗像素排异阈值 (σ)"
+      description: "估算背景时排除偏暗像素的激进程度。值越小排除越多。推荐 2.5–3.5"
       widget: slider
       min: 0
       max: 5.0
       step: 0.1
     rej_high:
-      label: "高亮度排异 σ 阈值"
-      description: "高于均值多少个标准差视为异常值"
+      label: "亮像素排异阈值 (σ)"
+      description: "估算背景时排除偏亮像素的激进程度。值越小排除越多。推荐 2.5–3.5"
       widget: slider
       min: 0
       max: 5.0
       step: 0.1
     max_iter:
       label: "最大迭代次数"
+      description: "估算背景时迭代剔除的最大轮数。越多越精确但越慢，通常 3–5 次即可"
       widget: slider
       min: 1
       max: 20
@@ -97,12 +98,13 @@ route_configs:
     buffer_mode:
       hidden: true
     mask:
-      label: "掩模文件"
+      label: "天空区域遮罩"
+      description: "选择一张天空区域遮罩图像（白色=天空，黑色=地面）。启用该遮罩时，天空区域将使用星轨叠加结果，地面区域使用Sigma裁剪均值结果融合。"
       widget: file_picker
       accept: ".tif,.tiff,.png,.jpg"
     minus_only:
-      label: "平衡亮度"
-      description: "仅平衡最大值结果亮度，不额外执行最大值叠加的统计学还原"
+      label: "还原均值亮度"
+      description: "开启后将背景降至均值水平，轨迹对比度更高，和平均值地景融合更好。关闭则仅消除不均匀"
       widget: switch
   #tmax:
   #  rej_low:

@@ -11,44 +11,44 @@ routes:
     options:
       mean:
         label: "均值"
-        description: "高信噪比平均叠加"
+        description: "不排除异常值的平均值叠加，计算快，信噪比高，但容易受到干扰。适合无干扰的干净素材。"
       sigma_clip:
         label: "Sigma 裁剪"
-        description: "迭代剔除异常像素后求均值"
-      huber_mean:
-        label: "Huber 均值"
-        description: "基于 Huber 损失的稳健均值估计"
+        description: "多轮迭代排除异常值后求平均。适合有卫星/飞机线或其他异常值干扰，且叠加图像张数较多(>10张)的场景。"
       median:
         label: "中位数"
-        description: "逐像素取中位数，天然抗异常值"
+        description: "逐像素取中位数，天然排异。适合有卫星/飞机线或其他异常值干扰，且叠加图像张数偏少(<10张)的场景。"
+      huber_mean:
+        label: "Huber 均值"
+        description: "使用 Huber 损失自动降低异常像素权重。速度较快，适合轻微异常场景"
       max_mix:
         label: "最大值混合"
-        description: "最大值+噪声均衡，保留轨迹并平衡亮度"
+        description: "在最大值基础上校正空间亮度不均，适合需要保留所有飞机/卫星轨迹的场景。"
       max:
         label: "最大值"
-        description: "逐像素取最大值，保留轨迹"
+        description: "逐像素取最大值，不做其他处理，适合需要保留所有飞机/卫星轨迹的场景。"
   ground_stacker:
     label: "地面叠加算法"
     widget: tabs
     options:
       mean:
         label: "均值"
-        description: "高信噪比平均叠加"
+        description: "不排除异常值的平均值叠加，计算快，信噪比高，但容易受到干扰。适合无干扰的干净素材。"
       sigma_clip:
         label: "Sigma 裁剪"
-        description: "迭代剔除异常像素后求均值"
-      huber_mean:
-        label: "Huber 均值"
-        description: "基于 Huber 损失的稳健均值估计"
+        description: "多轮迭代排除异常值后求平均。适合有卫星/飞机线或其他异常值干扰，且叠加图像张数较多(>10张)的场景。"
       median:
         label: "中位数"
-        description: "逐像素取中位数，天然抗异常值"
+        description: "逐像素取中位数，天然排异。适合有卫星/飞机线或其他异常值干扰，且叠加图像张数偏少(<10张)的场景。"
+      huber_mean:
+        label: "Huber 均值"
+        description: "使用 Huber 损失自动降低异常像素权重。速度较快，适合轻微异常场景"
       max_mix:
         label: "最大值混合"
-        description: "最大值+噪声均衡，保留轨迹并平衡亮度"
+        description: "逐像素取最大值，并在最大值基础上校正因镜头校正引入的空间亮度不均和高频纹理"
       max:
         label: "最大值"
-        description: "逐像素取最大值，保留轨迹"
+        description: "逐像素取最大值，不做其他处理"
 
 configs:
   int_weight:
@@ -59,33 +59,33 @@ configs:
     hidden: true
   align_method:
     label: "对齐方式"
-    description: "星点对齐算法（auto = 自动选择）"
+    description: "星点对齐算法。homography适合已经经过镜头畸变矫正的图像，distortion适合未矫正的图像，但计算速度较慢。"
     widget: select
     options:
       - { value: "auto",       label: "自动" }
       - { value: "homography", label: "透视变换" }
-      - { value: "distortion",     label: "畸变优化" }
+      - { value: "distortion", label: "畸变优化" }
   same_camera:
-    label: "同一相机"
-    description: "所有帧来自同一相机（优化对齐速度）"
+    label: "同一相机拍摄"
+    description: "所有帧来自同一相机和焦距。开启可加速对齐计算"
     widget: switch
   mask:
-    label: "天空区域掩模"
-    description: "白色区域为天空，黑色区域为地面"
+    label: "天地分离遮罩"
+    description: "选择一张白色=天空，黑色=地面的遮罩图像。用绘图软件绘制后导入。"
     widget: file_picker
     accept: ".tif,.tiff,.png,.jpg"
   align_base:
-    label: "对齐基准图像"
-    description: "天空对齐基准图像。空缺默认使用第一张"
+    label: "对齐基准帧"
+    description: "天空对齐的参考图像。留空则使用第一张"
     widget: file_picker
     accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
   enable_exif:
-    label: "同步 EXIF 信息"
-    description: "在输出文件中写入 EXIF 信息"
+    label: "写入 EXIF"
+    description: "在输出文件中保留拍摄参数。关闭后输出不含 EXIF 信息"
     widget: switch
   enable_ground:
-    label: "叠加地面图像"
-    description: "同时叠加地面图像"
+    label: "叠加地面"
+    description: "同时叠加地面区域。关闭后，如果配置了天地分离遮罩，则仅叠加天空部分；如果未配置天地分离遮罩，则叠加天空部分时地面会因旋转而拖影。"
     widget: switch
   distortion:
     hidden: true

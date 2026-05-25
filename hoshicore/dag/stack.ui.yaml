@@ -11,23 +11,23 @@ routes:
     options:
       mean:
         label: "均值"
-        description: "高信噪比平均叠加"
+        description: "不排除异常值的平均值叠加，计算快，信噪比高，但容易受到干扰。适合无干扰的干净素材。"
       sigma_clip:
         label: "Sigma 裁剪"
-        description: "迭代剔除异常像素后求均值"
+        description: "多轮迭代排除异常值后求平均。适合有卫星/飞机线或其他异常值干扰，且叠加图像张数较多(>10张)的场景。"
       median:
         label: "中位数"
-        description: "逐像素取中位数，天然抗异常值"
+        description: "逐像素取中位数，天然排异。适合有卫星/飞机线或其他异常值干扰，且叠加图像张数偏少(<10张)的场景。"
       huber_mean:
         label: "Huber 均值"
-        description: "基于 Huber 损失的稳健均值估计"
+        description: "使用 Huber 损失自动降低异常像素权重。速度较快，适合轻微异常场景"
 
 configs:
   int_weight:
     hidden: true
   enable_exif:
-    label: "同步 EXIF 信息"
-    description: "在输出文件中写入 EXIF 信息"
+    label: "写入 EXIF"
+    description: "在输出文件中保留拍摄参数。关闭后输出不含 EXIF 信息"
     widget: switch
   output_dtype:
     hidden: true
