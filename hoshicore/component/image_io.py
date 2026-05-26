@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Optional, Union
 
+import astropy.io.fits as fits
 import cv2
 import numpy as np
 import PIL.Image
@@ -24,7 +25,7 @@ except Exception:
     _HAS_TURBOJPEG = False
 
 from .exif import ExifData, encode_exif_data
-from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, RAW_SUFFIX,
+from .utils import (ASTRO_SUFFIX, COMMON_SUFFIX, NOT_RECOM_SUFFIX, RAW_SUFFIX,
                     SAME_SUFFIX_MAPPING, is_support_format, time_cost_warpper)
 
 
@@ -77,6 +78,24 @@ def load_img(file_path: str) -> Optional[np.ndarray]:
                     "Uint16 decoding failed. Fallback to uint8 loading...")
                 img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
                                    cv2.IMREAD_UNCHANGED)
+        elif suffix in ASTRO_SUFFIX:
+            data = fits.getdata(file_path)
+            if hasattr(data, 'data') and not isinstance(data, np.ndarray):
+                # fits.getdata may return FITS_rec or similar; extract underlying array
+                data = np.asarray(data)
+            if isinstance(data, np.ma.MaskedArray):
+                data = data.filled(0)
+            img = np.ascontiguousarray(data)
+            if img.ndim == 3:
+                # FITS stores color as (C, H, W) — transpose to (H, W, C)
+                if img.shape[0] in (3, 4):
+                    img = np.transpose(img, (1, 2, 0))
+                # RGB → BGR to match OpenCV convention
+                if img.shape[2] >= 3:
+                    img = img[:, :, ::-1].copy()
+                    if img.shape[2] == 4:
+                        # 暂时丢弃A维度
+                        img = img[:, :, [2, 1, 0]].copy()
         else:
             # load images with rawpy
             with rawpy.imread(file_path) as raw:
@@ -170,6 +189,18 @@ def peek_shape(file_path: str) -> tuple[tuple[int, ...], int]:
         with tifffile.TiffFile(file_path) as tf:
             page = tf.pages[0]
             return tuple(page.shape), page.dtype.itemsize
+
+    if suffix in ASTRO_SUFFIX:
+        with fits.open(file_path, memmap=True) as hdul:
+            for hdu in hdul:
+                if hdu.data is not None and hdu.data.ndim >= 2:
+                    shape = hdu.data.shape
+                    dtype_bytes = hdu.data.dtype.itemsize
+                    # FITS color is (C, H, W) — report as (H, W, C)
+                    if len(shape) == 3 and shape[0] in (3, 4):
+                        shape = (shape[1], shape[2], shape[0])
+                    return tuple(shape), dtype_bytes
+        raise ValueError(f"peek_shape: no image HDU found in {file_path}")
 
     if suffix in RAW_SUFFIX:
         with rawpy.imread(file_path) as raw:
