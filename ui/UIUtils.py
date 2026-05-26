@@ -42,20 +42,27 @@ def _gui_preflight_callback(report: PreflightReport) -> PreflightAction:
     for w in report.warnings:
         text_lines.append(w)
 
-    if report.proposed_fallbacks:
+    has_fallback = bool(report.proposed_fallbacks)
+    if has_fallback:
         text_lines.append("")
         text_lines.append("建议降级方案：")
         for fb in report.proposed_fallbacks:
             text_lines.append(
                 f"  {fb.config_key}: {fb.current_value} → {fb.proposed_value}"
                 f"（{fb.reason}）")
+    else:
+        text_lines.append("\n无可用的自动降级方案。")
 
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
     msg.setWindowTitle("资源预检警告")
     msg.setText("\n".join(text_lines))
 
-    btn_apply = msg.addButton("应用建议", QMessageBox.AcceptRole)
+    btn_apply = None
+    if has_fallback:
+        label = ("应用降级并继续（资源仍可能不足）"
+                 if report.budget_exceeded_after_fallback else "应用建议")
+        btn_apply = msg.addButton(label, QMessageBox.AcceptRole)
     btn_ignore = msg.addButton("忽略并继续", QMessageBox.RejectRole)
     msg.addButton("中止", QMessageBox.DestructiveRole)
 

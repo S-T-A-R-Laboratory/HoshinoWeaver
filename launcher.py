@@ -119,32 +119,38 @@ def _cli_preflight_callback(report: PreflightReport) -> PreflightAction:
     print("=" * 60)
 
     for w in report.warnings:
-        print(f"  {w}")
+        print(f"  ⚠ {w}")
 
-    if report.proposed_fallbacks:
+    has_fallback = bool(report.proposed_fallbacks)
+    if has_fallback:
         print("\n建议降级方案：")
         for fb in report.proposed_fallbacks:
             print(f"  {fb.config_key}: {fb.current_value} -> {fb.proposed_value}"
                   f" ({fb.reason})")
+    else:
+        print("\n无可用的自动降级方案。")
 
     print("\n请选择操作：")
-    print("  [A] 应用建议并继续执行")
-    print("  [I] 忽略建议，按原配置继续")
+    if has_fallback:
+        suffix = "（资源仍可能不足）" if report.budget_exceeded_after_fallback else ""
+        print(f"  [A] 应用降级并继续{suffix}")
+    print("  [I] 忽略警告，按原配置继续")
     print("  [Q] 中止执行")
     print()
 
     while True:
         try:
-            choice = input("输入选择 (A/I/Q): ").strip().upper()
+            choice = input("输入选择: ").strip().upper()
         except (EOFError, KeyboardInterrupt):
             return "abort"
-        if choice in ("A", "APPLY"):
+        if choice in ("A", "APPLY") and has_fallback:
             return "apply"
         if choice in ("I", "IGNORE"):
             return "ignore"
         if choice in ("Q", "QUIT", "ABORT"):
             return "abort"
-        print("  无效输入，请输入 A、I 或 Q")
+        hint = "A、I 或 Q" if has_fallback else "I 或 Q"
+        print(f"  无效输入，请输入 {hint}")
 
 
 def main():

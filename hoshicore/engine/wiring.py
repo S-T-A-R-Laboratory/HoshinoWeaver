@@ -552,8 +552,15 @@ async def run_from_yaml(
             for w in report.warnings:
                 logger.warning(w)
     elif report.warnings:
-        for w in report.warnings:
-            logger.warning(w)
+        # 有警告但无可用 fallback（如内存超限但 buffer_mode 已经是 disk）
+        if preflight_callback is not None:
+            action = preflight_callback(report)
+            if action == "abort":
+                raise PreflightAbortError(
+                    "资源不足且无可用降级方案，用户中止执行。")
+        else:
+            for w in report.warnings:
+                logger.warning(w)
 
     return await run_dag(dag,
                          global_inputs,

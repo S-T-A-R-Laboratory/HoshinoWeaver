@@ -59,6 +59,7 @@ class PreflightReport:
     warnings: list[str] = field(default_factory=list)
     proposed_fallbacks: list[FallbackProposal] = field(default_factory=list)
     applied_fallbacks: list[str] = field(default_factory=list)
+    budget_exceeded_after_fallback: bool = False
 
 
 def preflight_check(
@@ -159,6 +160,30 @@ def preflight_check(
                     proposed_value="replay",
                     reason="磁盘空间不足"))
 
+    # 5. 预测 fallback 后是否仍然超限
+    if report.proposed_fallbacks and report.warnings:
+        post_mem, post_disk = _simulate_post_fallback(
+            dag, effective_configs, report.proposed_fallbacks,
+            registry, frame_bytes, n_frames, queue_mem)
+        mem_still_over = post_mem > 0 and (mem_budget <= 0 or post_mem > mem_budget)
+        disk_still_over = post_disk > avail_disk
+        if mem_still_over or disk_still_over:
+            report.budget_exceeded_after_fallback = True
+            parts = []
+            if mem_still_over:
+                parts.append(
+                    f"内存 {post_mem / 1e9:.2f}/{mem_budget / 1e9:.2f} GB"
+                    f"（可能需要更改参数或缩小运行输入分辨率）")
+            if disk_still_over:
+                parts.append(
+                    f"磁盘 {post_disk / 1e9:.2f}/{avail_disk / 1e9:.2f} GB"
+                    f"（可减少输入帧数或清理磁盘空间）")
+            report.warnings.append(
+                f"降级后资源仍然不足（{'; '.join(parts)}），"
+                f"执行可能失败")
+    elif report.warnings and not report.proposed_fallbacks:
+        report.budget_exceeded_after_fallback = True
+
     if not report.warnings:
         logger.info(
             f"[Preflight] 资源充足 — "
@@ -177,6 +202,37 @@ def apply_fallbacks(
         msg = (f"[Preflight] {fb.config_key}: "
                f"{fb.current_value} → {fb.proposed_value}（{fb.reason}）")
         report.applied_fallbacks.append(msg)
+
+
+def _simulate_post_fallback(
+    dag: ValidatedDag,
+    effective_configs: dict[str, Any],
+    fallbacks: list[FallbackProposal],
+    registry: dict[str, type[BaseOp]],
+    frame_bytes: int,
+    n_frames: int,
+    queue_mem: int,
+) -> tuple[int, int]:
+    """模拟 fallback 应用后的资源估算，不修改原始 configs。"""
+    simulated = {**effective_configs}
+    for fb in fallbacks:
+        simulated[fb.config_key] = fb.proposed_value
+
+    post_mem = 0
+    post_disk = 0
+    for node_name in dag.exec_order:
+        node_spec = dag.nodes[node_name]
+        op_name = node_spec["op"]
+        op_cls = registry.get(op_name)
+        if op_cls is None:
+            continue
+        node_configs = _resolve_node_configs(node_spec, simulated, op_cls)
+        mem, disk = op_cls.estimate_resources(node_configs, frame_bytes, n_frames)
+        post_mem += mem
+        post_disk += disk
+
+    post_mem += queue_mem
+    return (post_mem, post_disk)
 
 
 def _estimate_queue_overhead(
