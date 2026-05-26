@@ -4,6 +4,8 @@
 
 from typing import Optional
 
+import numpy as np
+import PIL.Image
 import rawpy
 from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QImage,
@@ -39,23 +41,21 @@ class imgDisplayQFrame(QFrame):
         self.img_path = None
         self.initImg()
 
-    def initImg(self,path = None):
+    def initImg(self, path=None):
         if path is not None:
             self.img_path = path
-        
-            if self.img_path.split('\\')[-1].split('.')[-1].lower() in ['cr2','cr3','arw','nef','dng']:
+            suffix = self.img_path.rsplit(".", 1)[-1].lower()
+
+            if suffix in ('cr2', 'cr3', 'arw', 'nef', 'dng'):
                 with rawpy.imread(self.img_path) as raw:
                     rgb = raw.postprocess()
-                    
-                # 将RGB数据转换为QImage
-                height, width, channel = rgb.shape
-                bytes_per_line = 3 * width
-                q_image = QImage(rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
-                    
-                # 将QImage转换为QPixmap并设置到QLabel
-                pixmap = QPixmap.fromImage(q_image)
             else:
-                pixmap = QPixmap(self.img_path)
+                rgb = np.array(PIL.Image.open(self.img_path).convert("RGB"), dtype=np.uint8)
+
+            height, width = rgb.shape[:2]
+            q_image = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_image)
+
             if not pixmap.isNull():
                 self.pixmap = pixmap
                 self.setImage()

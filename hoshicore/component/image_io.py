@@ -192,35 +192,6 @@ def peek_shape(file_path: str) -> tuple[tuple[int, ...], int]:
     return (h, w, bands), dtype_bytes
 
 
-def get_img_attrs(fname: str) -> dict:
-    """
-    在不加载完整图像的情况下，使用Pillow 与 tifffile 获取图像基本信息。
-    
-    获取的信息包含：
-    * 后缀名
-    * 图像尺寸
-    * 位深度
-
-    Args:
-        fname (str): 文件名。
-
-    Returns:
-        dict: 图像基本信息
-    """
-    img_obj = PIL.Image.open(fname)
-    suffix = fname.split(".")[-1].lower()
-    if suffix in SAME_SUFFIX_MAPPING:
-        suffix = SAME_SUFFIX_MAPPING[suffix]
-    size = (getattr(img_obj, "width", None), getattr(img_obj, "height", None))
-    bits = getattr(img_obj, "bits", None)
-    if suffix in ["tif", "tiff"]:
-        bits = tifffile.TiffFile(fname).pages[0].dtype.itemsize * 8
-    return dict(fname=fname,
-                suffix=suffix,
-                size=size,
-                size_str=f"{size[0]}x{size[1]}",
-                bits=bits)
-
 
 def analyze_attr(attr_list: list[dict], attr_name: str) -> dict:
     """分析输入符合给定属性的情况。
@@ -258,7 +229,7 @@ def scan_all_exif(fname_list: list[str]) -> list:
     """
     快速检查输入，并给出一系列可能会导致叠加任务无法正常进行的风险提示。
     
-    目前有后缀名检查suffix，图像尺寸检查size_str，位数检查bits。位数检查有一定局限性，tiff不支持（pillow的底层问题，对tiff支持弱）
+    目前有后缀名检查suffix，图像尺寸检查size，位数检查bits。
 
     由于部分数值不一定能够读取到，不推荐作为强制卡控。
 
@@ -276,7 +247,15 @@ def scan_all_exif(fname_list: list[str]) -> list:
     Returns:
         list[dict]: 返回风险提示列表。
     """
-    attr_list = list(map(get_img_attrs, fname_list))
+    def _attrs(fname):
+        suffix = fname.rsplit(".", 1)[-1].lower()
+        if suffix in SAME_SUFFIX_MAPPING:
+            suffix = SAME_SUFFIX_MAPPING[suffix]
+        shape, dtype_bytes = peek_shape(fname)
+        size = (shape[1], shape[0])  # (W, H)
+        return dict(fname=fname, suffix=suffix, size=size, bits=dtype_bytes * 8)
+
+    attr_list = list(map(_attrs, fname_list))
     # 后缀名检查
     suffix_dict = analyze_attr(attr_list, "suffix")
     # 尺寸检查
