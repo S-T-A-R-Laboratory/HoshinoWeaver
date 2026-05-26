@@ -36,7 +36,7 @@ MODE_MAP = {
              _BASE_DIR / "hoshicore/dag/startrail.ui.yaml"),
     "堆栈降噪": (_BASE_DIR / "hoshicore/dag/stack.meta.yaml",
              _BASE_DIR / "hoshicore/dag/stack.ui.yaml"),
-    "天地分离": (_BASE_DIR / "hoshicore/dag/sky_ground_stack.meta.yaml",
+    "星点对齐叠加": (_BASE_DIR / "hoshicore/dag/sky_ground_stack.meta.yaml",
              _BASE_DIR / "hoshicore/dag/sky_ground_stack.ui.yaml"),
 }
 
@@ -125,10 +125,10 @@ class ui_choose_mode_window(QMainWindow, ui_choose_mode):
         self.img_avg.clicked.connect(self.avg_clicked)
         # self.back.clicked.connect(self.close)   去掉了关闭按钮
 
-        # 天地分离模式按钮（动态添加）
+        # 星点对齐叠加模式按钮（动态添加）
         from ui.UILibs import ClickableLabel
         self.label_sky_ground = ClickableLabel(self)
-        self.label_sky_ground.setText("天地分离")
+        self.label_sky_ground.setText("星点对齐叠加")
         self.label_sky_ground.setStyleSheet(
             "font-size: 14px; color: rgba(45,45,45,220); padding: 8px;")
         self.label_sky_ground.clicked.connect(self.sky_ground_clicked)
@@ -144,7 +144,7 @@ class ui_choose_mode_window(QMainWindow, ui_choose_mode):
         self.close()
 
     def sky_ground_clicked(self):
-        self.callback('天地分离')
+        self.callback('星点对齐叠加')
         self.close()
 
     def mouseMoveEvent(self, event: QMouseEvent):

@@ -71,7 +71,7 @@ configs:
     description: "所有帧来自同一相机和焦距。开启可加速对齐计算"
     widget: switch
   mask:
-    label: "天地分离遮罩"
+    label: "天空遮罩"
     description: "选择一张白色=天空，黑色=地面的遮罩图像。用绘图软件绘制后导入。"
     widget: file_picker
     accept: ".tif,.tiff,.png,.jpg"
@@ -86,7 +86,7 @@ configs:
     widget: switch
   enable_ground:
     label: "叠加地面"
-    description: "同时叠加地面区域。关闭后，如果配置了天地分离遮罩，则仅叠加天空部分；如果未配置天地分离遮罩，则叠加天空部分时地面会因旋转而拖影。"
+    description: "同时叠加地面区域。关闭后，如果配置了天空遮罩，则仅叠加天空部分；如果未配置天空遮罩，则叠加天空部分时地面也会参与叠加，且会因旋转而拖影。"
     widget: switch
   distortion:
     hidden: true

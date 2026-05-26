@@ -148,7 +148,7 @@ class SlotHandler(QMainWindow):
         bg_map = {
             '星轨叠加': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
             '堆栈降噪': 'url(:/img/resource/img/back02.jpg)',
-            '天地分离': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
+            '星点对齐叠加': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
         }
         bg = bg_map.get(mode, 'url(:/img/resource/img/back02.jpg)')
         self.window.main_frame.setStyleSheet(f"""

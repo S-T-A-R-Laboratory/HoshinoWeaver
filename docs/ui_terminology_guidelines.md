@@ -235,7 +235,7 @@ routes:
 | `mask`（顶层） | 天空区域遮罩 | file_picker | 限定星点检测区域 |
 | `mask`（mix route_config） | 天空区域遮罩 | file_picker | 天空/地面融合遮罩 |
 
-### 7.5 天地分离管线专属
+### 7.5 星点对齐叠加管线专属
 
 | 后端键名 | 前端 label | 可见性 | 备注 |
 |---------|-----------|--------|------|
@@ -245,7 +245,7 @@ routes:
 | `align_base` | 对齐基准帧 | file_picker | |
 | `same_camera` | 同一相机拍摄 | 开关 | |
 | `distortion` | — | 隐藏 | 内部畸变参数 |
-| `mask` | 天地分离遮罩 | file_picker | 白=天空，黑=地面 |
+| `mask` | 天空遮罩 | file_picker | 白=天空，黑=地面 |
 | `enable_ground` | 叠加地面 | 开关 | enable 控制 ground_stacker 节点 |
 
 ### 7.6 校准管线专属
@@ -279,6 +279,6 @@ routes:
 |------|------|-----------|---------|
 | `mask` | startrail（顶层） | 天空区域遮罩 | 限定星点检测/缩星区域 |
 | `mask` | startrail（mix route_config） | 天空区域遮罩 | 天空星轨+地面均值融合 |
-| `mask` | sky_ground_stack | 天地分离遮罩 | 分割天空/地面区域用于独立叠加 |
+| `mask` | sky_ground_stack | 天空遮罩 | 分割天空/地面区域用于独立叠加 |
 | `rej_low/rej_high` | sigma_clip | 暗/亮像素排异阈值 | 排除主叠加中的异常像素 |
 | `rej_low/rej_high` | max_mix | 暗/亮像素排异阈值 | 估算背景噪声统计量时排异 |

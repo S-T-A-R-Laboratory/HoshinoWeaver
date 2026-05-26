@@ -141,7 +141,7 @@ See `csrc/README.md` "新增算子" section for the full checklist. Key steps: C
 - `docs/dag_node_definition.md` — DAG YAML 完整语法规范（标准格式 + Meta 格式）
 - `docs/meta_yaml_v2_spec.md` — Meta YAML v2 路由系统设计细节
 - `docs/noise-equalization.md` — Mix 星轨噪声均衡算法原理
-- `docs/bundle_adjustment_and_stabilization.md` — 星点对齐 / 天地分离的几何模型
+- `docs/bundle_adjustment_and_stabilization.md` — 星点对齐叠加的几何模型
 - `docs/multi_process.md` — 多进程数据并行架构设计
 - `csrc/README.md` — C++ custom-op 构建、平台策略、打包约定
 - `csrc/CMAKE_MIGRATION.md` — CMake 构建架构与多平台策略
