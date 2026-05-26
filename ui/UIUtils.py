@@ -116,12 +116,7 @@ class SlotHandler(QMainWindow):
         '''
         button_pos = self.window.label_current_mode.mapToGlobal(
             QPoint(0, self.window.label_current_mode.height()))
-        new_x = button_pos.x() - (self.window.choose_mode_window.width() -
-                                  self.window.label_current_mode.width()) / 2
-        new_button_pos = QPoint(new_x, button_pos.y())
-        self.window.choose_mode_window.move(new_button_pos)
-        self.window.choose_mode_window.show()
-        self.window.choose_mode_window.timer.start(5000)
+        self.window.choose_mode_menu.popup(button_pos)
 
     @Slot()
     def show_guide_window(self):

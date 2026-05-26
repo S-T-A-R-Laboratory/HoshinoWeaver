@@ -14,8 +14,8 @@ import platform
 import time
 
 from loguru import logger as _logger
-from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QMouseEvent
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QColor, QFont, QIcon, QMouseEvent
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
                                QFrame, QHeaderView, QMainWindow, QScrollArea,
                                QTreeWidgetItem)
@@ -25,7 +25,7 @@ from hoshicore.component.utils import ORG_NAME, SOFTWARE_NAME, VERSION
 from hoshicore.component.utils import init_logger as _init_logger
 from ui.output_panel import OutputPanel
 from ui.panel_builder import DynamicConfigPanel, PanelSchema
-from ui.UI import Ui_guide, Ui_HNW, ui_choose_mode
+from ui.UI import Ui_guide, Ui_HNW
 from ui.UILibs import borderFrame
 from ui.UIUtils import SlotHandler
 
@@ -104,59 +104,36 @@ class HNW_guide(QDialog, Ui_guide):
         else:
             self.pre.setText(f'上一页（{pre_index}/{self.guide_area.count()}）')
 
-class ui_choose_mode_window(QMainWindow, ui_choose_mode):
-    def __init__(self, callback):
-        super().__init__()
-        self.setWindowFlags(Qt.Popup)  # 设置为弹出窗口
-        self.setWindowTitle("")
+def _build_mode_menu(callback):
+    """构建工作流模式选择菜单（纯文本 + tooltip 说明）"""
+    from PySide6.QtWidgets import QMenu
 
-        self.setMouseTracking(True)
-        # 创建一个 QTimer，初始设置为单次触发，超时后执行 self.close
-        self.timer = QTimer(self)
-        self.timer.setSingleShot(True)
-        self.timer.timeout.connect(self.close)  # 超时后关闭窗口
+    menu = QMenu()
+    menu.setToolTipsVisible(True)
+    menu.setStyleSheet("""
+        QMenu {
+            font-size: 13px;
+            padding: 4px 0px;
+        }
+        QMenu::item {
+            padding: 6px 20px;
+        }
+        QMenu::item:selected {
+            background-color: rgba(0, 120, 215, 60);
+        }
+    """)
 
-        self.setupUi(self)
-        # 回调函数
-        self.callback = callback
-        self.label_3.clicked.connect(self.startrail_clicked)
-        self.img_startrail.clicked.connect(self.startrail_clicked)
-        self.label_4.clicked.connect(self.avg_clicked)
-        self.img_avg.clicked.connect(self.avg_clicked)
-        # self.back.clicked.connect(self.close)   去掉了关闭按钮
+    actions = [
+        ("星轨叠加", "将多张照片合成星轨效果，支持多种叠加算法"),
+        ("堆栈降噪", "对多张照片进行堆栈平均/中值降噪处理"),
+        ("星点对齐叠加", "分离天地后对齐星点进行叠加，减少噪点并保持地景清晰"),
+    ]
+    for mode_name, tooltip in actions:
+        action = menu.addAction(mode_name)
+        action.setToolTip(tooltip)
 
-        # 星点对齐叠加模式按钮（动态添加）
-        from ui.UILibs import ClickableLabel
-        self.label_sky_ground = ClickableLabel(self)
-        self.label_sky_ground.setText("星点对齐叠加")
-        self.label_sky_ground.setStyleSheet(
-            "font-size: 14px; color: rgba(45,45,45,220); padding: 8px;")
-        self.label_sky_ground.clicked.connect(self.sky_ground_clicked)
-        if hasattr(self, 'verticalLayout'):
-            self.verticalLayout.addWidget(self.label_sky_ground)
-
-    def startrail_clicked(self):
-        self.callback('星轨叠加')
-        self.close()
-
-    def avg_clicked(self):
-        self.callback('堆栈降噪')
-        self.close()
-
-    def sky_ground_clicked(self):
-        self.callback('星点对齐叠加')
-        self.close()
-
-    def mouseMoveEvent(self, event: QMouseEvent):
-        if self.rect().contains(self.mapFromGlobal(QCursor.pos())):
-            # 鼠标在窗口内，取消定时器
-            self.timer.stop()
-        else:
-            # 鼠标移出窗口，启动1秒的定时器
-            if self.timer.isActive():
-                pass
-            else:
-                self.timer.start(3000)
+    menu.triggered.connect(lambda act: callback(act.text()))
+    return menu
 
 class HNW_window(QMainWindow, Ui_HNW):
 
@@ -558,8 +535,8 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # 0 激活SlotHandler
         self.slot_handler = SlotHandler(self)
-        # 1 模式切换窗口
-        self.choose_mode_window = ui_choose_mode_window(self.slot_handler.change_mode)
+        # 1 模式切换菜单
+        self.choose_mode_menu = _build_mode_menu(self.slot_handler.change_mode)
         # 2 添加主界面缩放检测边框
         self.hover_border_frame()
         # 3 guide页面

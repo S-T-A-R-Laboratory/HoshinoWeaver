@@ -331,7 +331,7 @@ def main():
 
     # ── ZIP ──
     if args.apply_zip:
-        zip_fname = join_path(compile_path, f"{SOFTWARE_NAME}_{VERSION}.zip")
+        zip_fname = join_path(compile_path, f"{SOFTWARE_NAME}_{platform}_{VERSION}.zip")
         logger.info(f"Zipping to {zip_fname} ...")
         with zipfile.ZipFile(zip_fname, mode="w",
                              compression=zipfile.ZIP_DEFLATED) as zf:
