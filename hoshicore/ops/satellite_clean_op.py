@@ -10,7 +10,7 @@ from loguru import logger
 from ..component.data_container import FloatImage
 from ..component.norma.cache import GeometryView
 from ..component.norma.frame_align import make_geometry
-from ..component.norma.alignment import match_star_pairs
+from ..component.norma.alignment import match_star_pairs_from_geo
 from ..component.queue import StreamExhausted
 from ..engine.registry import register_op
 from .base import BaseOp
@@ -19,7 +19,7 @@ from .base import BaseOp
 @dataclasses.dataclass
 class _FrameSlot:
     original: np.ndarray
-    geo: GeometryView
+    geo: Optional[GeometryView]
     H_to_next: Optional[np.ndarray] = None
 
 
@@ -72,7 +72,7 @@ class SatelliteCleanOp(BaseOp):
         output_count = 0
 
         try:
-            for _ in self._input_range():
+            for i in self._input_range():
                 upper = self._async_convert_inputs()
                 try:
                     frame = await upper['data']
@@ -80,13 +80,20 @@ class SatelliteCleanOp(BaseOp):
                     break
 
                 frame_arr = frame.data if isinstance(frame, FloatImage) else frame
-                geo = await self._run_cpu(make_geometry, frame_arr, mask)
+                try:
+                    geo = await self._run_cpu(make_geometry, frame_arr, mask)
+                except Exception as e:
+                    logger.warning(
+                        f"{self.name}: star extraction failed, frame will not be aligned ({e})")
+                    geo = None
 
                 slot = _FrameSlot(original=frame_arr, geo=geo)
                 if buffer:
                     H = await self._run_cpu(
                         self._compute_homography, buffer[-1].geo, geo)
                     buffer[-1].H_to_next = H
+                    if H is None:
+                        logger.debug(f"Fail to compute homography for frame {i}.")
 
                 # only pop when next frame is ready and buffer is full 
                 # this ensures the residual frames in buffer to be enough, and can still be processed after input is exhausted
@@ -176,16 +183,14 @@ class SatelliteCleanOp(BaseOp):
 
     @staticmethod
     def _compute_homography(
-        prev_geo: GeometryView, curr_geo: GeometryView
-    ) -> np.ndarray:
+        prev_geo: Optional[GeometryView], curr_geo: Optional[GeometryView]
+    ) -> Optional[np.ndarray]:
+        if prev_geo is None or curr_geo is None:
+            return None
         try:
-            match = match_star_pairs(
-                prev_geo.unit_vectors, curr_geo.unit_vectors,
-                prev_geo.volumes, curr_geo.volumes,
-                prev_geo.positions, curr_geo.positions,
-            )
+            match = match_star_pairs_from_geo(prev_geo, curr_geo)
             return match.init_homography
         except Exception as e:
             logger.warning(
-                f"Satellite clean: homography failed ({e}), using identity")
-            return np.eye(3, dtype=np.float64)
+                f"Satellite clean: homography failed ({e}), frame link broken")
+            return None

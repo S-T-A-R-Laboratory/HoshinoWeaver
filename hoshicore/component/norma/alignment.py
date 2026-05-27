@@ -12,12 +12,12 @@ import numpy as np
 from loguru import logger
 from numpy.typing import NDArray
 
-from .matching import (MatchResult, extract_point_features,
-                       find_initial_match, fine_tune_transform)
+from .cache import GeometryView
+from .matching import (MatchResult, extract_point_features, find_initial_match,
+                       fine_tune_transform)
 from .optimization import (AlignmentParams, OptimizationContext,
-                           reproject_error, run_optimization)
-from .projection import make_intrinsic_matrix, unproject_pixels, project_vectors
-from .types import CameraModel, Distortion, Intrinsics, Pointing
+                           run_optimization)
+from .types import CameraModel, Distortion
 
 
 @dataclasses.dataclass(frozen=True)
@@ -63,6 +63,34 @@ def match_star_pairs(
         pair_idx=pair_idx,
         ref_pts=ref_pts[pair_idx[:, 0]],
         src_pts=src_pts[pair_idx[:, 1]],
+        init_homography=tf,
+    )
+
+
+def match_star_pairs_from_geo(
+    ref_geo: GeometryView,
+    src_geo: GeometryView,
+    apply_threshold_filter: bool = True,
+    theta_th: float = np.pi / 6,
+) -> MatchResult:
+    """match_star_pairs variant that accepts GeometryView directly.
+
+    Reuses cached features from GeometryView instead of recomputing them.
+    """
+    pair_idx = find_initial_match(
+        ref_geo.features, src_geo.features,
+        ref_geo.positions, src_geo.positions,
+        vectors1=ref_geo.unit_vectors, vectors2=src_geo.unit_vectors,
+        apply_threshold_filter=apply_threshold_filter,
+        theta_th=theta_th)
+
+    tf, pair_idx = fine_tune_transform(
+        ref_geo.positions, src_geo.positions, pair_idx)
+
+    return MatchResult(
+        pair_idx=pair_idx,
+        ref_pts=ref_geo.positions[pair_idx[:, 0]],
+        src_pts=src_geo.positions[pair_idx[:, 1]],
         init_homography=tf,
     )
 

@@ -162,13 +162,27 @@ def fine_tune_transform(
             np.amax(pts1, axis=0) - np.amin(pts1, axis=0)
         ) * np.array([1, 0.8]) + np.amin(pts1, axis=0)
         dist_mat = spd.cdist(rand_pts, pts1[init_pair_idx[:, 0]])
-        tmp_ind = np.argmin(dist_mat, axis=1)
+        tmp_ind = np.unique(np.argmin(dist_mat, axis=1))
+        if len(tmp_ind) < 4:
+            logger.warning(
+                f"findHomography skipped (iteration {k}): only {len(tmp_ind)} unique point pairs after dedup")
+            k += 1
+            continue
         tf = cv2.findHomography(pts1[init_pair_idx[tmp_ind, 0]],
                                 pts2[init_pair_idx[tmp_ind, 1]],
                                 method=cv2.RANSAC,
                                 ransacReprojThreshold=5)
-        pts12 = cv2.perspectiveTransform(
-            np.array([[p] for p in pts1], dtype="float32"), tf[0])[:, 0, :]
+        if tf[0] is None:
+            logger.warning(f"findHomography returned None (iteration {k}), skipping")
+            k += 1
+            continue
+        try:
+            pts12 = cv2.perspectiveTransform(
+                np.array([[p] for p in pts1], dtype="float32"), tf[0])[:, 0, :]
+        except Exception as e:
+            logger.warning(f"RANSAC homography failed (iteration {k}): {e}")
+            k += 1
+            continue
         dist_mat = spd.cdist(pts12, pts2)
         num1, num2 = dist_mat.shape
 
@@ -184,8 +198,13 @@ def fine_tune_transform(
 
     pair_idx = np.hstack((ind, idx12[ind, 0]))
 
+    if len(pair_idx) < 4:
+        raise ValueError(
+            f"findHomography requires at least 4 point pairs, got {len(pair_idx)}")
     tf = cv2.findHomography(pts1[pair_idx[:, 0]],
                             pts2[pair_idx[:, 1]],
                             method=cv2.RANSAC,
                             ransacReprojThreshold=5)
+    if tf[0] is None:
+        raise ValueError("Final findHomography returned None")
     return tf[0], pair_idx
