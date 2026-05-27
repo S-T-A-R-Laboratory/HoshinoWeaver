@@ -13,8 +13,8 @@ from loguru import logger
 from numpy.typing import NDArray
 
 from .cache import GeometryView
-from .matching import (MatchResult, extract_point_features, find_initial_match,
-                       fine_tune_transform)
+from .matching import (MatchResult, adaptive_k, extract_point_features,
+                       find_initial_match, fine_tune_transform)
 from .optimization import (AlignmentParams, OptimizationContext,
                            run_optimization)
 from .types import CameraModel, Distortion
@@ -43,11 +43,13 @@ def match_star_pairs(
     src_volumes: NDArray[np.float64],
     ref_pts: NDArray[np.float64],
     src_pts: NDArray[np.float64],
-    k: int = 15,
+    k: int | None = None,
     apply_threshold_filter: bool = True,
     theta_th: float = np.pi / 6,
 ) -> MatchResult:
     """Initial matching + RANSAC refinement. Returns MatchResult."""
+    if k is None:
+        k = adaptive_k(min(len(ref_vectors), len(src_vectors)))
     ref_features = extract_point_features(ref_vectors, ref_volumes, k=k)
     src_features = extract_point_features(src_vectors, src_volumes, k=k)
 
