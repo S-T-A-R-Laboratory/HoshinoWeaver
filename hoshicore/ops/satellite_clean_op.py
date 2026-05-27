@@ -12,6 +12,7 @@ from ..component.norma.cache import GeometryView
 from ..component.norma.frame_align import make_geometry
 from ..component.norma.alignment import match_star_pairs_from_geo
 from ..component.queue import StreamExhausted
+from .._custom_op.ops.median import median_reduce_chunk
 from ..engine.registry import register_op
 from .base import BaseOp
 
@@ -56,10 +57,10 @@ class SatelliteCleanOp(BaseOp):
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         W: int = configs['window_size']
         mask: Optional[np.ndarray] = configs['mask']
-        if mask is not None and mask.ndim == 3:
-            mask = cv2.cvtColor((mask * 255).astype(np.uint8),
-                                cv2.COLOR_BGR2GRAY)
-            mask = (mask > 0).astype(np.uint8)
+        if mask is not None:
+            if mask.ndim == 3:
+                mask = mask.mean(axis=2)
+            mask = (mask > 0.5).astype(np.uint8)
         tot_num = self.length
 
         assert W >= 1 and W % 2 == 1, "window_size must be an odd integer >= 1"
@@ -103,7 +104,7 @@ class SatelliteCleanOp(BaseOp):
 
                 if len(buffer) == W:
                     cleaned = await self._run_cpu(
-                        self._process_center, buffer, half_W)
+                        self._process_center, buffer, half_W, mask)
                     out = self._wrap_output(cleaned, frame)
                     await self._broadcast_outputs({"result": out})
                     output_count += 1
@@ -114,7 +115,7 @@ class SatelliteCleanOp(BaseOp):
             res_center_pos = (len(buffer) - 1) // 2
             while res_center_pos < len(buffer):
                 cleaned = await self._run_cpu(
-                    self._process_center, buffer, res_center_pos)
+                    self._process_center, buffer, res_center_pos, mask)
                 out = self._wrap_output(cleaned, frame)
                 await self._broadcast_outputs({"result": out})
                 res_center_pos += 1
@@ -136,11 +137,14 @@ class SatelliteCleanOp(BaseOp):
         return arr
 
     @staticmethod
-    def _process_center(buffer: deque, center_pos: int) -> np.ndarray:
+    def _process_center(
+        buffer: deque, center_pos: int, mask: Optional[np.ndarray]
+    ) -> np.ndarray:
         center = buffer[center_pos]
         h, w = center.original.shape[:2]
 
         aligned_all = [center.original]
+        original_all = [center.original]
         for pos in range(len(buffer)):
             if pos == center_pos:
                 continue
@@ -151,13 +155,26 @@ class SatelliteCleanOp(BaseOp):
                 buffer[pos].original, H, (w, h),
                 borderMode=cv2.BORDER_REPLICATE)
             aligned_all.append(aligned)
+            original_all.append(buffer[pos].original)
 
         if len(aligned_all) == 1:
             return center.original
 
-        result = np.median(
-            np.stack(aligned_all, axis=0).astype(np.float32), axis=0)
-        return result.astype(center.original.dtype)
+        if mask is None:
+            sky_stack = np.stack(aligned_all, axis=0)
+            return median_reduce_chunk(sky_stack)
+
+        sky_stack = np.stack(aligned_all, axis=0)
+        ground_stack = np.stack(original_all, axis=0)
+        sky_median = median_reduce_chunk(sky_stack)
+        ground_median = median_reduce_chunk(ground_stack)
+
+        if sky_median.ndim == 3:
+            mask_3d = mask[:, :, np.newaxis]
+        else:
+            mask_3d = mask
+        result = np.where(mask_3d, sky_median, ground_median)
+        return result
 
     @staticmethod
     def _chain_homography(
