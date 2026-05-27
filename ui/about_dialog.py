@@ -15,7 +15,7 @@ from ui import resource  # noqa: F401  — registers Qt icon resources
 from ui.UILibs import uQDialog
 
 _LICENSE_PATH = Path(__file__).parent.parent / "LICENSE"
-_GITHUB_URL = "https://github.com/Designerspr/HoshinoWeaver"
+_GITHUB_URL = "https://github.com/S-T-A-R-Laboratory/HoshinoWeaver"
 
 
 def _read_license_first_line() -> str:
