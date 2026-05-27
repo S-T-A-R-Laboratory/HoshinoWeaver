@@ -2,51 +2,21 @@
 
 from __future__ import annotations
 
-import importlib
-import os
-import sys
 from functools import lru_cache
+from functools import partial
 from typing import Any, Callable
 
 import numpy as np
 
-from hoshicore._custom_op import thread_tuning as _thread_tuning
+from hoshicore._custom_op._dispatch import apply_compiled_threads as _apply_compiled_threads
+from hoshicore._custom_op._dispatch import compiled_build_info as _compiled_build_info
+from hoshicore._custom_op._dispatch import debug_enabled as _debug_enabled
+from hoshicore._custom_op._dispatch import debug_log
+from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
+from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
 
 
-def _debug_enabled() -> bool:
-    return os.environ.get("HNW_CUSTOM_OPS_DEBUG", "0") not in {"", "0", "false", "False"}
-
-
-def _debug_log(message: str) -> None:
-    if _debug_enabled():
-        print(f"[hoshicore._custom_op.median] {message}", file=sys.stderr)
-
-
-def _fallback_preference() -> str:
-    raw = os.environ.get("HNW_CUSTOM_OPS_FALLBACK", "auto").strip().lower()
-    if raw in {"auto", "numpy"}:
-        return raw
-    return "auto"
-
-
-@lru_cache(maxsize=1)
-def _compiled_build_info() -> dict[str, Any]:
-    module, _ = _load_compiled_module_result()
-    if module is None or not hasattr(module, "build_info"):
-        return {}
-    payload = module.build_info()
-    return payload if isinstance(payload, dict) else {}
-
-
-_LAST_APPLIED_COMPILED_THREADS: int | None = None
-
-
-@lru_cache(maxsize=1)
-def _load_compiled_module_result() -> tuple[Any | None, str | None]:
-    try:
-        return importlib.import_module("hoshicore._custom_op._C"), None
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+_debug_log = partial(debug_log, "median")
 
 
 _SUPPORTED_DTYPES = (np.uint8, np.uint16, np.float32, np.float64)
@@ -68,28 +38,6 @@ def _validate_stack(stack: np.ndarray) -> np.ndarray:
     if not stack_arr.flags.c_contiguous:
         stack_arr = np.ascontiguousarray(stack_arr)
     return stack_arr
-
-
-def _apply_compiled_threads(op_name: str, sample: np.ndarray) -> None:
-    global _LAST_APPLIED_COMPILED_THREADS
-    module, _ = _load_compiled_module_result()
-    if module is None:
-        return
-    build = _compiled_build_info()
-    if not build.get("openmp"):
-        return
-    if not hasattr(module, "set_openmp_threads"):
-        return
-    threads = _thread_tuning.resolve_runtime_threads(
-        op_name=op_name,
-        shape=sample.shape,
-        dtype=sample.dtype,
-        build_info=build,
-    )
-    if threads == _LAST_APPLIED_COMPILED_THREADS:
-        return
-    if module.set_openmp_threads(int(threads)):
-        _LAST_APPLIED_COMPILED_THREADS = int(threads)
 
 
 def median_reduce_chunk_numpy(stack: np.ndarray) -> np.ndarray:

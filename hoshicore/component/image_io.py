@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Optional, Union
 
+import astropy.io.fits as fits
 import cv2
 import numpy as np
 import PIL.Image
@@ -24,7 +25,7 @@ except Exception:
     _HAS_TURBOJPEG = False
 
 from .exif import ExifData, encode_exif_data
-from .utils import (COMMON_SUFFIX, NOT_RECOM_SUFFIX, RAW_SUFFIX,
+from .utils import (ASTRO_SUFFIX, COMMON_SUFFIX, NOT_RECOM_SUFFIX, RAW_SUFFIX,
                     SAME_SUFFIX_MAPPING, is_support_format, time_cost_warpper)
 
 
@@ -77,6 +78,24 @@ def load_img(file_path: str) -> Optional[np.ndarray]:
                     "Uint16 decoding failed. Fallback to uint8 loading...")
                 img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
                                    cv2.IMREAD_UNCHANGED)
+        elif suffix in ASTRO_SUFFIX:
+            data = fits.getdata(file_path)
+            if hasattr(data, 'data') and not isinstance(data, np.ndarray):
+                # fits.getdata may return FITS_rec or similar; extract underlying array
+                data = np.asarray(data)
+            if isinstance(data, np.ma.MaskedArray):
+                data = data.filled(0)
+            img = np.ascontiguousarray(data)
+            if img.ndim == 3:
+                # FITS stores color as (C, H, W) — transpose to (H, W, C)
+                if img.shape[0] in (3, 4):
+                    img = np.transpose(img, (1, 2, 0))
+                # RGB → BGR to match OpenCV convention
+                if img.shape[2] >= 3:
+                    img = img[:, :, ::-1].copy()
+                    if img.shape[2] == 4:
+                        # 暂时丢弃A维度
+                        img = img[:, :, [2, 1, 0]].copy()
         else:
             # load images with rawpy
             with rawpy.imread(file_path) as raw:
@@ -171,6 +190,18 @@ def peek_shape(file_path: str) -> tuple[tuple[int, ...], int]:
             page = tf.pages[0]
             return tuple(page.shape), page.dtype.itemsize
 
+    if suffix in ASTRO_SUFFIX:
+        with fits.open(file_path, memmap=True) as hdul:
+            for hdu in hdul:
+                if hdu.data is not None and hdu.data.ndim >= 2:
+                    shape = hdu.data.shape
+                    dtype_bytes = hdu.data.dtype.itemsize
+                    # FITS color is (C, H, W) — report as (H, W, C)
+                    if len(shape) == 3 and shape[0] in (3, 4):
+                        shape = (shape[1], shape[2], shape[0])
+                    return tuple(shape), dtype_bytes
+        raise ValueError(f"peek_shape: no image HDU found in {file_path}")
+
     if suffix in RAW_SUFFIX:
         with rawpy.imread(file_path) as raw:
             h = raw.sizes.height
@@ -191,35 +222,6 @@ def peek_shape(file_path: str) -> tuple[tuple[int, ...], int]:
         return (h, w), dtype_bytes
     return (h, w, bands), dtype_bytes
 
-
-def get_img_attrs(fname: str) -> dict:
-    """
-    在不加载完整图像的情况下，使用Pillow 与 tifffile 获取图像基本信息。
-    
-    获取的信息包含：
-    * 后缀名
-    * 图像尺寸
-    * 位深度
-
-    Args:
-        fname (str): 文件名。
-
-    Returns:
-        dict: 图像基本信息
-    """
-    img_obj = PIL.Image.open(fname)
-    suffix = fname.split(".")[-1].lower()
-    if suffix in SAME_SUFFIX_MAPPING:
-        suffix = SAME_SUFFIX_MAPPING[suffix]
-    size = (getattr(img_obj, "width", None), getattr(img_obj, "height", None))
-    bits = getattr(img_obj, "bits", None)
-    if suffix in ["tif", "tiff"]:
-        bits = tifffile.TiffFile(fname).pages[0].dtype.itemsize * 8
-    return dict(fname=fname,
-                suffix=suffix,
-                size=size,
-                size_str=f"{size[0]}x{size[1]}",
-                bits=bits)
 
 
 def analyze_attr(attr_list: list[dict], attr_name: str) -> dict:
@@ -258,7 +260,7 @@ def scan_all_exif(fname_list: list[str]) -> list:
     """
     快速检查输入，并给出一系列可能会导致叠加任务无法正常进行的风险提示。
     
-    目前有后缀名检查suffix，图像尺寸检查size_str，位数检查bits。位数检查有一定局限性，tiff不支持（pillow的底层问题，对tiff支持弱）
+    目前有后缀名检查suffix，图像尺寸检查size，位数检查bits。
 
     由于部分数值不一定能够读取到，不推荐作为强制卡控。
 
@@ -276,7 +278,15 @@ def scan_all_exif(fname_list: list[str]) -> list:
     Returns:
         list[dict]: 返回风险提示列表。
     """
-    attr_list = list(map(get_img_attrs, fname_list))
+    def _attrs(fname):
+        suffix = fname.rsplit(".", 1)[-1].lower()
+        if suffix in SAME_SUFFIX_MAPPING:
+            suffix = SAME_SUFFIX_MAPPING[suffix]
+        shape, dtype_bytes = peek_shape(fname)
+        size = (shape[1], shape[0])  # (W, H)
+        return dict(fname=fname, suffix=suffix, size=size, bits=dtype_bytes * 8)
+
+    attr_list = list(map(_attrs, fname_list))
     # 后缀名检查
     suffix_dict = analyze_attr(attr_list, "suffix")
     # 尺寸检查

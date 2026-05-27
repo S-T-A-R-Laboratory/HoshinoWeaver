@@ -42,20 +42,27 @@ def _gui_preflight_callback(report: PreflightReport) -> PreflightAction:
     for w in report.warnings:
         text_lines.append(w)
 
-    if report.proposed_fallbacks:
+    has_fallback = bool(report.proposed_fallbacks)
+    if has_fallback:
         text_lines.append("")
         text_lines.append("建议降级方案：")
         for fb in report.proposed_fallbacks:
             text_lines.append(
                 f"  {fb.config_key}: {fb.current_value} → {fb.proposed_value}"
                 f"（{fb.reason}）")
+    else:
+        text_lines.append("\n无可用的自动降级方案。")
 
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
     msg.setWindowTitle("资源预检警告")
     msg.setText("\n".join(text_lines))
 
-    btn_apply = msg.addButton("应用建议", QMessageBox.AcceptRole)
+    btn_apply = None
+    if has_fallback:
+        label = ("应用降级并继续（资源仍可能不足）"
+                 if report.budget_exceeded_after_fallback else "应用建议")
+        btn_apply = msg.addButton(label, QMessageBox.AcceptRole)
     btn_ignore = msg.addButton("忽略并继续", QMessageBox.RejectRole)
     msg.addButton("中止", QMessageBox.DestructiveRole)
 
@@ -109,12 +116,7 @@ class SlotHandler(QMainWindow):
         '''
         button_pos = self.window.label_current_mode.mapToGlobal(
             QPoint(0, self.window.label_current_mode.height()))
-        new_x = button_pos.x() - (self.window.choose_mode_window.width() -
-                                  self.window.label_current_mode.width()) / 2
-        new_button_pos = QPoint(new_x, button_pos.y())
-        self.window.choose_mode_window.move(new_button_pos)
-        self.window.choose_mode_window.show()
-        self.window.choose_mode_window.timer.start(5000)
+        self.window.choose_mode_menu.popup(button_pos)
 
     @Slot()
     def show_guide_window(self):
@@ -148,7 +150,7 @@ class SlotHandler(QMainWindow):
         bg_map = {
             '星轨叠加': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
             '堆栈降噪': 'url(:/img/resource/img/back02.jpg)',
-            '天地分离': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
+            '星点对齐叠加': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
         }
         bg = bg_map.get(mode, 'url(:/img/resource/img/back02.jpg)')
         self.window.main_frame.setStyleSheet(f"""

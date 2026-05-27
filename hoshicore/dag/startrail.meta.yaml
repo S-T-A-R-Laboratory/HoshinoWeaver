@@ -67,24 +67,24 @@ nodes:
     outputs:
       result: { type: sequence }
 
-  star_shrink:
-    op: StarShrinkOp
-    enable: configs.enable_star_shrink
-    bypass: data
-    inputs:
-      data: data_loader.result
-    outputs:
-      result: { type: sequence }
-
   satellite_clean:
     op: satellite_clean.yaml
     enable: configs.enable_satellite_clean
     bypass: data
     inputs:
-      data: star_shrink.result
+      data: data_loader.result
     configs:
       window_size: configs.sat_window_size
       mask: configs.mask
+    outputs:
+      result: { type: sequence }
+  
+  star_shrink:
+    op: StarShrinkOp
+    enable: configs.enable_star_shrink
+    bypass: data
+    inputs:
+      data: satellite_clean.result
     outputs:
       result: { type: sequence }
 
@@ -101,7 +101,7 @@ nodes:
   core_algo:
     route_key: mode
     inputs:
-      data: satellite_clean.result
+      data: star_shrink.result
       weight: weight_generator.result
     route_inputs:
       mix: {fnames: inputs.fnames}

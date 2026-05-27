@@ -136,6 +136,7 @@ class PanelSchema:
                 options=options,
                 default=route_def.get("default",
                                       option_keys[0] if option_keys else ""),
+                visible_when=ui_route.get("visible_when"),
             )
 
     def _parse_configs(self, meta: dict, ui: dict):
@@ -182,6 +183,7 @@ def _build_config_spec(key: str, meta_spec: dict, ui_spec: dict) -> ConfigSpec:
         bind=ui_spec.get("bind"),
         accept=ui_spec.get("accept"),
         transform=ui_spec.get("transform"),
+        visible_when=ui_spec.get("visible_when"),
     )
 
 
@@ -250,6 +252,9 @@ class DynamicConfigPanel(QWidget):
         self._route_config_getters: dict[tuple[str, str], Callable] = {}
         self._route_config_container: dict[str, QWidget] = {}
         self._bound_pairs: dict[str | tuple[str, str], str] = {}
+        self._visibility_deps: dict[str, list[tuple[list[QWidget], dict]]] = {}
+        self._config_widgets: dict[str, QWidget] = {}
+        self._config_on_change_hooks: dict[str, list[Callable]] = {}
 
     def load_schema(self, schema: PanelSchema):
         self._schema = schema
@@ -258,12 +263,16 @@ class DynamicConfigPanel(QWidget):
         self._route_config_getters.clear()
         self._route_config_container.clear()
         self._bound_pairs.clear()
+        self._visibility_deps.clear()
+        self._config_widgets.clear()
+        self._config_on_change_hooks.clear()
 
         _clear_layout(self._main_layout)
 
         self._render_routes()
         self._render_configs()
         self._render_route_configs()
+        self._evaluate_all_visibility()
 
         self._main_layout.addStretch()
 
@@ -284,6 +293,7 @@ class DynamicConfigPanel(QWidget):
             self._route_getters[route_key] = getter
 
             # Place the route_config container immediately below its selector
+            container: QWidget | None = None
             if route_key in self._schema.route_configs:
                 container = QWidget(self)
                 container_layout = QVBoxLayout(container)
@@ -291,6 +301,12 @@ class DynamicConfigPanel(QWidget):
                 container_layout.setSpacing(0)
                 self._main_layout.addWidget(container)
                 self._route_config_container[route_key] = container
+
+            if route_spec.visible_when:
+                targets = [frame]
+                if container is not None:
+                    targets.append(container)
+                self._register_visibility_dep(targets, route_spec.visible_when)
 
     def _render_configs(self):
         layout_info = self._schema.layout
@@ -345,6 +361,7 @@ class DynamicConfigPanel(QWidget):
     def _on_route_changed(self, route_key: str, option: str):
         if route_key in self._route_config_container:
             self._rebuild_route_config_section(route_key, option)
+        self._evaluate_visibility(route_key)
         self.values_changed.emit()
 
     def _rebuild_route_config_section(self, route_key: str, option: str):
@@ -402,13 +419,23 @@ class DynamicConfigPanel(QWidget):
         if spec.widget == "range_slider" and spec.bind:
             self._bound_pairs[spec.key] = spec.bind
         layout = target_layout if target_layout is not None else self._main_layout
+
+        def _on_config_change(key=spec.key):
+            self.values_changed.emit()
+            for hook in self._config_on_change_hooks.get(key, []):
+                hook()
+
         row, getter, setter = create_config_row(
             spec,
             parent=self,
-            on_change=self.values_changed.emit,
+            on_change=_on_config_change,
         )
         layout.addWidget(row)
         self._config_getters[spec.key] = getter
+        self._config_widgets[spec.key] = row
+
+        if spec.visible_when:
+            self._register_visibility_dep([row], spec.visible_when)
 
     def _add_group_box(
         self,
@@ -437,6 +464,42 @@ class DynamicConfigPanel(QWidget):
         layout = target_layout if target_layout is not None else self._main_layout
         layout.addWidget(outer)
         return outer_layout
+
+    # ── Conditional Visibility ────────────────────────────────────────────
+
+    def _register_visibility_dep(self, targets: list[QWidget], condition: dict):
+        dep_key = condition.get("key", "")
+        if not dep_key:
+            return
+        if dep_key not in self._visibility_deps:
+            self._visibility_deps[dep_key] = []
+        self._visibility_deps[dep_key].append((targets, condition))
+        self._config_on_change_hooks.setdefault(dep_key, []).append(
+            lambda k=dep_key: self._evaluate_visibility(k)
+        )
+
+    def _evaluate_visibility(self, changed_key: str):
+        for targets, cond in self._visibility_deps.get(changed_key, []):
+            current_val = self._get_current_value(changed_key)
+            if "eq" in cond:
+                visible = current_val == cond["eq"]
+            elif "neq" in cond:
+                visible = current_val != cond["neq"]
+            else:
+                visible = True
+            for w in targets:
+                w.setVisible(visible)
+
+    def _evaluate_all_visibility(self):
+        for dep_key in self._visibility_deps:
+            self._evaluate_visibility(dep_key)
+
+    def _get_current_value(self, key: str) -> Any:
+        if key in self._route_getters:
+            return self._route_getters[key]()
+        if key in self._config_getters:
+            return self._config_getters[key]()
+        return None
 
     # ── collect_configs override for range_slider bound pairs ─────────────
 

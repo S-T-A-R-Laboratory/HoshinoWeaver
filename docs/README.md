@@ -169,7 +169,7 @@ class MyOp(BaseOp):
 | **I/O** | | |
 | `ImgDataLoaderOp` | BaseOp | 异步加载图像序列，支持文件列表和内存数组两种模式 |
 | `LoadSingleImageOp` | BaseOp | 加载单张图像（如 master 校准帧） |
-| `LoadMaskImageOp` | BaseOp | 加载并归一化掩模图像 |
+| `LoadMaskImageOp` | BaseOp | 加载并归一化遮罩图像 |
 | `ImageSaveOp` | BaseOp | 图像保存，支持 dtype 转换和 EXIF 写入 |
 | `BatchImageSaveOp` | ParallelBaseOp | 批量序列保存（逐帧带序号保存，用于延时视频帧输出） |
 | **叠加核心** | | |

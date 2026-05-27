@@ -1,21 +1,22 @@
 inputs:
   light_fnames:
-    label: "亮场文件"
+    label: "亮场文件 (Light)"
+    description: "待叠加的拍摄原片"
     widget: file_picker
     accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
   bias_fnames:
-    label: "偏置场文件"
-    description: "Bias 帧（可选，用于减去读出噪声）"
+    label: "偏置场文件 (Bias)"
+    description: "用于减去传感器读出噪声。需多张，可选"
     widget: file_picker
     accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
   dark_fnames:
-    label: "暗场文件"
-    description: "Dark 帧（可选，用于减去暗电流）"
+    label: "暗场文件 (Dark)"
+    description: "用于减去暗电流和热噪声。需多张，可选"
     widget: file_picker
     accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
   flat_fnames:
-    label: "平场文件"
-    description: "Flat 帧（可选，用于校正暗角/灰尘）"
+    label: "平场文件 (Flat)"
+    description: "用于校正暗角和镜头灰尘。需多张，可选"
     widget: file_picker
     accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
 
@@ -28,14 +29,14 @@ routes:
         label: "不使用"
         description: "跳过偏置场校准"
       master:
-        label: "主帧文件"
-        description: "从已有 Master Bias 文件加载"
+        label: "已有主帧"
+        description: "加载此前合成好的 Master Bias 文件"
       mean:
         label: "均值合成"
-        description: "从多张 Bias 帧求平均合成"
+        description: "从多张 Bias 帧求平均。帧数越多效果越好"
       median:
         label: "中位数合成"
-        description: "从多张 Bias 帧取中位数合成"
+        description: "从多张 Bias 帧取中位数。可排除偶发坏点"
   dark_stacker:
     label: "暗场来源"
     widget: tabs
@@ -44,14 +45,14 @@ routes:
         label: "不使用"
         description: "跳过暗场校准"
       master:
-        label: "主帧文件"
-        description: "从已有 Master Dark 文件加载"
+        label: "已有主帧"
+        description: "加载此前合成好的 Master Dark 文件"
       mean:
         label: "均值合成"
-        description: "从多张 Dark 帧求平均合成"
+        description: "从多张 Dark 帧求平均。帧数越多效果越好"
       median:
         label: "中位数合成"
-        description: "从多张 Dark 帧取中位数合成"
+        description: "从多张 Dark 帧取中位数。可排除偶发坏点"
   flat_stacker:
     label: "平场来源"
     widget: tabs
@@ -60,35 +61,35 @@ routes:
         label: "不使用"
         description: "跳过平场校准"
       master:
-        label: "主帧文件"
-        description: "从已有 Master Flat 文件加载"
+        label: "已有主帧"
+        description: "加载此前合成好的 Master Flat 文件"
       mean:
         label: "均值合成"
-        description: "从多张 Flat 帧求平均合成"
+        description: "从多张 Flat 帧求平均。帧数越多效果越好"
       median:
         label: "中位数合成"
-        description: "从多张 Flat 帧取中位数合成"
+        description: "从多张 Flat 帧取中位数。可排除偶发坏点"
   main_stacker:
     label: "叠加算法"
     widget: tabs
     options:
       mean:
         label: "均值"
-        description: "高信噪比平均叠加"
+        description: "最快最锐利。适合已筛选过的干净素材，不排除异常帧"
       median:
         label: "中位数"
-        description: "逐像素取中位数，天然抗异常值"
+        description: "逐像素取中位数，天然排异。无需额外参数但速度较慢"
       sigma_clip:
         label: "Sigma 裁剪"
-        description: "迭代剔除异常像素后求均值"
+        description: "多轮排除异常后求平均。推荐有卫星/飞机/云层的场景"
       huber_mean:
         label: "Huber 均值"
-        description: "基于 Huber 损失的稳健均值估计"
+        description: "自动降低异常像素权重，无需设定阈值。适合轻微异常场景"
 
 configs:
   int_weight:
-    label: "整数权重"
-    description: "启用使用整数累加，改善精度，速度更快"
+    label: "整数累加"
+    description: "使用整数累加器，更快且更省内存。推荐保持开启"
     widget: switch
   output_dtype:
     hidden: true
@@ -96,22 +97,25 @@ configs:
     hidden: true
   bias_master_path:
     label: "Bias 主帧路径"
-    description: "已有 Master Bias 文件路径"
+    description: "选择已有主帧时，指定其文件路径"
     widget: file_picker
+    visible_when: { key: "bias_stacker", eq: "master" }
     accept: ".tif,.tiff,.fits"
   dark_master_path:
     label: "Dark 主帧路径"
-    description: "已有 Master Dark 文件路径"
+    description: "选择已有主帧时，指定其文件路径"
     widget: file_picker
+    visible_when: { key: "dark_stacker", eq: "master" }
     accept: ".tif,.tiff,.fits"
   flat_master_path:
     label: "Flat 主帧路径"
-    description: "已有 Master Flat 文件路径"
+    description: "选择已有主帧时，指定其文件路径"
     widget: file_picker
+    visible_when: { key: "flat_stacker", eq: "master" }
     accept: ".tif,.tiff,.fits"
   enable_exif:
-    label: "同步 EXIF 信息"
-    description: "在输出文件中写入 EXIF 信息"
+    label: "写入 EXIF"
+    description: "在输出文件中保留拍摄参数。关闭后输出不含 EXIF 信息"
     widget: switch
   exif_reduce_type:
     hidden: true

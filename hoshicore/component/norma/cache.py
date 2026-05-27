@@ -10,7 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .detection import DetectedStars, detect_star_points
-from .matching import extract_point_features
+from .matching import adaptive_k, extract_point_features
 from .types import BaseCameraModel, FlatCameraModel
 
 
@@ -70,8 +70,9 @@ class GeometryView:
 
     @cached_property
     def features(self) -> NDArray[np.float64]:
+        k = adaptive_k(len(self._detection.positions))
         return extract_point_features(self.unit_vectors,
-                                      self._detection.volumes)
+                                      self._detection.volumes, k=k)
 
     def with_camera(self, camera: BaseCameraModel) -> "GeometryView":
         """Create a new GeometryView with a different camera (reuses detection)."""

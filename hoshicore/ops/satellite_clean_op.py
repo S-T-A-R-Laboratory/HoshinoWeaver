@@ -10,8 +10,9 @@ from loguru import logger
 from ..component.data_container import FloatImage
 from ..component.norma.cache import GeometryView
 from ..component.norma.frame_align import make_geometry
-from ..component.norma.alignment import match_star_pairs
+from ..component.norma.alignment import match_star_pairs_from_geo
 from ..component.queue import StreamExhausted
+from .._custom_op.ops.median import median_reduce_chunk
 from ..engine.registry import register_op
 from .base import BaseOp
 
@@ -19,7 +20,7 @@ from .base import BaseOp
 @dataclasses.dataclass
 class _FrameSlot:
     original: np.ndarray
-    geo: GeometryView
+    geo: Optional[GeometryView]
     H_to_next: Optional[np.ndarray] = None
 
 
@@ -56,10 +57,10 @@ class SatelliteCleanOp(BaseOp):
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         W: int = configs['window_size']
         mask: Optional[np.ndarray] = configs['mask']
-        if mask is not None and mask.ndim == 3:
-            mask = cv2.cvtColor((mask * 255).astype(np.uint8),
-                                cv2.COLOR_BGR2GRAY)
-            mask = (mask > 0).astype(np.uint8)
+        if mask is not None:
+            if mask.ndim == 3:
+                mask = mask.mean(axis=2)
+            mask = (mask > 0.5).astype(np.uint8)
         tot_num = self.length
 
         assert W >= 1 and W % 2 == 1, "window_size must be an odd integer >= 1"
@@ -72,7 +73,7 @@ class SatelliteCleanOp(BaseOp):
         output_count = 0
 
         try:
-            for _ in self._input_range():
+            for i in self._input_range():
                 upper = self._async_convert_inputs()
                 try:
                     frame = await upper['data']
@@ -80,13 +81,20 @@ class SatelliteCleanOp(BaseOp):
                     break
 
                 frame_arr = frame.data if isinstance(frame, FloatImage) else frame
-                geo = await self._run_cpu(make_geometry, frame_arr, mask)
+                try:
+                    geo = await self._run_cpu(make_geometry, frame_arr, mask)
+                except Exception as e:
+                    logger.warning(
+                        f"{self.name}: star extraction failed, frame will not be aligned ({e})")
+                    geo = None
 
                 slot = _FrameSlot(original=frame_arr, geo=geo)
                 if buffer:
                     H = await self._run_cpu(
                         self._compute_homography, buffer[-1].geo, geo)
                     buffer[-1].H_to_next = H
+                    if H is None:
+                        logger.debug(f"Fail to compute homography for frame {i}.")
 
                 # only pop when next frame is ready and buffer is full 
                 # this ensures the residual frames in buffer to be enough, and can still be processed after input is exhausted
@@ -96,7 +104,7 @@ class SatelliteCleanOp(BaseOp):
 
                 if len(buffer) == W:
                     cleaned = await self._run_cpu(
-                        self._process_center, buffer, half_W)
+                        self._process_center, buffer, half_W, mask)
                     out = self._wrap_output(cleaned, frame)
                     await self._broadcast_outputs({"result": out})
                     output_count += 1
@@ -107,7 +115,7 @@ class SatelliteCleanOp(BaseOp):
             res_center_pos = (len(buffer) - 1) // 2
             while res_center_pos < len(buffer):
                 cleaned = await self._run_cpu(
-                    self._process_center, buffer, res_center_pos)
+                    self._process_center, buffer, res_center_pos, mask)
                 out = self._wrap_output(cleaned, frame)
                 await self._broadcast_outputs({"result": out})
                 res_center_pos += 1
@@ -129,11 +137,14 @@ class SatelliteCleanOp(BaseOp):
         return arr
 
     @staticmethod
-    def _process_center(buffer: deque, center_pos: int) -> np.ndarray:
+    def _process_center(
+        buffer: deque, center_pos: int, mask: Optional[np.ndarray]
+    ) -> np.ndarray:
         center = buffer[center_pos]
         h, w = center.original.shape[:2]
 
         aligned_all = [center.original]
+        original_all = [center.original]
         for pos in range(len(buffer)):
             if pos == center_pos:
                 continue
@@ -144,13 +155,26 @@ class SatelliteCleanOp(BaseOp):
                 buffer[pos].original, H, (w, h),
                 borderMode=cv2.BORDER_REPLICATE)
             aligned_all.append(aligned)
+            original_all.append(buffer[pos].original)
 
         if len(aligned_all) == 1:
             return center.original
 
-        result = np.median(
-            np.stack(aligned_all, axis=0).astype(np.float32), axis=0)
-        return result.astype(center.original.dtype)
+        if mask is None:
+            sky_stack = np.stack(aligned_all, axis=0)
+            return median_reduce_chunk(sky_stack)
+
+        sky_stack = np.stack(aligned_all, axis=0)
+        ground_stack = np.stack(original_all, axis=0)
+        sky_median = median_reduce_chunk(sky_stack)
+        ground_median = median_reduce_chunk(ground_stack)
+
+        if sky_median.ndim == 3:
+            mask_3d = mask[:, :, np.newaxis]
+        else:
+            mask_3d = mask
+        result = np.where(mask_3d, sky_median, ground_median)
+        return result
 
     @staticmethod
     def _chain_homography(
@@ -176,16 +200,14 @@ class SatelliteCleanOp(BaseOp):
 
     @staticmethod
     def _compute_homography(
-        prev_geo: GeometryView, curr_geo: GeometryView
-    ) -> np.ndarray:
+        prev_geo: Optional[GeometryView], curr_geo: Optional[GeometryView]
+    ) -> Optional[np.ndarray]:
+        if prev_geo is None or curr_geo is None:
+            return None
         try:
-            match = match_star_pairs(
-                prev_geo.unit_vectors, curr_geo.unit_vectors,
-                prev_geo.volumes, curr_geo.volumes,
-                prev_geo.positions, curr_geo.positions,
-            )
+            match = match_star_pairs_from_geo(prev_geo, curr_geo)
             return match.init_homography
         except Exception as e:
             logger.warning(
-                f"Satellite clean: homography failed ({e}), using identity")
-            return np.eye(3, dtype=np.float64)
+                f"Satellite clean: homography failed ({e}), frame link broken")
+            return None

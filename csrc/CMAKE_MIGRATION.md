@@ -36,6 +36,7 @@ csrc/
     max/
     median/
     noise/
+    sigma_clip/
     cuda/
 ```
 
@@ -50,6 +51,7 @@ _C (pybind11 module)
   ├─ hnw_ops_cpu_max
   ├─ hnw_ops_cpu_median
   ├─ hnw_ops_cpu_noise
+  ├─ hnw_ops_cpu_sigma_clip
   └─ hnw_ops_cuda       (CUDA 开启时)
 ```
 
@@ -65,38 +67,58 @@ _C (pybind11 module)
 
 | Preset | 用途 |
 |--------|------|
-| `linux-gcc` | Linux 默认 |
+| `linux-gcc` | Linux GCC 默认 |
 | `linux-gcc-cuda` | Linux + CUDA |
 | `linux-clang` | Clang 路径 |
 | `macos-clang` | macOS |
 | `windows-msvc` | Windows CPU-only |
 | `windows-msvc-cuda` | Windows + CUDA |
-| `linux-gcc-debug` | 调试 / smoke test |
 
 原则：
 
 - 默认优化配置使用 `RelWithDebInfo`
-- debug 只作为诊断路径
 - `binaryDir` 固定到 `csrc/build/<preset>/`
 
 ## build_ops.py
 
-统一开发入口，不要求用户直接记 CMake 命令。职责：
+统一开发入口，不要求开发者直接记 CMake 命令。职责：
 
 - 选择 preset
 - 探测或接收编译器路径
 - 传递 `Python3_EXECUTABLE`
 - 调用 `cmake --preset ...` + `cmake --build --preset ...`
 
-## 多平台 CUDA 策略
+## GPU 构建策略
 
-| 平台 | 角色 | 说明 |
-|------|------|------|
-| Linux | 开发与验证 | 验证基线 CUDA 12.4 |
-| Windows | 主要发布平台 | 发布目标 CUDA 12.8+，最低 driver 570.65+ |
-| macOS | CPU fallback | GPU 路线走 Metal/MPS，不纳入 CUDA |
+### CUDA
 
-Windows 用户只需 NVIDIA driver，不需要 CUDA Toolkit。
+构建 CUDA 算子需要安装 CUDA Toolkit，版本选择支持本机 GPU 的即可。
+最终发布建议 12.8+，可覆盖所有架构的 NVIDIA GPU。
+
+| Preset | 平台 |
+|--------|------|
+| `linux-gcc-cuda` | Linux |
+| `windows-msvc-cuda` | Windows |
+
+Windows 构建说明：
+
+- 默认使用 `CMake + Ninja + MSVC`
+- 保留 `windows-msvc` 作为 CPU-only 路径
+
+### 其他 GPU 后端（规划中）
+
+| 方向 | 状态 |
+|------|------|
+| AMD (ROCm/HIP) | 待评估 |
+| macOS (Metal/MPS) | 待设计 |
+| Vulkan (compute shader) | 待评估 |
+
+所有 GPU 后端保持 CPU fallback 语义不变。
+
+---
+
+普通用户只需安装 NVIDIA 驱动（>= 570.65，对应发布构建的 CUDA 12.8），不需要 CUDA Toolkit。
+驱动版本要求与 GPU 型号无关，只要驱动足够新即可；驱动过旧或无 NVIDIA GPU 时自动回退 CPU。
 
 ## 后续方向
 

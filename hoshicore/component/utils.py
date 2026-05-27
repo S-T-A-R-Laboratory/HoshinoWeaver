@@ -29,10 +29,11 @@ SUPPORT_COLOR_SPACE = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
 COMMON_SUFFIX = ["tiff", "tif", "jpg", "png", "jpeg"]
 NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
 RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng", "rw2", "raf"]
+ASTRO_SUFFIX = ["fits", "fts"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
-VERSION = "1.0.0-beta.0"
+VERSION = "1.0.0-beta.1"
 RELEASE_NAME = "Vega"
 ORG_NAME = f"STARLab"
 SOFTWARE_NAME = f"HoshinoWeaver"
@@ -46,7 +47,7 @@ else:
 def is_support_format(fname: str) -> bool:
     suffix = fname.split(".")[-1].lower()
     return ((suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX)
-            or (suffix in RAW_SUFFIX))
+            or (suffix in RAW_SUFFIX)  or (suffix in ASTRO_SUFFIX))
 
 
 def get_resize(opt: Optional[str], raw_wh: Union[list, tuple]):

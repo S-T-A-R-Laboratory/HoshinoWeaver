@@ -17,6 +17,12 @@ _RESOLUTION_UNIT_FACTORS = {
     "5": 0.001,   # μm → mm
 }
 
+_EXIF_MANU_BLACKLIST  = {
+    "makernote", "sony", "canon", "nikon", "fujifilm", "olympus", "panasonic",
+    "minolta", "samsung"
+}
+
+
 # 常用属性的简称和全称映射，方便编辑属性
 class CommonExifTags:
     ImageWidth = "Exif.Image.ImageWidth"
@@ -41,6 +47,18 @@ class CommonExifTags:
     FocalPlaneResolutionUnit = "Exif.Photo.FocalPlaneResolutionUnit"
     LensSpecification = "Exif.Photo.LensSpecification"
     LensModel = "Exif.Photo.LensModel"
+
+
+def _is_in_blacklist(key: str) -> bool:
+    """判断EXIF属性是否在黑名单中，通常是一些制造商特有的属性。
+
+    这些属性可能包含大量数据或不稳定。
+    """
+    key_lower = key.lower()
+    for black in _EXIF_MANU_BLACKLIST:
+        if black in key_lower:
+            return True
+    return False
 
 
 @dataclass(slots=True)
@@ -107,7 +125,7 @@ def read_exif_data(fname: str):
         return None
 
 
-def encode_exif_data(buf: NDArray, exifdata: ExifData):
+def encode_exif_data(buf: NDArray, exifdata: ExifData, skip_blacklist: bool = True) -> bytes:
     """Write EXIF and icc_profile information to the given image file.
 
     Args:
@@ -117,7 +135,11 @@ def encode_exif_data(buf: NDArray, exifdata: ExifData):
     """
     exifdata.set_exif(CommonExifTags.Software, f"{SOFTWARE_NAME} V{VERSION}")
     colorprofile = exifdata.colorprofile
-    exif = exifdata.exif
+    if skip_blacklist:
+        exif = {k: v for k, v in exifdata.exif.items()
+                         if not _is_in_blacklist(k)}
+    else:
+        exif = exifdata.exif
     with pyexiv2.ImageData(buf.tobytes()) as image_data:
         if colorprofile is not None and colorprofile != b"":
             image_data.modify_icc(colorprofile)

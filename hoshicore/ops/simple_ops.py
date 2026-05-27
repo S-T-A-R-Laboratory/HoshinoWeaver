@@ -42,7 +42,7 @@ class LoadSingleImageOp(BaseOp):
 @register_op()
 class LoadMaskImageOp(BaseOp):
     """
-    加载单张图片作为掩模
+    加载单张图片作为遮罩
     """
     CONFIGS: dict[str, dict[str, Any]] = {
         "path": {

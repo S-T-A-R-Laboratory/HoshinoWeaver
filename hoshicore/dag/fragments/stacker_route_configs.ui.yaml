@@ -1,20 +1,21 @@
 sigma_clip:
   rej_low:
-    label: "排异阈值下界"
-    description: "低于均值多少个标准差σ视为异常值"
+    label: "暗像素排异阈值 (σ)"
+    description: "排除偏暗像素的激进程度。值越小排除越多。推荐 2.5–3.5"
     widget: slider
     min: 0
     max: 5.0
     step: 0.1
   rej_high:
-    label: "排异阈值上界"
-    description: "高于均值多少个标准差σ视为异常值"
+    label: "亮像素排异阈值 (σ)"
+    description: "排除偏亮像素的激进程度。值越小排除越多。推荐 2.5–3.5"
     widget: slider
     min: 0
     max: 5.0
     step: 0.1
   max_iter:
     label: "最大迭代次数"
+    description: "迭代剔除的最大轮数。越多越精确但越慢，通常 3–5 次即可"
     widget: slider
     min: 1
     max: 10
@@ -24,28 +25,29 @@ sigma_clip:
 huber_mean:
   huber_c:
     label: "Huber 常数 c"
-    description: "越小越稳健（更多像素被降权），越大越接近普通均值"
+    description: "越小对异常像素抑制越强，越大越接近普通均值。推荐 1.0–2.0"
     widget: slider
     min: 0.1
     max: 5.0
     step: 0.05
 max_mix:
   rej_low:
-    label: "排异阈值下界"
-    description: "低于均值多少个标准差σ视为异常值"
+    label: "暗像素排异阈值 (σ)"
+    description: "估算背景时排除偏暗像素的激进程度。值越小排除越多。推荐 2.5–3.5"
     widget: slider
     min: 0
     max: 5.0
     step: 0.1
   rej_high:
-    label: "排异阈值上界"
-    description: "高于均值多少个标准差σ视为异常值"
+    label: "亮像素排异阈值 (σ)"
+    description: "估算背景时排除偏亮像素的激进程度。值越小排除越多。推荐 2.5–3.5"
     widget: slider
     min: 0
     max: 5.0
     step: 0.1
   max_iter:
     label: "最大迭代次数"
+    description: "估算背景时迭代剔除的最大轮数。越多越精确但越慢，通常 3–5 次即可"
     widget: slider
     min: 1
     max: 10
@@ -53,6 +55,6 @@ max_mix:
   temp_path:
     hidden: true
   minus_only:
-      label: "平衡亮度"
-      description: "仅平衡最大值结果亮度，不额外执行最大值叠加的统计学还原"
-      widget: switch
+    label: "还原均值亮度"
+    description: "开启后将图像亮度降至均值水平，提升对比度。关闭则仅消除不均匀"
+    widget: switch
