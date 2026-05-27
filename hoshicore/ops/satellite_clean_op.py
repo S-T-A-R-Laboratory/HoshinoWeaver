@@ -137,9 +137,9 @@ class SatelliteCleanOp(BaseOp):
         return arr
 
     @staticmethod
-    def _process_center(
-        buffer: deque, center_pos: int, mask: Optional[np.ndarray]
-    ) -> np.ndarray:
+    def _process_center(buffer: deque,
+                        center_pos: int,
+                        mask: Optional[np.ndarray] = None) -> np.ndarray:
         center = buffer[center_pos]
         h, w = center.original.shape[:2]
 
