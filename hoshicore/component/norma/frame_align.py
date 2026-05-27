@@ -1,7 +1,4 @@
 """单帧对齐：封装两条路径的纯函数 API。
-
-所有函数接收 ndarray / GeometryView / CameraModel，返回 ndarray。
-不依赖 DAG 框架或 ExifData 类型。
 """
 from typing import Optional
 
@@ -10,6 +7,7 @@ import numpy as np
 from loguru import logger
 
 from .alignment import match_star_pairs, optimize_alignment, warp_image_by_remap
+from .matching import ALIGN_VALIDATION, HomographyValidationConfig
 from .cache import GeometryView, StarDetectionCache
 from .intrinsics_from_exif import intrinsics_from_exif
 from .types import CameraModel, Distortion, Intrinsics
@@ -78,13 +76,15 @@ def _check_star_count(ref_geo: GeometryView, src_geo: GeometryView,
             f"src={len(src_geo.positions)} (need >={min_stars})")
 
 
-def _match_stars(ref_geo: GeometryView, src_geo: GeometryView):
+def _match_stars(ref_geo: GeometryView, src_geo: GeometryView,
+                 validation_config: HomographyValidationConfig = ALIGN_VALIDATION):
     """执行星点匹配，失败时抛出 AlignmentError。"""
     try:
         return match_star_pairs(
             ref_geo.unit_vectors, src_geo.unit_vectors,
             ref_geo.volumes, src_geo.volumes,
             ref_geo.positions, src_geo.positions,
+            validation_config=validation_config,
         )
     except Exception as e:
         raise AlignmentError(f"Star matching failed: {e}") from e

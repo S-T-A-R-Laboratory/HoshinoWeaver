@@ -42,12 +42,42 @@ class HomographyCandidate:
     sampling_mode: str
 
 
-MAX_REPROJ_MEDIAN_PX = 1.0
-MAX_REPROJ_P90_PX = 2.0
-MIN_INLIER_COVERAGE_RATIO = 0.01
-MIN_AREA_RATIO = 0.8
-MAX_AREA_RATIO = 1.2
-MAX_PROJECTIVE_MAGNITUDE = 0.1
+@dataclasses.dataclass(frozen=True)
+class HomographyValidationConfig:
+    # 中位重投影误差
+    max_reproj_median_px: float
+    # P90 重投影误差
+    max_reproj_p90_px: float
+    # 内点覆盖率
+    min_coverage_ratio: float
+    # 面积比率（变形程度）
+    min_area_ratio: float
+    max_area_ratio: float
+    # 投影分量幅度（透视变化程度）
+    max_projective_magnitude: float
+
+
+# Consecutive-frame near-neighbor matching (satellite removal, star trail stacking).
+# Strict: no perspective, near-unit area ratio.
+SATELLITE_VALIDATION = HomographyValidationConfig(
+    max_reproj_median_px=1.0,
+    max_reproj_p90_px=2.0,
+    min_coverage_ratio=0.01,
+    min_area_ratio=0.8,
+    max_area_ratio=1.2,
+    max_projective_magnitude=0.1,
+)
+
+# General frame alignment: large perspective, low overlap expected.
+ALIGN_VALIDATION = HomographyValidationConfig(
+    max_reproj_median_px=1.5,
+    max_reproj_p90_px=3.0,
+    min_coverage_ratio=0.005,
+    min_area_ratio=0.4,
+    max_area_ratio=2.5,
+    max_projective_magnitude=0.5,
+)
+
 MIN_HOMOGRAPHY_INLIERS = 4
 HOMOGRAPHY_RANSAC_REPROJ_THRESHOLD = 5.0
 FULL_SAMPLE_PAIR_LIMIT = 6
@@ -137,6 +167,7 @@ def validate_homography(
     pts2: NDArray[np.float64],
     pair_idx: NDArray[np.int32],
     H: NDArray[np.float64],
+    config: HomographyValidationConfig = SATELLITE_VALIDATION,
 ) -> HomographyDiagnostics:
     """Validate a candidate homography and raise on obvious bad solutions."""
     diagnostics = evaluate_homography(pts1, pts2, pair_idx, H)
@@ -144,23 +175,23 @@ def validate_homography(
 
     if not np.all(np.isfinite(H)):
         reject_reasons.append("homography contains non-finite values")
-    if diagnostics.median_reproj_error > MAX_REPROJ_MEDIAN_PX:
+    if diagnostics.median_reproj_error > config.max_reproj_median_px:
         reject_reasons.append(
-            f"median_reproj={diagnostics.median_reproj_error:.3f}px > {MAX_REPROJ_MEDIAN_PX:.3f}px")
-    if diagnostics.p90_reproj_error > MAX_REPROJ_P90_PX:
+            f"median_reproj={diagnostics.median_reproj_error:.3f}px > {config.max_reproj_median_px:.3f}px")
+    if diagnostics.p90_reproj_error > config.max_reproj_p90_px:
         reject_reasons.append(
-            f"p90_reproj={diagnostics.p90_reproj_error:.3f}px > {MAX_REPROJ_P90_PX:.3f}px")
-    if diagnostics.coverage_ratio < MIN_INLIER_COVERAGE_RATIO:
+            f"p90_reproj={diagnostics.p90_reproj_error:.3f}px > {config.max_reproj_p90_px:.3f}px")
+    if diagnostics.coverage_ratio < config.min_coverage_ratio:
         reject_reasons.append(
-            f"coverage_ratio={diagnostics.coverage_ratio:.4f} < {MIN_INLIER_COVERAGE_RATIO:.4f}")
+            f"coverage_ratio={diagnostics.coverage_ratio:.4f} < {config.min_coverage_ratio:.4f}")
     if diagnostics.is_flipped:
         reject_reasons.append("warped canvas is flipped")
-    if not MIN_AREA_RATIO <= diagnostics.area_ratio <= MAX_AREA_RATIO:
+    if not config.min_area_ratio <= diagnostics.area_ratio <= config.max_area_ratio:
         reject_reasons.append(
-            f"area_ratio={diagnostics.area_ratio:.3f} not in [{MIN_AREA_RATIO:.3f}, {MAX_AREA_RATIO:.3f}]")
-    if diagnostics.projective_magnitude > MAX_PROJECTIVE_MAGNITUDE:
+            f"area_ratio={diagnostics.area_ratio:.3f} not in [{config.min_area_ratio:.3f}, {config.max_area_ratio:.3f}]")
+    if diagnostics.projective_magnitude > config.max_projective_magnitude:
         reject_reasons.append(
-            f"projective_magnitude={diagnostics.projective_magnitude:.4f} > {MAX_PROJECTIVE_MAGNITUDE:.4f}")
+            f"projective_magnitude={diagnostics.projective_magnitude:.4f} > {config.max_projective_magnitude:.4f}")
 
     if reject_reasons:
         raise ValueError("Homography rejected: " + "; ".join(reject_reasons))
@@ -187,6 +218,7 @@ def _build_homography_candidate(
     iteration: int,
     sample_size: int,
     sampling_mode: str,
+    config: HomographyValidationConfig = SATELLITE_VALIDATION,
 ) -> HomographyCandidate:
     """Fit and evaluate one candidate homography."""
     if len(sampled_pair_idx) < MIN_HOMOGRAPHY_INLIERS:
@@ -229,7 +261,7 @@ def _build_homography_candidate(
     accepted = True
     rejection_reason = None
     try:
-        validate_homography(pts1, pts2, refined_pair_idx, refined_tf[0])
+        validate_homography(pts1, pts2, refined_pair_idx, refined_tf[0], config)
     except ValueError as exc:
         accepted = False
         rejection_reason = str(exc)
@@ -448,7 +480,8 @@ def find_initial_match(features1: NDArray[np.float64],
 
 def fine_tune_transform(
         pts1: NDArray[np.float64], pts2: NDArray[np.float64],
-        init_pair_idx: NDArray[np.int32]
+        init_pair_idx: NDArray[np.int32],
+        config: HomographyValidationConfig = SATELLITE_VALIDATION,
 ) -> tuple[NDArray[np.float64], NDArray[np.int32]]:
     """Refine matching using RANSAC homography.
 
@@ -490,7 +523,8 @@ def fine_tune_transform(
                 pts1, pts2, unique_pair_idx, sampled_pairs,
                 iteration=iteration,
                 sample_size=len(sampled_pairs),
-                sampling_mode=sampling_mode)
+                sampling_mode=sampling_mode,
+                config=config)
         except ValueError as exc:
             logger.warning(
                 "Fine-tune iteration {} rejected before validation: {}",

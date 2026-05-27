@@ -52,6 +52,7 @@ configs:
     description: "选择一张天空区域遮罩图像（白色=天空，黑色=地面）。该遮罩用于限定星点检测区域。"
     widget: file_picker
     accept: ".tif,.tiff,.png,.jpg"
+    visible_when: { key: "enable_satellite_clean", eq: true }
   int_weight:
     hidden: true
   enable_exif:

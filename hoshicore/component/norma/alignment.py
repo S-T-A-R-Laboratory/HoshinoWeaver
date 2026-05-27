@@ -13,8 +13,10 @@ from loguru import logger
 from numpy.typing import NDArray
 
 from .cache import GeometryView
-from .matching import (MatchResult, adaptive_k, extract_point_features,
-                       find_initial_match, fine_tune_transform)
+from .matching import (MatchResult, HomographyValidationConfig,
+                       SATELLITE_VALIDATION, adaptive_k,
+                       extract_point_features, find_initial_match,
+                       fine_tune_transform)
 from .optimization import (AlignmentParams, OptimizationContext,
                            run_optimization)
 from .types import CameraModel, Distortion
@@ -46,6 +48,7 @@ def match_star_pairs(
     k: int | None = None,
     apply_threshold_filter: bool = True,
     theta_th: float = np.pi / 6,
+    validation_config: HomographyValidationConfig = SATELLITE_VALIDATION,
 ) -> MatchResult:
     """Initial matching + RANSAC refinement. Returns MatchResult."""
     if k is None:
@@ -59,7 +62,7 @@ def match_star_pairs(
         apply_threshold_filter=apply_threshold_filter,
         theta_th=theta_th)
 
-    tf, pair_idx = fine_tune_transform(ref_pts, src_pts, pair_idx)
+    tf, pair_idx = fine_tune_transform(ref_pts, src_pts, pair_idx, validation_config)
 
     return MatchResult(
         pair_idx=pair_idx,
@@ -74,6 +77,7 @@ def match_star_pairs_from_geo(
     src_geo: GeometryView,
     apply_threshold_filter: bool = True,
     theta_th: float = np.pi / 6,
+    validation_config: HomographyValidationConfig = SATELLITE_VALIDATION,
 ) -> MatchResult:
     """match_star_pairs variant that accepts GeometryView directly.
 
@@ -87,7 +91,7 @@ def match_star_pairs_from_geo(
         theta_th=theta_th)
 
     tf, pair_idx = fine_tune_transform(
-        ref_geo.positions, src_geo.positions, pair_idx)
+        ref_geo.positions, src_geo.positions, pair_idx, validation_config)
 
     return MatchResult(
         pair_idx=pair_idx,
