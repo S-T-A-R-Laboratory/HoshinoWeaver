@@ -14,9 +14,18 @@ from hoshicore._custom_op._dispatch import debug_enabled as _debug_enabled
 from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
+from hoshicore._custom_op.backend_registry import native_backend_available as _native_backend_available
 
 
 _debug_log = partial(debug_log, "fgp")
+
+
+def _compiled_backend_available(logical_op: str, preference: str) -> tuple[bool, str | None]:
+    return _native_backend_available(
+        logical_op,
+        preference,
+        load_module=_load_compiled_module_result,
+    )
 
 
 def _validate_target(base: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -255,8 +264,8 @@ def fgp_accumulate_compiled(base: Any, fresh: np.ndarray, weight: Any = None) ->
 
 @lru_cache(maxsize=2)
 def _select_fgp_backend(preference: str) -> tuple[str, Callable[[Any, np.ndarray, Any], Any]]:
-    module, compiled_error = _load_compiled_module_result()
-    if module is not None and hasattr(module, "fgp_accumulate"):
+    available, compiled_error = _compiled_backend_available("fgp_accumulate", preference)
+    if available:
         return "compiled", fgp_accumulate_compiled
 
     if compiled_error:
@@ -315,8 +324,8 @@ def fgp_add_compiled(base: Any, other: Any) -> Any:
 
 @lru_cache(maxsize=2)
 def _select_fgp_add_backend(preference: str) -> tuple[str, Callable[[Any, Any], Any]]:
-    module, compiled_error = _load_compiled_module_result()
-    if module is not None and hasattr(module, "fgp_add"):
+    available, compiled_error = _compiled_backend_available("fgp_add", preference)
+    if available:
         return "compiled", fgp_add_compiled
 
     if compiled_error:
@@ -423,8 +432,11 @@ def huber_weighted_accumulate_compiled(
 def _select_huber_backend(
     preference: str,
 ) -> tuple[str, Callable[[Any, np.ndarray, np.ndarray, np.ndarray, float, Any], Any]]:
-    module, compiled_error = _load_compiled_module_result()
-    if module is not None and hasattr(module, "huber_weighted_accumulate"):
+    available, compiled_error = _compiled_backend_available(
+        "huber_weighted_accumulate",
+        preference,
+    )
+    if available:
         return "compiled", huber_weighted_accumulate_compiled
 
     if compiled_error:
@@ -518,10 +530,15 @@ def fgp_masked_mean_merge(
     square_sum: np.ndarray,
     n: np.ndarray,
 ) -> None:
-    backend_name, _ = _select_fgp_backend(_fallback_preference())
-    if backend_name == "compiled":
+    available, compiled_error = _compiled_backend_available(
+        "fgp_masked_mean_merge",
+        _fallback_preference(),
+    )
+    if available:
         fgp_masked_mean_merge_compiled(fresh, mask, sum_mu, square_sum, n)
         return
+    if compiled_error:
+        _debug_log(f"compiled backend unavailable, reason: {compiled_error}")
     fgp_masked_mean_merge_numpy(fresh, mask, sum_mu, square_sum, n)
 
 
@@ -583,11 +600,16 @@ def sigma_clip_fused_merge(
     square_sum: np.ndarray,
     n: np.ndarray,
 ) -> None:
-    backend_name, _ = _select_fgp_backend(_fallback_preference())
-    if backend_name == "compiled":
+    available, compiled_error = _compiled_backend_available(
+        "sigma_clip_fused_merge",
+        _fallback_preference(),
+    )
+    if available:
         sigma_clip_fused_merge_compiled(
             fresh, rej_high_img, rej_low_img, sum_mu, square_sum, n)
         return
+    if compiled_error:
+        _debug_log(f"compiled backend unavailable, reason: {compiled_error}")
     sigma_clip_fused_merge_numpy(
         fresh, rej_high_img, rej_low_img, sum_mu, square_sum, n)
 
@@ -667,10 +689,15 @@ def sigma_clip_fused_masked_merge(
     square_sum: np.ndarray,
     n: np.ndarray,
 ) -> None:
-    backend_name, _ = _select_fgp_backend(_fallback_preference())
-    if backend_name == "compiled":
+    available, compiled_error = _compiled_backend_available(
+        "sigma_clip_fused_masked_merge",
+        _fallback_preference(),
+    )
+    if available:
         sigma_clip_fused_masked_merge_compiled(
             fresh, mask, rej_high_img, rej_low_img, sum_mu, square_sum, n)
         return
+    if compiled_error:
+        _debug_log(f"compiled backend unavailable, reason: {compiled_error}")
     sigma_clip_fused_masked_merge_numpy(
         fresh, mask, rej_high_img, rej_low_img, sum_mu, square_sum, n)

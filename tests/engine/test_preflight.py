@@ -14,6 +14,26 @@ from hoshicore.ops.base import BaseOp
 from hoshicore.ops.sigma_clip_ops import DiskBufferWriterOp
 
 
+class _FixedMemOp(BaseOp):
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        _ = configs, frame_bytes, n_frames
+        return (1000, 0)
+
+
+class _PlannedMemOp(BaseOp):
+    CHUNK_PLANNED = True
+
+    @classmethod
+    def estimate_resources(cls, configs, frame_bytes, n_frames):
+        _ = configs, frame_bytes, n_frames
+        return (5000, 0)
+
+
+class _SequenceOutputOp(BaseOp):
+    OUTPUTS = {"result": {"type": "sequence"}}
+
+
 class TestEstimateResources:
     def test_base_op_default(self):
         assert BaseOp.estimate_resources({}, 1000, 10) == (0, 0)
@@ -127,6 +147,7 @@ class TestPreflightCheck:
         # 5 frames × 100×200×3 × 2 bytes = 600,000 bytes disk
         assert report.estimate.peak_disk_bytes == 600000
         assert report.estimate.peak_memory_bytes == 0
+        assert report.non_chunk_mem == 0
 
     def test_memory_mode_triggers_warning_when_insufficient(self, tmp_path):
         from unittest.mock import patch
@@ -157,3 +178,70 @@ class TestPreflightCheck:
         assert len(report.warnings) > 0
         assert len(report.proposed_fallbacks) == 1
         assert report.proposed_fallbacks[0].proposed_value == "disk"
+
+    def test_chunk_planned_op_excluded_from_non_chunk_mem(self, tmp_path):
+        path = tmp_path / "frame.tif"
+        tifffile.imwrite(str(path), np.zeros((10, 10), dtype=np.uint16))
+
+        dag = self._make_dag(
+            nodes={
+                "fixed": {"op": "_FixedMemOp", "configs": {}},
+                "planned": {"op": "_PlannedMemOp", "configs": {}},
+            },
+            exec_order=["fixed", "planned"],
+        )
+
+        report = preflight_check(
+            dag, {}, {"fnames": [str(path)]},
+            op_registry={
+                "_FixedMemOp": _FixedMemOp,
+                "_PlannedMemOp": _PlannedMemOp,
+            })
+
+        assert report.estimate.peak_memory_bytes == 6000
+        assert report.non_chunk_mem == 1000
+
+    def test_queue_overhead_counts_as_non_chunk_mem(self, tmp_path):
+        path = tmp_path / "frame.tif"
+        tifffile.imwrite(str(path), np.zeros((10, 10), dtype=np.uint16))
+
+        dag = self._make_dag(
+            nodes={"seq": {"op": "_SequenceOutputOp", "configs": {}}},
+            exec_order=["seq"],
+        )
+
+        report = preflight_check(
+            dag, {}, {"fnames": [str(path)]},
+            op_registry={"_SequenceOutputOp": _SequenceOutputOp})
+
+        assert report.estimate.peak_memory_bytes == 200
+        assert report.non_chunk_mem == 200
+
+    def test_post_fallback_non_chunk_mem_is_computed_but_not_applied(self, tmp_path):
+        from unittest.mock import patch
+
+        path = tmp_path / "frame.tif"
+        tifffile.imwrite(str(path), np.zeros((10, 10), dtype=np.uint16))
+
+        dag = self._make_dag(
+            nodes={
+                "buffer": {
+                    "op": "DiskBufferWriterOp",
+                    "configs": {"buffer_mode": "configs.buffer_mode"},
+                }
+            },
+            exec_order=["buffer"],
+        )
+
+        class FakeVMem:
+            available = 100_000
+
+        with patch("hoshicore.engine.preflight.psutil") as mock_psutil:
+            mock_psutil.virtual_memory.return_value = FakeVMem()
+            report = preflight_check(
+                dag, {"buffer_mode": "memory"},
+                {"fnames": [str(path)] * 10})
+
+        assert report.proposed_fallbacks
+        assert report.non_chunk_mem == 2000
+        assert report.post_fallback_non_chunk_mem == 0

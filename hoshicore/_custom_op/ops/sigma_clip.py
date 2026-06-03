@@ -8,12 +8,21 @@ import numpy as np
 
 from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
+from hoshicore._custom_op.backend_registry import native_backend_available as _native_backend_available
 
 
 _debug_log = partial(debug_log, "sigma_clip")
 
 
 _SUPPORTED_DTYPES = (np.uint8, np.uint16)
+
+
+def _compiled_backend_available(logical_op: str) -> tuple[bool, str | None]:
+    return _native_backend_available(
+        logical_op,
+        "auto",
+        load_module=_load_compiled_module_result,
+    )
 
 
 def _validate_inputs(
@@ -174,11 +183,13 @@ def sigma_clip_iterative_chunk(
     Returns:
         (accepted_sum, accepted_sq, accepted_n) as float64 arrays
     """
-    module, _ = _load_compiled_module_result()
-    if module is not None and hasattr(module, "sigma_clip_iterative_chunk"):
+    available, compiled_error = _compiled_backend_available("sigma_clip_iterative_chunk")
+    if available:
         return sigma_clip_iterative_chunk_compiled(
             stack, total_sum, total_sq, total_n,
             rej_high, rej_low, max_iter, mask)
+    if compiled_error:
+        _debug_log(f"compiled backend unavailable, reason: {compiled_error}")
     return sigma_clip_iterative_chunk_numpy(
         stack, total_sum, total_sq, total_n,
         rej_high, rej_low, max_iter, mask)
@@ -272,9 +283,11 @@ def sigma_clip_fused_chunk(
     Returns:
         (accepted_sum, accepted_sq, accepted_n) as float64 arrays
     """
-    module, _ = _load_compiled_module_result()
-    if module is not None and hasattr(module, "sigma_clip_fused_chunk"):
+    available, compiled_error = _compiled_backend_available("sigma_clip_fused_chunk")
+    if available:
         return sigma_clip_fused_chunk_compiled(
             stack, rej_high, rej_low, max_iter, mask)
+    if compiled_error:
+        _debug_log(f"compiled backend unavailable, reason: {compiled_error}")
     return sigma_clip_fused_chunk_numpy(
         stack, rej_high, rej_low, max_iter, mask)

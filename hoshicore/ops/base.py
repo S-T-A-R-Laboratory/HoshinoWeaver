@@ -21,6 +21,7 @@ class BaseOp(object):
     OUTPUTS: dict[str, Any] = {}
     MAX_SIZE: int = 1
     VARIABLE_OUTPUT: bool = False  # True 时标记为变长输出（Filter 类）
+    CHUNK_PLANNED: bool = False  # True 时 chunk_rows 由 runtime planner 管理
 
     @classmethod
     def estimate_resources(
@@ -35,6 +36,17 @@ class BaseOp(object):
         子类按需 override，默认返回 (0, 0)。
         """
         return (0, 0)
+
+    @classmethod
+    def chunk_cost_per_row(
+        cls,
+        n_frames: int,
+        row_bytes: int,
+        dtype_bytes: int,
+    ) -> int:
+        """返回 chunk_rows 每增加一行带来的内存成本。"""
+        _ = dtype_bytes
+        return 2 * n_frames * row_bytes
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -412,6 +424,7 @@ class ChunkIteratorBaseOp(BaseOp):
     （chunk 内所有 pass 复用 OS page cache）。
     """
     BUFFER_ITERATOR = True
+    CHUNK_PLANNED = True
     CHUNK_ROWS: int = 256
     CHUNK_OVERLAP: int = 0
 

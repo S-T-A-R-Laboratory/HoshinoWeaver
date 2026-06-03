@@ -214,6 +214,11 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
             "type": "image",
             "required": True,
         },
+        "chunk_rows": {
+            "type": "int",
+            "default": 256,
+            "global": True,
+        },
         "mask": {
             "type": "image",
             "required": False,
@@ -250,6 +255,17 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
         # TODO: frame_bytes压缩太多信息，无法准确估计，此处是经验值。
         # 待 preflight 资源预分配完善后再调整。
         return (cls.CHUNK_ROWS * n_frames * 2000, 0)
+
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        float64_row = row_bytes // dtype_bytes * 8
+        # compiled 路径峰值包含 chunk 双缓冲、stack_2d、mask、total_* 与 acc_*。
+        stack = 2 * n_frames * row_bytes
+        active_stack = n_frames * row_bytes
+        mask = n_frames * row_bytes // dtype_bytes
+        totals = 3 * float64_row
+        acc = 3 * float64_row
+        return stack + active_stack + mask + totals + acc
 
     def _init_chunk_state(self, configs, row_start, row_end, w):
         fgp_total: FastGaussianParam = configs['fgp_total']
@@ -490,6 +506,11 @@ class SigmaClipFusedChunkOp(ChunkIteratorBaseOp):
             "type": "image",
             "required": True,
         },
+        "chunk_rows": {
+            "type": "int",
+            "default": 256,
+            "global": True,
+        },
         "rej_high": {
             "type": "float",
             "default": 3.0,
@@ -516,6 +537,15 @@ class SigmaClipFusedChunkOp(ChunkIteratorBaseOp):
             "type": "image",
         },
     }
+
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        float64_row = row_bytes // dtype_bytes * 8
+        stack = 2 * n_frames * row_bytes
+        active = n_frames * row_bytes
+        mask = n_frames * row_bytes // dtype_bytes
+        state = 3 * float64_row
+        return stack + active + mask + state
 
     def _init_chunk_state(self, configs, row_start, row_end, w):
         # 静态 mask 切片
@@ -669,6 +699,11 @@ class HuberMeanIteratorOp(ChunkIteratorBaseOp):
             "type": "image",
             "required": True,
         },
+        "chunk_rows": {
+            "type": "int",
+            "default": 256,
+            "global": True,
+        },
         "huber_c": {
             "type": "float",
             "default": 1.345,
@@ -679,6 +714,13 @@ class HuberMeanIteratorOp(ChunkIteratorBaseOp):
             "type": "image",
         },
     }
+
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        float64_row = row_bytes // dtype_bytes * 8
+        stack = 2 * n_frames * row_bytes
+        merger_state = 4 * float64_row
+        return stack + merger_state
 
     def _init_chunk_state(self, configs, row_start, row_end, w):
         fgp_total: FastGaussianParam = configs['fgp_total']
@@ -726,6 +768,7 @@ class MedianReduceOp(BaseOp):
 
     EXECUTOR = "cpu"
     BUFFER_ITERATOR = True     # 段检测标记：消费 buffer
+    CHUNK_PLANNED = True
     ITERATOR_TYPE = "median"   # 不可分布式，Collector 需特殊处理
     CONFIGS: dict[str, dict[str, Any]] = {
         "buffer_handle": {
@@ -746,6 +789,11 @@ class MedianReduceOp(BaseOp):
     @staticmethod
     def _reduce_chunk(stack: np.ndarray) -> np.ndarray:
         return custom_median_reduce_chunk(stack)
+
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        _ = dtype_bytes
+        return (n_frames + 1) * row_bytes
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         frame_buffer: DiskFrameBuffer = configs['buffer_handle']

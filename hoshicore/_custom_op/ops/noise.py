@@ -14,6 +14,7 @@ from hoshicore._custom_op._dispatch import debug_enabled as _debug_enabled
 from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
+from hoshicore._custom_op.backend_registry import native_backend_available as _native_backend_available
 
 
 _debug_log = partial(debug_log, "noise")
@@ -94,8 +95,12 @@ def equalize_noise_correct_compiled(
 def _select_equalize_noise_backend(
     preference: str,
 ) -> tuple[str, Callable[[np.ndarray, np.ndarray, float, float, float, float], np.ndarray]]:
-    module, compiled_error = _load_compiled_module_result()
-    if module is not None and hasattr(module, "equalize_noise_correct"):
+    available, compiled_error = _native_backend_available(
+        "equalize_noise_correct",
+        preference,
+        load_module=_load_compiled_module_result,
+    )
+    if available:
         return "compiled", equalize_noise_correct_compiled
 
     if compiled_error:

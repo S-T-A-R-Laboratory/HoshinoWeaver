@@ -20,6 +20,7 @@ from hoshicore._custom_op import (
     sigma_clip_fused_merge,
     threshold_max_merge as custom_threshold_max_merge,
 )
+import hoshicore._custom_op.backend_registry as backend_registry
 import hoshicore._custom_op.ops.fgp as fgp_ops
 import hoshicore._custom_op.ops.max as max_ops
 import hoshicore._custom_op.ops.median as median_ops
@@ -811,6 +812,58 @@ class TestCustomOpsFallback(unittest.TestCase):
     def test_build_info_includes_thread_policy(self) -> None:
         info = build_info()
         self.assertIn("thread_policy", info)
+
+    def test_backend_registry_exposes_registered_candidates(self) -> None:
+        candidates = backend_registry.registered_backend_candidates("median_reduce_chunk")
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].logical_op, "median_reduce_chunk")
+        self.assertEqual(candidates[0].backend, "openmp_cpu")
+        self.assertEqual(candidates[0].kernel_name, "median_reduce_chunk")
+
+    def test_backend_registry_reports_missing_compiled_module(self) -> None:
+        selection = backend_registry.select_backend(
+            "median_reduce_chunk",
+            load_module=lambda: (None, "mock import error"),
+        )
+
+        self.assertFalse(selection.native)
+        self.assertEqual(selection.backend, "numpy")
+        self.assertEqual(selection.reason, "mock import error")
+
+    def test_backend_registry_selects_native_kernel(self) -> None:
+        class Module:
+            pass
+
+        module = Module()
+        module.median_reduce_chunk = lambda stack: stack
+
+        selection = backend_registry.select_backend(
+            "median_reduce_chunk",
+            load_module=lambda: (module, None),
+        )
+
+        self.assertTrue(selection.native)
+        self.assertIs(selection.module, module)
+        self.assertEqual(selection.backend, "openmp_cpu")
+
+    def test_backend_registry_respects_build_flag(self) -> None:
+        class Module:
+            camera_model_remap = lambda self: None
+
+            def build_info(self):
+                return {"cuda": False}
+
+        module = Module()
+
+        selection = backend_registry.select_backend(
+            "camera_model_remap",
+            load_module=lambda: (module, None),
+        )
+
+        self.assertFalse(selection.native)
+        self.assertEqual(selection.backend, "numpy")
+        self.assertEqual(selection.reason, "compiled backend missing build flag: cuda")
 
     def test_fgp_masked_mean_merge_can_force_numpy_fallback(self) -> None:
         img = np.array(

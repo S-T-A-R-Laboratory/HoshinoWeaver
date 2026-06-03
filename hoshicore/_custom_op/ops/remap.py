@@ -13,6 +13,7 @@ from hoshicore._custom_op._dispatch import debug_enabled as _debug_enabled
 from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
+from hoshicore._custom_op.backend_registry import native_backend_available as _native_backend_available
 
 
 _debug_log = partial(debug_log, "remap")
@@ -132,8 +133,12 @@ def camera_model_remap_compiled(
 def _select_camera_model_remap_backend(
     preference: str,
 ) -> tuple[str, Callable[..., np.ndarray]]:
-    module, compiled_error = _load_compiled_module_result()
-    if module is not None and hasattr(module, "camera_model_remap"):
+    available, compiled_error = _native_backend_available(
+        "camera_model_remap",
+        preference,
+        load_module=_load_compiled_module_result,
+    )
+    if available:
         return "compiled", camera_model_remap_compiled
 
     if compiled_error:

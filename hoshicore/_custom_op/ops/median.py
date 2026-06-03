@@ -14,6 +14,7 @@ from hoshicore._custom_op._dispatch import debug_enabled as _debug_enabled
 from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
+from hoshicore._custom_op.backend_registry import native_backend_available as _native_backend_available
 
 
 _debug_log = partial(debug_log, "median")
@@ -62,8 +63,12 @@ def median_reduce_chunk_compiled(stack: np.ndarray) -> np.ndarray:
 def _select_median_backend(
     preference: str,
 ) -> tuple[str, Callable[[np.ndarray], np.ndarray]]:
-    module, compiled_error = _load_compiled_module_result()
-    if module is not None and hasattr(module, "median_reduce_chunk"):
+    available, compiled_error = _native_backend_available(
+        "median_reduce_chunk",
+        preference,
+        load_module=_load_compiled_module_result,
+    )
+    if available:
         return "compiled", median_reduce_chunk_compiled
 
     if compiled_error:

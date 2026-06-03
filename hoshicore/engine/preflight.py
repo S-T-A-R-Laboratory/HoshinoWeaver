@@ -44,6 +44,13 @@ class ResourceEstimate:
 
 
 @dataclass
+class _ResourceBreakdown:
+    total_mem: int
+    total_disk: int
+    non_chunk_mem: int
+
+
+@dataclass
 class FallbackProposal:
     config_key: str
     current_value: str
@@ -60,6 +67,8 @@ class PreflightReport:
     proposed_fallbacks: list[FallbackProposal] = field(default_factory=list)
     applied_fallbacks: list[str] = field(default_factory=list)
     budget_exceeded_after_fallback: bool = False
+    non_chunk_mem: int = 0
+    post_fallback_non_chunk_mem: int | None = None
 
 
 def preflight_check(
@@ -97,28 +106,11 @@ def preflight_check(
     n_frames = len(fnames)
 
     # 2. 遍历节点，累加资源估算
-    total_mem = 0
-    total_disk = 0
-    for node_name in dag.exec_order:
-        node_spec = dag.nodes[node_name]
-        op_name = node_spec["op"]
-        op_cls = registry.get(op_name)
-        if op_cls is None:
-            continue
-        node_configs = _resolve_node_configs(node_spec, effective_configs, op_cls)
-        mem, disk = op_cls.estimate_resources(node_configs, frame_bytes, n_frames)
-        if mem != 0 or disk != 0:
-            logger.info(
-                f"[Preflight] {op_name} 资源需求: {mem/1e9:.2f} GB, {disk/1e9:.2f} GB"
-            )
-        total_mem += mem
-        total_disk += disk
-
-    # 2b. 图级别队列开销（每个 sequence 输出端口 maxsize=1 帧，扇出按引用只计一次）
-    queue_mem = _estimate_queue_overhead(dag, registry, frame_bytes)
-    if queue_mem > 0:
-        logger.info(f"[Preflight] 队列开销: {queue_mem / 1e9:.2f} GB")
-    total_mem += queue_mem
+    breakdown = _estimate_dag_resources(
+        dag, effective_configs, registry, frame_bytes, n_frames,
+        log_details=True)
+    total_mem = breakdown.total_mem
+    total_disk = breakdown.total_disk
 
     # 3. 获取可用资源
     avail_mem = psutil.virtual_memory().available
@@ -130,6 +122,7 @@ def preflight_check(
         estimate=estimate,
         available_memory_bytes=avail_mem,
         available_disk_bytes=avail_disk,
+        non_chunk_mem=breakdown.non_chunk_mem,
     )
 
     # 4. 比较 + 生成建议
@@ -162,21 +155,25 @@ def preflight_check(
 
     # 5. 预测 fallback 后是否仍然超限
     if report.proposed_fallbacks and report.warnings:
-        post_mem, post_disk = _simulate_post_fallback(
+        post = _simulate_post_fallback(
             dag, effective_configs, report.proposed_fallbacks,
-            registry, frame_bytes, n_frames, queue_mem)
-        mem_still_over = post_mem > 0 and (mem_budget <= 0 or post_mem > mem_budget)
-        disk_still_over = post_disk > avail_disk
+            registry, frame_bytes, n_frames)
+        report.post_fallback_non_chunk_mem = post.non_chunk_mem
+        mem_still_over = (
+            post.total_mem > 0 and
+            (mem_budget <= 0 or post.total_mem > mem_budget)
+        )
+        disk_still_over = post.total_disk > avail_disk
         if mem_still_over or disk_still_over:
             report.budget_exceeded_after_fallback = True
             parts = []
             if mem_still_over:
                 parts.append(
-                    f"内存 {post_mem / 1e9:.2f}/{mem_budget / 1e9:.2f} GB"
+                    f"内存 {post.total_mem / 1e9:.2f}/{mem_budget / 1e9:.2f} GB"
                     f"（可能需要更改参数或缩小运行输入分辨率）")
             if disk_still_over:
                 parts.append(
-                    f"磁盘 {post_disk / 1e9:.2f}/{avail_disk / 1e9:.2f} GB"
+                    f"磁盘 {post.total_disk / 1e9:.2f}/{avail_disk / 1e9:.2f} GB"
                     f"（可减少输入帧数或清理磁盘空间）")
             report.warnings.append(
                 f"降级后资源仍然不足（{'; '.join(parts)}），"
@@ -204,6 +201,46 @@ def apply_fallbacks(
         report.applied_fallbacks.append(msg)
 
 
+def _estimate_dag_resources(
+    dag: ValidatedDag,
+    effective_configs: dict[str, Any],
+    registry: dict[str, type[BaseOp]],
+    frame_bytes: int,
+    n_frames: int,
+    *,
+    log_details: bool = False,
+) -> _ResourceBreakdown:
+    """统一估算 DAG 资源，并拆出 planner 可扣减的非 chunk 内存。"""
+    total_mem = 0
+    total_disk = 0
+    non_chunk_mem = 0
+
+    for node_name in dag.exec_order:
+        node_spec = dag.nodes[node_name]
+        op_name = node_spec["op"]
+        op_cls = registry.get(op_name)
+        if op_cls is None:
+            continue
+        node_configs = _resolve_node_configs(node_spec, effective_configs, op_cls)
+        mem, disk = op_cls.estimate_resources(node_configs, frame_bytes, n_frames)
+        if log_details and (mem != 0 or disk != 0):
+            logger.info(
+                f"[Preflight] {op_name} 资源需求: {mem/1e9:.2f} GB, {disk/1e9:.2f} GB"
+            )
+        total_mem += mem
+        total_disk += disk
+        if not getattr(op_cls, "CHUNK_PLANNED", False):
+            non_chunk_mem += mem
+
+    # queue 是 DAG 流水线固定开销，和 chunk_rows 无关，必须从 chunk_budget 扣除。
+    queue_mem = _estimate_queue_overhead(dag, registry, frame_bytes)
+    if log_details and queue_mem > 0:
+        logger.info(f"[Preflight] 队列开销: {queue_mem / 1e9:.2f} GB")
+    total_mem += queue_mem
+    non_chunk_mem += queue_mem
+    return _ResourceBreakdown(total_mem, total_disk, non_chunk_mem)
+
+
 def _simulate_post_fallback(
     dag: ValidatedDag,
     effective_configs: dict[str, Any],
@@ -211,28 +248,14 @@ def _simulate_post_fallback(
     registry: dict[str, type[BaseOp]],
     frame_bytes: int,
     n_frames: int,
-    queue_mem: int,
-) -> tuple[int, int]:
+) -> _ResourceBreakdown:
     """模拟 fallback 应用后的资源估算，不修改原始 configs。"""
     simulated = {**effective_configs}
     for fb in fallbacks:
         simulated[fb.config_key] = fb.proposed_value
 
-    post_mem = 0
-    post_disk = 0
-    for node_name in dag.exec_order:
-        node_spec = dag.nodes[node_name]
-        op_name = node_spec["op"]
-        op_cls = registry.get(op_name)
-        if op_cls is None:
-            continue
-        node_configs = _resolve_node_configs(node_spec, simulated, op_cls)
-        mem, disk = op_cls.estimate_resources(node_configs, frame_bytes, n_frames)
-        post_mem += mem
-        post_disk += disk
-
-    post_mem += queue_mem
-    return (post_mem, post_disk)
+    return _estimate_dag_resources(
+        dag, simulated, registry, frame_bytes, n_frames)
 
 
 def _estimate_queue_overhead(

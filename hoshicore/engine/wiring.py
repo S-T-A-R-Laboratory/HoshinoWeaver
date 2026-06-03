@@ -36,6 +36,7 @@ from .flatten import INACTIVE_MARKER
 from .preflight import (PreflightAbortError, PreflightAction,
                             apply_fallbacks, preflight_check)
 from .registry import REGISTERED_OP
+from .runtime_plan import apply_runtime_plan, plan_runtime
 
 # ────────────────────────────────────────────────────────────────
 # 包级路径常量
@@ -514,6 +515,7 @@ async def run_from_yaml(
     """
     from .build import _load_yaml, validate_and_build_order
     from .flatten import flatten_sub_dags
+    explicit_config_keys = set(global_configs)
     spec = _load_yaml(yaml_path)
 
     # 合并全局默认设置（优先级：用户显式 > 全局默认 > YAML default > Op default）
@@ -561,6 +563,20 @@ async def run_from_yaml(
         else:
             for w in report.warnings:
                 logger.warning(w)
+
+    if (report.applied_fallbacks and
+            report.post_fallback_non_chunk_mem is not None):
+        report.non_chunk_mem = report.post_fallback_non_chunk_mem
+
+    runtime_plan = plan_runtime(
+        dag,
+        global_configs,
+        global_inputs,
+        op_registry=op_registry,
+        preflight_report=report,
+        explicit_config_keys=explicit_config_keys,
+    )
+    apply_runtime_plan(runtime_plan, global_configs)
 
     return await run_dag(dag,
                          global_inputs,
