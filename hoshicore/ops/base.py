@@ -29,6 +29,7 @@ class BaseOp(object):
         configs: dict[str, Any],
         frame_bytes: int,
         n_frames: Optional[int],
+        dtype_bytes: Optional[int] = None,
     ) -> tuple[int, int]:
         """返回 (peak_memory_bytes, peak_disk_bytes) 的估计值。
 

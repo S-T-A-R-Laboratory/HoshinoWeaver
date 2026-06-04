@@ -107,7 +107,7 @@ def preflight_check(
 
     # 2. 遍历节点，累加资源估算
     breakdown = _estimate_dag_resources(
-        dag, effective_configs, registry, frame_bytes, n_frames,
+        dag, effective_configs, registry, frame_bytes, n_frames, dtype_bytes,
         log_details=True)
     total_mem = breakdown.total_mem
     total_disk = breakdown.total_disk
@@ -157,7 +157,7 @@ def preflight_check(
     if report.proposed_fallbacks and report.warnings:
         post = _simulate_post_fallback(
             dag, effective_configs, report.proposed_fallbacks,
-            registry, frame_bytes, n_frames)
+            registry, frame_bytes, n_frames, dtype_bytes)
         report.post_fallback_non_chunk_mem = post.non_chunk_mem
         mem_still_over = (
             post.total_mem > 0 and
@@ -207,6 +207,7 @@ def _estimate_dag_resources(
     registry: dict[str, type[BaseOp]],
     frame_bytes: int,
     n_frames: int,
+    dtype_bytes: int,
     *,
     log_details: bool = False,
 ) -> _ResourceBreakdown:
@@ -222,7 +223,8 @@ def _estimate_dag_resources(
         if op_cls is None:
             continue
         node_configs = _resolve_node_configs(node_spec, effective_configs, op_cls)
-        mem, disk = op_cls.estimate_resources(node_configs, frame_bytes, n_frames)
+        mem, disk = op_cls.estimate_resources(
+            node_configs, frame_bytes, n_frames, dtype_bytes)
         if log_details and (mem != 0 or disk != 0):
             logger.info(
                 f"[Preflight] {op_name} 资源需求: {mem/1e9:.2f} GB, {disk/1e9:.2f} GB"
@@ -248,6 +250,7 @@ def _simulate_post_fallback(
     registry: dict[str, type[BaseOp]],
     frame_bytes: int,
     n_frames: int,
+    dtype_bytes: int,
 ) -> _ResourceBreakdown:
     """模拟 fallback 应用后的资源估算，不修改原始 configs。"""
     simulated = {**effective_configs}
@@ -255,7 +258,7 @@ def _simulate_post_fallback(
         simulated[fb.config_key] = fb.proposed_value
 
     return _estimate_dag_resources(
-        dag, simulated, registry, frame_bytes, n_frames)
+        dag, simulated, registry, frame_bytes, n_frames, dtype_bytes)
 
 
 def _estimate_queue_overhead(

@@ -94,7 +94,9 @@ class DiskBufferWriterOp(BaseOp):
     }
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = dtype_bytes
         if n_frames is None:
             n_frames = 0
         mode = configs.get("buffer_mode", "disk")
@@ -251,7 +253,9 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
     }
     
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = dtype_bytes
         # TODO: frame_bytes压缩太多信息，无法准确估计，此处是经验值。
         # 待 preflight 资源预分配完善后再调整。
         return (cls.CHUNK_ROWS * n_frames * 2000, 0)

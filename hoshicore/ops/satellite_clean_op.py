@@ -45,7 +45,9 @@ class SatelliteCleanOp(BaseOp):
     }
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = dtype_bytes
         # deque 持有 W 帧 + _process_center 中 W 帧对齐副本用于 median
         # TODO: 对齐的资源开销未计入
         w = configs.get("window_size", 3)

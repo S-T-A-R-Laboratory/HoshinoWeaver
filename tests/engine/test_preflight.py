@@ -12,12 +12,14 @@ from hoshicore.engine.preflight import (
 )
 from hoshicore.ops.base import BaseOp
 from hoshicore.ops.sigma_clip_ops import DiskBufferWriterOp
+from hoshicore.ops.trailstacker import MeanStackerOp
 
 
 class _FixedMemOp(BaseOp):
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
-        _ = configs, frame_bytes, n_frames
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = configs, frame_bytes, n_frames, dtype_bytes
         return (1000, 0)
 
 
@@ -25,8 +27,9 @@ class _PlannedMemOp(BaseOp):
     CHUNK_PLANNED = True
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
-        _ = configs, frame_bytes, n_frames
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = configs, frame_bytes, n_frames, dtype_bytes
         return (5000, 0)
 
 
@@ -60,6 +63,14 @@ class TestEstimateResources:
         mem, disk = DiskBufferWriterOp.estimate_resources(
             {"buffer_mode": "disk"}, 1000, None)
         assert mem == 0
+        assert disk == 0
+
+    def test_mean_stacker_estimates_fgp_dtype_bytes(self):
+        frame_bytes = 100 * 200 * 3 * 2
+        # uint16 + int_weight=True: sum_mu uint64 + square_sum float64 + n uint32
+        mem, disk = MeanStackerOp.estimate_resources(
+            {"int_weight": True}, frame_bytes, 5, dtype_bytes=2)
+        assert mem == 100 * 200 * 3 * (8 + 8 + 4)
         assert disk == 0
 
 

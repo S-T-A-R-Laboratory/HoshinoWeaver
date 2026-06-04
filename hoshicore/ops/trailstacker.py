@@ -49,7 +49,9 @@ class TrailStackerOp(BaseOp):
     MAX_SIZE: int = 1
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = dtype_bytes
         # Max/Min mergers hold 1 result array
         return (frame_bytes, 0)
 
@@ -178,9 +180,32 @@ class MeanStackerOp(TrailStackerOp):
     }
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
-        # MeanMerger holds FGP: mu + var + n = 3 arrays
-        return (3 * frame_bytes, 0)
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        # MeanMerger 常驻 FGP(sum_mu/square_sum/n)。按输入 dtype 字节数估算，
+        # 避免把 uint16 的 uint64/float64 累加器误算成 3 个原始帧。
+        return (_estimate_fgp_bytes(frame_bytes, dtype_bytes,
+                                    bool(configs.get("int_weight", False))), 0)
+
+
+def _estimate_fgp_bytes(
+    frame_bytes: int,
+    dtype_bytes: Optional[int],
+    int_weight: bool,
+) -> int:
+    if dtype_bytes is None or dtype_bytes <= 0:
+        # dtype 未知时回退到旧的 3× 原始帧估算，保持 preflight 保守可用。
+        return 3 * frame_bytes
+
+    pixels = max(1, frame_bytes // dtype_bytes)
+    src_bytes = int(dtype_bytes)
+    if int_weight and src_bytes < 8:
+        src_bytes *= 2
+
+    sum_bytes = src_bytes * 2 if src_bytes < 8 else 8
+    square_bytes = sum_bytes * 2 if sum_bytes < 8 else 8
+    n_bytes = 4 if int_weight else 2
+    return pixels * (sum_bytes + square_bytes + n_bytes)
 
 
 @register_op()
