@@ -21,6 +21,11 @@ auto_fallback:
   description: "预检发现资源不足时，自动降低缓冲策略并继续执行"
   widget: switch
 
+runtime_planner:
+  label: "自动规划分块大小"
+  description: "根据可用内存、输入尺寸、帧数和算法内存模型自动设置 chunk_rows"
+  widget: switch
+
 temp_path:
   label: "临时文件目录"
   description: "磁盘缓冲的临时文件存放路径，留空使用系统默认 (tempfile.gettempdir())"
