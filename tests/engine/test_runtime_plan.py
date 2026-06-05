@@ -6,7 +6,12 @@ from hoshicore.engine.preflight import PreflightReport, ResourceEstimate
 from hoshicore.engine.runtime_plan import apply_runtime_plan, plan_runtime
 import hoshicore.engine.runtime_plan as runtime_plan_module
 from hoshicore.ops.base import BaseOp
-from hoshicore.ops.sigma_clip_ops import MedianReduceOp
+from hoshicore.ops.sigma_clip_ops import (
+    HuberMeanIteratorOp,
+    MedianReduceOp,
+    SigmaClipFusedChunkOp,
+    SigmaClipIteratorOp,
+)
 
 
 def _make_dag() -> ValidatedDag:
@@ -43,6 +48,20 @@ def _make_no_chunk_dag() -> ValidatedDag:
     )
 
 
+def _make_multi_chunk_dag() -> ValidatedDag:
+    return ValidatedDag(
+        nodes={
+            "chunk_a": {"op": "FixedChunkOpA", "configs": {}},
+            "chunk_b": {"op": "FixedChunkOpB", "configs": {}},
+        },
+        global_inputs={},
+        global_configs={},
+        output_links={},
+        node_deps={},
+        exec_order=["chunk_a", "chunk_b"],
+    )
+
+
 def _report(non_chunk_mem: int = 0) -> PreflightReport:
     return PreflightReport(
         estimate=ResourceEstimate(0, 0),
@@ -69,6 +88,24 @@ def _mock_available_memory(monkeypatch, budget: int, non_chunk_mem: int = 0) -> 
 
 class NoChunkOp(BaseOp):
     pass
+
+
+class FixedChunkOpA(BaseOp):
+    CHUNK_PLANNED = True
+
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        _ = n_frames, row_bytes, dtype_bytes
+        return 40
+
+
+class FixedChunkOpB(BaseOp):
+    CHUNK_PLANNED = True
+
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        _ = n_frames, row_bytes, dtype_bytes
+        return 60
 
 
 def _median_registry() -> dict[str, type[BaseOp]]:
@@ -129,6 +166,72 @@ def test_runtime_planner_uses_preflight_formula(tmp_path, monkeypatch):
     )
 
     assert plan.config_overrides["chunk_rows"] == 128
+
+
+def test_runtime_planner_sums_multiple_chunk_op_costs(tmp_path, monkeypatch):
+    path = tmp_path / "frame.tif"
+    tifffile.imwrite(str(path), np.zeros((512, 10), dtype=np.uint16))
+    # 两个 planned op 的 cost 分别为 40 和 60，总成本 100 bytes/row。
+    _mock_available_memory(monkeypatch, budget=12800)
+
+    plan = plan_runtime(
+        _make_multi_chunk_dag(),
+        {"runtime_planner": True},
+        {"fnames": [str(path)] * 4},
+        op_registry={
+            "FixedChunkOpA": FixedChunkOpA,
+            "FixedChunkOpB": FixedChunkOpB,
+        },
+        preflight_report=_report(),
+    )
+
+    assert plan.config_overrides["chunk_rows"] == 128
+
+
+def test_runtime_planner_clamps_to_default_max_chunk_rows(tmp_path, monkeypatch):
+    path = tmp_path / "frame.tif"
+    tifffile.imwrite(str(path), np.zeros((4000, 10), dtype=np.uint16))
+    _mock_available_memory(monkeypatch, budget=10_000_000_000)
+
+    plan = plan_runtime(
+        _make_dag(),
+        {"runtime_planner": True},
+        {"fnames": [str(path)] * 4},
+        op_registry=_median_registry(),
+        preflight_report=_report(),
+    )
+
+    assert plan.config_overrides["chunk_rows"] == runtime_plan_module.DEFAULT_MAX_CHUNK_ROWS
+
+
+def test_chunk_cost_per_row_formulas():
+    n_frames = 5
+    row_bytes = 120
+    dtype_bytes = 2
+    float64_row = row_bytes // dtype_bytes * 8
+
+    assert MedianReduceOp.chunk_cost_per_row(
+        n_frames, row_bytes, dtype_bytes) == (n_frames + 1) * row_bytes
+    assert SigmaClipFusedChunkOp.chunk_cost_per_row(
+        n_frames, row_bytes, dtype_bytes) == (
+            2 * n_frames * row_bytes +
+            n_frames * row_bytes +
+            n_frames * row_bytes // dtype_bytes +
+            3 * float64_row
+        )
+    assert SigmaClipIteratorOp.chunk_cost_per_row(
+        n_frames, row_bytes, dtype_bytes) == (
+            2 * n_frames * row_bytes +
+            n_frames * row_bytes +
+            n_frames * row_bytes // dtype_bytes +
+            3 * float64_row +
+            3 * float64_row
+        )
+    assert HuberMeanIteratorOp.chunk_cost_per_row(
+        n_frames, row_bytes, dtype_bytes) == (
+            2 * n_frames * row_bytes +
+            4 * float64_row
+        )
 
 
 def test_runtime_planner_requires_preflight_report(tmp_path):
