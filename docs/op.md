@@ -35,6 +35,7 @@ Operator的设计是异步的。图开始执行时，所有节点被启动，但
 - `CONFIGS`: 配置定义字典，格式为 `{name: {type, description, default, ...}}`
 - `OUTPUTS`: 输出定义字典，格式为 `{name: {type, description}}`
 - `MAX_SIZE`: 队列最大容量（默认为1）
+- `CHUNK_PLANNED`: 是否由 runtime planner 管理 `chunk_rows`（默认 `False`）
 
 **实例属性：**
 - `config`: 配置队列字典 `{name: BaseQueue}`
@@ -57,6 +58,51 @@ async def _async_execute(configs: dict[str, Any]) -> None
 async def execute() -> None
     # 执行入口：先pre_execute获取配置，再调用_async_execute
 ```
+
+### 资源估算与 runtime planner
+
+引擎在执行 DAG 前会运行 preflight，Op 可通过 `estimate_resources()` 声明自身的
+常驻内存或磁盘开销：
+
+```python
+@classmethod
+def estimate_resources(
+    cls,
+    configs: dict[str, Any],
+    frame_bytes: int,
+    n_frames: int | None,
+    dtype_bytes: int | None = None,
+) -> tuple[int, int]:
+    # 返回 (peak_memory_bytes, peak_disk_bytes)
+```
+
+默认实现返回 `(0, 0)`。需要整图中间状态、磁盘缓存或其它常驻资源的 Op 应覆写该方法。
+按空间分块处理且希望由 runtime planner 自动设置 `chunk_rows` 的 Op，需要设置：
+
+```python
+CHUNK_PLANNED = True
+```
+
+并按需覆写每增加一行 chunk 的内存成本：
+
+```python
+@classmethod
+def chunk_cost_per_row(
+    cls,
+    n_frames: int,
+    row_bytes: int,
+    dtype_bytes: int,
+) -> int:
+    # 返回 chunk_rows 每增加一行带来的内存成本
+```
+
+注意 `BUFFER_ITERATOR` 和 `CHUNK_PLANNED` 是不同语义：
+
+- `BUFFER_ITERATOR` 表示 Op 消费 `buffer_handle`，会重放缓存帧。
+- `CHUNK_PLANNED` 表示 Op 的 `chunk_rows` 由 runtime planner 管理。
+
+有效配置中存在固定 `chunk_rows` 时，planner 不会覆盖；`chunk_rows: auto`
+表示允许 planner 接管。
 
 ### ParallelBaseOp
 
