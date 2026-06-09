@@ -2,7 +2,7 @@ inputs:
   fnames:
     label: "图像文件"
     widget: file_picker
-    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+    accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
 
 routes:
   stacker:

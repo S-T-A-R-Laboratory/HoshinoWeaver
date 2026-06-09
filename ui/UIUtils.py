@@ -286,10 +286,11 @@ class SlotHandler(QMainWindow):
                                   '星空图像' if category == '亮场' else category)
         file_dialog.setFileMode(QFileDialog.ExistingFiles)
         file_dialog.setNameFilters([
-            '全部支持文件(*.cr2 *.cr3 *.arw *.nef *.dng *.tiff *.tif *.jpeg *.jpg *.png *.bmp *.gif *.fits)',
-            'RAW文件(*.cr2 *.cr3 *.arw *.nef *.dng)', 'tif文件(*.tiff *.tif)',
+            '全部支持文件(*.cr2 *.cr3 *.arw *.nef *.dng *.rw2 *.orf *.raf *.tiff *.tif *.jpeg *.jpg *.png *.bmp *.gif *.fits)',
+            'RAW文件(*.cr2 *.cr3 *.arw *.nef *.dng *.rw2 *.orf *.raf)', 'tif文件(*.tiff *.tif)',
             'jpg文件(*.jpeg *.jpg)', 'png文件(*.png)', '其它图片文件(*.bmp *.gif *.fits)'
         ])
+        
         if file_dialog.exec_() == QDialog.Accepted:
             file_paths = [
                 url.toLocalFile() for url in file_dialog.selectedUrls()
@@ -397,7 +398,7 @@ class SlotHandler(QMainWindow):
             for file in files:
                 # 按支持的文件类型进行过滤
                 if re.search(
-                        '\.((cr2)|(cr3)|(arw)|(nef)|(dng)|(tiff)|(tif)|(jpeg)|(jpg)|(png)|(bmp)|(gif)|(fits))$',
+                        r'\.((cr2)|(cr3)|(arw)|(nef)|(dng)|(rw2)|(orf)|(raf)|(tiff)|(tif)|(jpeg)|(jpg)|(png)|(bmp)|(gif)|(fits))$',
                         file.lower()):
                     file_path = '%s/%s' % (root, file)
                     file_path = file_path.replace('\\', '/')
@@ -512,7 +513,7 @@ class SlotHandler(QMainWindow):
         # 更新文件树的文件数量
         categore = category_item.text(0)
         file_cnt = category_item.childCount()
-        new_categore = re.sub('\d+', str(file_cnt), categore)
+        new_categore = re.sub(r'\d+', str(file_cnt), categore)
         category_item.setText(0, new_categore)
 
     @Slot()

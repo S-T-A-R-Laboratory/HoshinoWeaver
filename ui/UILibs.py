@@ -46,9 +46,10 @@ class imgDisplayQFrame(QFrame):
             self.img_path = path
             suffix = self.img_path.rsplit(".", 1)[-1].lower()
 
-            if suffix in ('cr2', 'cr3', 'arw', 'nef', 'dng'):
+            if suffix in ('cr2', 'cr3', 'arw', 'nef', 'dng', 'rw2', 'orf', 'raf'):
                 with rawpy.imread(self.img_path) as raw:
-                    rgb = raw.postprocess()
+                    rgb = raw.postprocess(output_color=rawpy.ColorSpace(4),
+                    use_camera_wb=True)
             else:
                 rgb = np.array(PIL.Image.open(self.img_path).convert("RGB"), dtype=np.uint8)
 

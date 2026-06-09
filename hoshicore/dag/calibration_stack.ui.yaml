@@ -3,22 +3,22 @@ inputs:
     label: "亮场文件 (Light)"
     description: "待叠加的拍摄原片"
     widget: file_picker
-    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+    accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
   bias_fnames:
     label: "偏置场文件 (Bias)"
     description: "用于减去传感器读出噪声。需多张，可选"
     widget: file_picker
-    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+    accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
   dark_fnames:
     label: "暗场文件 (Dark)"
     description: "用于减去暗电流和热噪声。需多张，可选"
     widget: file_picker
-    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+    accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
   flat_fnames:
     label: "平场文件 (Flat)"
     description: "用于校正暗角和镜头灰尘。需多张，可选"
     widget: file_picker
-    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+    accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
 
 routes:
   bias_stacker:
