@@ -8,6 +8,7 @@ import json
 import os
 import pickle
 import tempfile
+import asyncio
 from asyncio import Queue, Lock, to_thread, Event
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -67,9 +68,43 @@ class RichContextQueue(BaseQueue):
         self.length: Optional[int] = None
         self._length_event = Event()  # 长度就绪事件
         self.active: bool = True  # 是否有生产者连接（由 wiring 层管理）
+        self._cancelled_token: Optional[CancellationToken] = None
+
+    def _check_cancelled(self) -> None:
+        """入口守卫：队列已取消时立即抛出。"""
+        if self._cancelled_token is not None:
+            raise CancellationError(
+                f"Queue cancelled by '{self._cancelled_token.source_node}': "
+                f"{self._cancelled_token.error}"
+            ) from self._cancelled_token.error
+
+    def force_cancel(self, token: CancellationToken) -> None:
+        """由 runtime 调用。标记队列为已取消，唤醒所有等待者。
+
+        覆盖：
+        - 后续 get()/put()/get_length() 调用在入口立即抛出
+        - 唤醒卡在 get_length() 的消费者（_length_event.set）
+        - 唤醒卡在 queue.get() 的消费者（注入 token）
+        - 无法唤醒卡在 queue.put() 的生产者 → 由 executor task.cancel() 补充
+        """
+        if self._cancelled_token is not None:
+            return  # 幂等
+        self._cancelled_token = token
+        self._length_event.set()
+        try:
+            self.queue.put_nowait(token)
+        except asyncio.QueueFull:
+            discarded = self.queue.get_nowait()
+            self._cleanup_discarded(discarded)
+            self.queue.put_nowait(token)
+
+    def _cleanup_discarded(self, item: Any) -> None:
+        """清理 force_cancel 时被丢弃的队列元素。子类可 override。"""
+        pass
 
     async def put(self, item: Any) -> None:
         """将对象放入队列"""
+        self._check_cancelled()
         async with self._put_lock:
             await self.queue.put(item)
 
@@ -79,6 +114,7 @@ class RichContextQueue(BaseQueue):
         信号（SENTINEL / CancellationToken）消费后会无条件回填，
         确保同一队列的其他并发消费者也能收到终止信号。
         """
+        self._check_cancelled()
         item = await self.queue.get()
 
         # 检查取消令牌
@@ -94,9 +130,10 @@ class RichContextQueue(BaseQueue):
             raise StreamExhausted("Stream ended normally")
 
         return item
-    
+
     async def set_length(self, length: Optional[int]):
         """由生产者设置序列长度。None 表示长度未知（sentinel 驱动）。"""
+        self._check_cancelled()
         async with self._put_lock:
             if self.length is not None and length is not None and self.length != length:
                 raise ValueError(f"Length mismatch: {self.length} vs {length}")
@@ -106,15 +143,12 @@ class RichContextQueue(BaseQueue):
     async def get_length(self) -> Optional[int]:
         """消费者等待并获取序列长度。返回 None 表示长度未知。"""
         await self._length_event.wait()
+        self._check_cancelled()
         return self.length
 
 
 class FileCacheQueue(RichContextQueue):
-    """使用中间文件缓存的Queue。
-
-    Args:
-        object (_type_): _description_
-    """
+    """使用中间文件缓存的Queue。"""
 
     def __init__(self,
                  maxsize: int,
@@ -128,6 +162,15 @@ class FileCacheQueue(RichContextQueue):
         self.temp_path = Path(temp_path) if temp_path else Path(
             tempfile.gettempdir())
         os.makedirs(self.temp_path, exist_ok=True)
+
+    def _cleanup_discarded(self, item: Any) -> None:
+        """force_cancel 弹出的可能是文件路径，需清理临时文件。"""
+        if isinstance(item, str):
+            try:
+                if os.path.exists(item):
+                    os.remove(item)
+            except OSError:
+                pass
 
     def _save_to_file(self, item: Any, file_path: Path) -> None:
         if self.serializer == "pickle":
@@ -158,6 +201,7 @@ class FileCacheQueue(RichContextQueue):
 
         信号对象（SENTINEL / CancellationToken）直接入队，不序列化到文件。
         """
+        self._check_cancelled()
         # 信号直接入队（不经过文件序列化）
         if item is BaseQueue._SENTINEL or isinstance(item, CancellationToken):
             async with self._put_lock:
@@ -178,6 +222,7 @@ class FileCacheQueue(RichContextQueue):
 
         信号对象（SENTINEL / CancellationToken）回填后抛出对应异常。
         """
+        self._check_cancelled()
         item = await self.queue.get()
 
         # 信号检测（与 RichContextQueue.get 一致）

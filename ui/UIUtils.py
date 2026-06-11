@@ -17,6 +17,7 @@ from qasync import asyncSlot
 
 from hoshicore.component.image_io import scan_all_exif
 # 导入Core接口
+from hoshicore.engine.executor import DAGExecutionError
 from hoshicore.engine.preflight import PreflightAction, PreflightReport
 from hoshicore.engine.wiring import run_from_yaml
 # 导入图标资源
@@ -607,6 +608,39 @@ class SlotHandler(QMainWindow):
             self.window._status_n['status'] = '任务取消'
             self.window._status_n['tips'] = '已停止叠加'
             self.window._status_n['tips_2'] = ''
+        except DAGExecutionError as e:
+            logger.error(
+                f"任务执行失败: 节点 '{e.root_node}': {e.root_cause}")
+            self.window.status_text.setStyleSheet(
+                "#status_text {color:rgba(200,0,0,200)}")
+            self.window.star_trial_tips.setStyleSheet(
+                "#star_trial_tips {color:rgba(200,0,0,200)}")
+            self.view_file(file_path='')
+            self.window._status = 'failed'
+            self.window._status_n['tips_2'] = ''
+            self.window._status_n['status'] = '任务失败'
+            msg_box = QMessageBox(self.window)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setWindowTitle("任务失败")
+            msg_box.setText(
+                f"节点 '{e.root_node}' 执行失败:\n"
+                f"{type(e.root_cause).__name__}: {e.root_cause}")
+            detail_lines = [f"根因节点: {e.root_node}"]
+            detail_lines.append(
+                f"  {type(e.root_cause).__name__}: {e.root_cause}")
+            if len(e.failed_nodes) > 1:
+                detail_lines.append(
+                    f"\n其他失败节点 ({len(e.failed_nodes) - 1}):")
+                for name, exc in e.failed_nodes[1:]:
+                    detail_lines.append(
+                        f"  {name}: {type(exc).__name__}: {exc}")
+            if e.cancelled_nodes:
+                detail_lines.append(
+                    f"\n因此取消的节点 ({len(e.cancelled_nodes)}):")
+                for name in e.cancelled_nodes:
+                    detail_lines.append(f"  {name}")
+            msg_box.setDetailedText("\n".join(detail_lines))
+            msg_box.exec()
         except Exception as e:
             logger.error(f"任务执行失败: {e}")
             self.window.status_text.setStyleSheet(

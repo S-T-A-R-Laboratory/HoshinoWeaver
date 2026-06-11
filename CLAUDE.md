@@ -140,6 +140,7 @@ See `csrc/README.md` "新增算子" section for the full checklist. Key steps: C
 
 - `docs/dag_node_definition.md` — DAG YAML 完整语法规范（标准格式 + Meta 格式）
 - `docs/meta_yaml_v2_spec.md` — Meta YAML v2 路由系统设计细节
+- `docs/dag_engine.md` — DAG Engine 架构概览（编译链路、执行模型、队列协议、终止机制）
 - `docs/noise-equalization.md` — Mix 星轨噪声均衡算法原理
 - `docs/bundle_adjustment_and_stabilization.md` — 星点对齐叠加的几何模型
 - `docs/multi_process.md` — 多进程数据并行架构设计

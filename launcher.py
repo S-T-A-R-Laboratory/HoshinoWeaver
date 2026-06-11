@@ -8,6 +8,7 @@ import json
 from loguru import logger as default_logger
 
 from hoshicore.component.utils import init_logger, is_support_format
+from hoshicore.engine.executor import DAGExecutionError
 from hoshicore.engine.inspect import InspectResult, inspect_yaml
 from hoshicore.engine.preflight import PreflightAction, PreflightReport
 from hoshicore.engine.wiring import run_from_yaml
@@ -262,6 +263,20 @@ def main():
     except KeyboardInterrupt:
         print("\n已中止", file=sys.stderr)
         sys.exit(130)
+    except DAGExecutionError as e:
+        logger.error(
+            f"节点 '{e.root_node}' 执行失败: "
+            f"{type(e.root_cause).__name__}: {e.root_cause}")
+        if len(e.failed_nodes) > 1:
+            for name, exc in e.failed_nodes[1:]:
+                logger.error(
+                    f"  同时失败: {name}: {type(exc).__name__}: {exc}")
+        if e.cancelled_nodes:
+            logger.info(
+                f"  ({len(e.cancelled_nodes)} 个节点因此取消)")
+        if args.debug or args.trace:
+            raise
+        sys.exit(1)
     except Exception as e:
         root = e.__cause__ if e.__cause__ is not None else e
         logger.error(f"{type(root).__name__}: {root}")

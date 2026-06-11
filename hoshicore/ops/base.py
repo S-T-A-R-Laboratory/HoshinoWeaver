@@ -8,9 +8,8 @@ import numpy as np
 from loguru import logger
 
 from ..component.progress import DummyTracker
-from ..component.queue import (BaseQueue, CancellationError, CancellationToken,
-                               FileCacheQueue, RichContextQueue,
-                               StreamExhausted)
+from ..component.queue import (BaseQueue, CancellationError, FileCacheQueue,
+                               RichContextQueue, StreamExhausted)
 from ..component.utils import time_cost_warpper
 
 
@@ -155,30 +154,10 @@ class BaseOp(object):
         raise NotImplementedError("Subclass must implement this method")
 
     async def execute(self) -> None:
-        """执行入口：捕获异常并传播"""
-        try:
-            configs = await self.pre_execute()
-            await self._async_execute(configs)
-            # 正常结束：发送结束信号
-            await self._send_sentinel()
-        except CancellationError:
-            # 上游取消：直接传播
-            await self._propagate_cancellation_from_upstream()
-            raise
-        except asyncio.CancelledError:
-            # 外部取消（如 UI）→ 转化为内部取消语义
-            logger.info(f"{self.name}: cancelled by external request")
-            cancel_err = CancellationError("External cancellation")
-            await self._propagate_cancellation(cancel_err)
-            raise cancel_err
-        except Exception as e:
-            # 本节点异常：创建取消令牌并传播
-            import traceback
-            logger.error(
-                f"{self.name} failed: {e.__repr__()}\n{traceback.format_exc()}"
-            )
-            await self._propagate_cancellation(e)
-            raise
+        """执行入口。异常直接上抛，由 DAGExecutor 统一处理取消传播。"""
+        configs = await self.pre_execute()
+        await self._async_execute(configs)
+        await self._send_sentinel()
 
     def _async_convert_inputs(self):
         # NOTE: queue.get() returns an awaitable; subclasses may `await` each value.
@@ -196,39 +175,6 @@ class BaseOp(object):
             for queue in queue_list:
                 await queue.put(BaseQueue._SENTINEL)
 
-    async def _propagate_cancellation(self, error: Exception) -> None:
-        """传播取消令牌（本节点异常）"""
-        token = CancellationToken(error, self.name)
-        for queue_list in self.outputs.values():
-            for queue in queue_list:
-                await queue.put(token)
-
-    async def _propagate_cancellation_from_upstream(self) -> None:
-        """传播取消令牌（上游异常）。
-
-        从输入队列中提取 CancellationToken 并转发到所有输出队列。
-        """
-        token = None
-        for input_queue in self.inputs.values():
-            try:
-                if hasattr(input_queue, 'queue'):
-                    while not input_queue.queue.empty():
-                        item = input_queue.queue.get_nowait()
-                        if isinstance(item, CancellationToken):
-                            token = item
-                            break
-                if token is not None:
-                    break
-            except Exception:
-                pass
-
-        if token is None:
-            token = CancellationToken(
-                CancellationError("Upstream cancellation"), self.name)
-
-        for queue_list in self.outputs.values():
-            for queue in queue_list:
-                await queue.put(token)
 
     async def _broadcast_outputs(self, results: dict[str, Any]) -> None:
         """将结果广播到对应的输出队列。
