@@ -9,7 +9,7 @@ import os
 import pickle
 import tempfile
 import asyncio
-from asyncio import Queue, Lock, to_thread, Event
+from asyncio import Queue, Lock, Event
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -212,8 +212,9 @@ class FileCacheQueue(RichContextQueue):
             filename = self._get_next_filename()
             file_path = self.temp_path / filename
 
-            # 序列化并写入文件
-            await to_thread(self._save_to_file, item, file_path)
+            # 序列化并写入文件。这里保持同步写入，避免线程池文件 I/O
+            # 在受限运行环境中无法及时返回导致队列 put 卡住。
+            self._save_to_file(item, file_path)
             # 将文件路径放入队列
             await self.queue.put(str(file_path))
 
@@ -238,7 +239,7 @@ class FileCacheQueue(RichContextQueue):
         # 正常数据：item 是文件路径字符串
         file_path = item
         try:
-            data = await to_thread(self._load_from_file, file_path)
+            data = self._load_from_file(file_path)
         except Exception as e:
             raise ValueError(f"读取文件缓存失败: {e}") from e
         finally:
