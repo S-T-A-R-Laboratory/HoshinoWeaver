@@ -27,11 +27,11 @@ import yaml
 from loguru import logger
 
 from ..component.progress import DummyTracker, ProgressTracker
-from ..component.queue import BaseQueue, RichContextQueue
+from ..component.queue import BaseQueue, CancellationError, RichContextQueue
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
-from .executor import DAGExecutor
+from .executor import DAGExecutionError, DAGExecutor
 from .flatten import INACTIVE_MARKER
 from .preflight import (PreflightAbortError, PreflightAction,
                             apply_fallbacks, preflight_check)
@@ -410,10 +410,14 @@ async def run_dag(
         dag_search_paths: 子图 YAML 搜索路径。None 使用 DEFAULT_DAG_SEARCH_PATHS。
                           传入后会覆盖模块级默认值（影响本次执行及嵌套子图）。
         tracker:          外部注入的进度追踪器。传入时优先使用，忽略 progress 参数。
-        cancel_event:     外部取消事件。set() 后 Op 在下一个 _run_cpu 检查点退出。
+        cancel_event:     外部取消事件。set() 后触发 cancel_all + task.cancel。
 
     Returns:
         dict: 全局输出 name → value 的映射。
+
+    Raises:
+        DAGExecutionError: 节点真实异常（携带根因节点和完整失败记录）。
+        asyncio.CancelledError: 外部取消。
     """
     if dag_search_paths is not None:
         set_dag_search_paths(dag_search_paths)
@@ -422,7 +426,7 @@ async def run_dag(
                                                        global_configs,
                                                        op_registry)
 
-    # 注入进度追踪器：外部 tracker 优先，否则按 progress 参数创建 tqdm tracker
+    # 注入进度追踪器
     if tracker is not None:
         for op in ops:
             op.tracker = tracker
@@ -441,29 +445,50 @@ async def run_dag(
 
     logger.info(f"DAG execution starting ({len(ops)} nodes)...")
 
-    # 结果收集协程 —— 必须与 executor 并发运行。
-    # 原因：上游节点 _send_sentinel() 需要向 output_collector 队列
-    # push SENTINEL，但该队列 maxsize=1 且已有实际结果占位。
-    # 只有在结果被消费后 SENTINEL 才能入队，节点才能正常结束。
-    # 如果把收集放在 gather 之后，就会形成死锁：
-    #   gather 等待节点结束 → 节点等待 SENTINEL 入队 → 入队等待消费 → 消费在 gather 之后
     results: dict[str, Any] = {}
+    watcher_task: asyncio.Task | None = None
+
+    async def _watch_external_cancel():
+        """监听外部取消 → cancel_all + task.cancel 全部节点。"""
+        await executor.cancel_event.wait()
+        executor.cancel_all()
+        for task in executor._node_tasks.values():
+            if not task.done():
+                task.cancel()
 
     async def _collect_outputs():
-
+        """结果收集，容忍取消（队列被 force_cancel 时静默退出）。"""
         async def _get_one(name, queue):
-            results[name] = await queue.get()
-
+            try:
+                results[name] = await queue.get()
+            except (CancellationError, asyncio.CancelledError):
+                pass
         await asyncio.gather(
             *[_get_one(n, q) for n, q in output_queues.items()])
 
+    async def _run_feeders():
+        """Feeder 包装，容忍取消。"""
+        try:
+            await asyncio.gather(*feeders)
+        except (CancellationError, asyncio.CancelledError):
+            pass
+
     try:
-        # Feeders、Executor、结果收集 三者并发运行
-        await asyncio.gather(*feeders, executor.execute(), _collect_outputs())
-    except asyncio.CancelledError:
-        logger.info("DAG cancelled by external request")
+        watcher_task = asyncio.create_task(_watch_external_cancel())
+        await asyncio.gather(
+            _run_feeders(), executor.execute(), _collect_outputs())
+    except DAGExecutionError:
         raise
+    except (CancellationError, asyncio.CancelledError):
+        logger.info("DAG cancelled by external request")
+        raise asyncio.CancelledError("DAG cancelled by external request")
     finally:
+        if watcher_task is not None and not watcher_task.done():
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
         if tracker is not None:
             tracker.close_all()
 

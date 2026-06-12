@@ -28,12 +28,12 @@ SAME_SUFFIX_MAPPING = {"tiff": "tif", "jpeg": "jpg"}
 SUPPORT_COLOR_SPACE = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
 COMMON_SUFFIX = ["tiff", "tif", "jpg", "png", "jpeg"]
 NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
-RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng", "rw2", "raf"]
+RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng", "rw2", "raf", "orf"]
 ASTRO_SUFFIX = ["fits", "fts"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
-VERSION = "1.0.0-beta.1"
+VERSION = "1.0.0"
 RELEASE_NAME = "Vega"
 ORG_NAME = f"STARLab"
 SOFTWARE_NAME = f"HoshinoWeaver"

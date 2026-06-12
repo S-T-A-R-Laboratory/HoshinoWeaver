@@ -42,9 +42,17 @@ def generate_weight(
     ret_weight = np.ones((length, ), dtype=np.float32)
 
     if in_len > 0:
-        ret_weight[:in_len] = np.arange(1, 100, 99 / in_len) / 100
+        ret_weight[:in_len] = np.linspace(0.01,
+                                          1.0,
+                                          in_len,
+                                          endpoint=False,
+                                          dtype=np.float32)
     if out_len > 0:
-        ret_weight[-out_len:] = np.arange(1, 100, 99 / out_len)[::-1] / 100
+        ret_weight[-out_len:] = np.linspace(0.01,
+                                            1.0,
+                                            out_len,
+                                            endpoint=False,
+                                            dtype=np.float32)[::-1]
 
     return ret_weight
 

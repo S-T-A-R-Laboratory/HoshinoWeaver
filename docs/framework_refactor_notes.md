@@ -17,46 +17,21 @@
 2. 引入统一 ConfigResolver，解决配置来源和默认值优先级问题。
 3. 整理 YAML 编译 IR，让 meta、flatten、route、bypass 复杂度收束到编译层。
 
-## P0: 执行、取消与队列关闭协议
+## P0: 执行、取消与队列关闭协议 ✅ 已完成
 
-### 现状
+> 详见 `docs/dag_engine.md`。
 
-相关模块：
+已实现：
+- ✅ 队列显式取消语义：`RichContextQueue.force_cancel(token)` + 入口守卫
+- ✅ `BaseOp.execute()` 简化为 3 行，取消传播收束到 executor
+- ✅ `DAGExecutor` 重写：统一 cancel_all + task.cancel，结构化 `DAGExecutionError`
+- ✅ `run_dag()` 改造为 runtime group：watcher task + feeders/collector 容忍取消
+- ✅ GUI/CLI 结构化根因展示
+- ✅ 测试覆盖：force_cancel 唤醒、根因选择、上下游取消传播、外部取消、正常回归
 
-- `hoshicore/ops/base.py`
-- `hoshicore/component/queue.py`
-- `hoshicore/engine/executor.py`
-- `hoshicore/engine/wiring.py`
-
-当前执行模型中，每个 Op 并发运行；上游通过输出队列广播数据，下游从输入队列消费。正常结束通过 sentinel，异常通过 CancellationToken 传播。`run_dag()` 需要让 feeders、executor、输出收集同时运行，避免输出 collector 队列阻塞导致死锁。
-
-这套设计可以工作，但协议散在多个类里。一旦出现下游提前失败、上游仍在 put、可选输入未正确 inactive、输出队列没人消费、sentinel 回填与并发消费者交织等情况，就容易变成卡死或难定位错误。
-
-### 风险
-
-- 某个队列没有生产者但被消费者等待，导致 `pre_execute()` 永久阻塞。
-- 下游失败后，上游继续向满队列 `put()`，取消无法及时打断。
-- 输出收集与节点结束信号顺序不当，形成等待环。
-- sentinel/token 回填机制让多消费者能收到结束信号，但也增加了状态推理难度。
-- 异常来源在节点、队列、executor 之间多次包装，最终报错可能离根因较远。
-
-### 建议目标
-
-建立明确的 DAG 运行生命周期协议：
-
-- 每个节点有显式状态：`pending/running/completed/failed/cancelled`.
-- 每条边或队列有显式关闭状态：`open/closed/cancelled`.
-- 取消由 executor 统一发起，队列 `put/get` 都能感知取消。
-- 节点失败后，executor 负责通知所有相关队列关闭或取消，Op 不再各自实现大量兜底逻辑。
-- 输出 collector 是运行计划的一部分，而不是特殊的附加协程。
-
-### 可拆任务
-
-1. 增加执行状态诊断日志：节点启动、pre_execute 完成、首帧输入、首帧输出、正常结束、异常、取消传播。
-2. 为 `BaseQueue` 增加显式 `close()` / `cancel(error)` 语义，逐步替代单纯 sentinel/token 约定。
-3. 将 `BaseOp.execute()` 中的异常传播逻辑收束到 executor 或统一 runtime helper。
-4. 为常见死锁场景补测试：未布线输入、下游失败、输出 collector 队列满、Filter 变长输出、外部取消。
-5. 最后再考虑重写 executor 调度模型，避免一次性大改。
+待后续：
+- `ParallelBaseOp._execute_concurrent()` 中 CancellationError 应 re-raise 而非转为 _STOP（影响 cancelled_nodes 统计准确性）
+- 节点显式状态（pending/running/completed/failed/cancelled）和执行诊断日志可按需追加
 
 ## P0: 配置解析与默认值优先级
 
