@@ -802,8 +802,9 @@ class MedianReduceOp(BaseOp):
                         (n_frames, actual_rows, w), dtype=source_dtype)
 
                 for frame_idx in range(n_frames):
-                    frame_data, _ = frame_buffer[frame_idx]
-                    stack[frame_idx] = frame_data[row_start:row_end]
+                    frame_data, _ = frame_buffer.get_rows(
+                        frame_idx, row_start, row_end)
+                    stack[frame_idx] = frame_data
 
                 # 沿帧轴取中位数
                 chunk_median = await self._run_cpu(self._reduce_chunk, stack)

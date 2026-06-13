@@ -385,9 +385,10 @@ class ChunkIteratorBaseOp(BaseOp):
         overlap = self.CHUNK_OVERLAP
 
         try:
-            first_frame, _ = frame_buffer[0]
+            first_frame, first_weight = frame_buffer[0]
             h, w = first_frame.shape[:2]
             del first_frame  # release mmap immediately — prevents Windows file-lock on cleanup
+            del first_weight
             n_chunks = (h + chunk_rows - 1) // chunk_rows
             result_chunks: list[np.ndarray] = []
             self._chunk_states = []

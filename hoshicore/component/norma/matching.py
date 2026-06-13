@@ -75,7 +75,7 @@ ALIGN_VALIDATION = HomographyValidationConfig(
     min_coverage_ratio=0.005,
     min_area_ratio=0.4,
     max_area_ratio=2.5,
-    max_projective_magnitude=0.5,
+    max_projective_magnitude=1.0,
 )
 
 MIN_HOMOGRAPHY_INLIERS = 4
