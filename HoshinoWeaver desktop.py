@@ -14,7 +14,7 @@ import platform
 import time
 
 from loguru import logger as _logger
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QMouseEvent
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
                                QFrame, QHeaderView, QMainWindow, QScrollArea,
@@ -39,6 +39,18 @@ MODE_MAP = {
     "星点对齐叠加": (_BASE_DIR / "hoshicore/dag/sky_ground_stack.meta.yaml",
              _BASE_DIR / "hoshicore/dag/sky_ground_stack.ui.yaml"),
 }
+
+class SnapPreviewWindow(QFrame):
+    """Half-transparent overlay that shows where the window will snap to."""
+    def __init__(self):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setStyleSheet(
+            "QFrame { background-color: rgba(0, 120, 215, 80); "
+            "border: 2px solid rgba(0, 120, 215, 200); border-radius: 6px; }"
+        )
+
 
 class HNW_guide(QDialog, Ui_guide):
     def __init__(self, callback, display_always_flag=True,parent=None):
@@ -238,7 +250,9 @@ class HNW_window(QMainWindow, Ui_HNW):
         '''
         self.resizing = False
         self.dragging = False
-        if self.isMaximized():
+        self._hide_snap_preview()
+        self.snap_zone = None
+        if self.isMaximized() or self.snap_state:
             pass
         else:
             self.resize_x_y = [self.width(), self.height()]
@@ -297,28 +311,47 @@ class HNW_window(QMainWindow, Ui_HNW):
                 pos = event.globalPosition().toPoint()
                 x_p = pos.x()
                 y_p = pos.y()
+                # 先调用 showNormal 恢复窗口化，再计算目标位置
+                self.slot_handler.ui_max(target_type='window')
+                # 计算窗口应该出现的位置（光标相对于窗口的比例位置）
                 x_n = x_p - x_p / self.screen_width * self.resize_x_y[0]
                 y_n = y_p - y_p / self.screen_height * self.resize_x_y[1]
-                self.setGeometry(x_n, y_n, self.resize_x_y[0],
-                                 self.resize_x_y[1])
-                self.slot_handler.ui_max(target_type='window')
-                # 这里移动了窗口 需要更新drag_position
-                self.drag_position = event.globalPosition().toPoint(
-                ) - self.frameGeometry().topLeft()
-            # 如果移动到窗口顶部、侧部 则最大化
-            elif event.globalPosition().toPoint().x(
-            ) <= 0 or event.globalPosition().toPoint().x(
-            ) >= self.screen_width - 0 or event.globalPosition().toPoint().y(
-            ) <= 0:
-                self.max_flag = True
-            # 如果移动到窗口下侧 则最小化
-            # 不支持这个选项了 会出发一些bug（移动上边框到最底部最小化后 无法恢复窗口）
-            # elif event.globalPosition().toPoint().y() >= self.screen_height - 0:
-            # self.min_flag = True
+                self.move(int(x_n), int(y_n))
+                # 更新 drag_position 为光标相对于新窗口位置的偏移
+                self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            # 如果是半屏 snap 状态，恢复原始尺寸
+            elif self.snap_state:
+                pos = event.globalPosition().toPoint()
+                x_p = pos.x()
+                y_p = pos.y()
+                self.snap_state = None
+                x_n = x_p - x_p / self.screen_width * self.resize_x_y[0]
+                y_n = y_p - y_p / self.screen_height * self.resize_x_y[1]
+                self.setGeometry(int(x_n), int(y_n), self.resize_x_y[0], self.resize_x_y[1])
+                self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             else:
-                self.move(event.globalPosition().toPoint() -
-                          self.drag_position)
-                self.max_flag = False
+                pos = event.globalPosition().toPoint()
+                x_p = pos.x()
+                y_p = pos.y()
+
+                # Snap zone detection (10px threshold)
+                snap_threshold = 10
+                snap_zone = None
+
+                if x_p <= self.screen_x + snap_threshold:
+                    snap_zone = 'left'
+                elif x_p >= self.screen_x + self.screen_width - snap_threshold:
+                    snap_zone = 'right'
+                elif y_p <= self.screen_y + snap_threshold:
+                    snap_zone = 'top'
+
+                if snap_zone:
+                    self._show_snap_preview(snap_zone)
+                    self.snap_zone = snap_zone
+                else:
+                    self._hide_snap_preview()
+                    self.snap_zone = None
+                    self.move(event.globalPosition().toPoint() - self.drag_position)
         else:
             pass
 
@@ -329,16 +362,17 @@ class HNW_window(QMainWindow, Ui_HNW):
         '''
         self.resizing = False
         self.dragging = False
+        self._hide_snap_preview()
         # 更新窗口大小信息
         if self.min_flag:
             self.slot_handler.ui_min()
             self.min_flag = False
-        if self.max_flag:
-            self.slot_handler.ui_max(target_type='max')
-            self.max_flag = False
+        if hasattr(self, 'snap_zone') and self.snap_zone:
+            self._apply_snap(self.snap_zone)
+            self.snap_zone = None
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
-        ''' 
+        '''
         双击切换最大化/窗口化
         '''
         if event.position().y() <= 40:
@@ -346,11 +380,10 @@ class HNW_window(QMainWindow, Ui_HNW):
                 pos = event.globalPosition().toPoint()
                 x_p = pos.x()
                 y_p = pos.y()
+                self.slot_handler.ui_max(target_type='window')
                 x_n = x_p - x_p / self.screen_width * self.resize_x_y[0]
                 y_n = y_p - y_p / self.screen_height * self.resize_x_y[1]
-                self.setGeometry(x_n, y_n, self.resize_x_y[0],
-                                 self.resize_x_y[1])
-                self.slot_handler.ui_max(target_type='window')
+                self.move(int(x_n), int(y_n))
             else:
                 self.slot_handler.ui_max(target_type='max')
 
@@ -371,7 +404,10 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # 如果鼠标移动到屏幕边缘 最大化
         _detect_width = 2
-        if x_p >= self.screen_width - _detect_width or y_p >= self.screen_height - _detect_width or x_p <= _detect_width or y_p <= _detect_width:
+        if (x_p >= self.screen_x + self.screen_width - _detect_width or
+                y_p >= self.screen_y + self.screen_height - _detect_width or
+                x_p <= self.screen_x + _detect_width or
+                y_p <= self.screen_y + _detect_width):
             self.slot_handler.ui_max(target_type='max')
         # 如果从最大化移动 执行窗口化
         elif self.isMaximized():
@@ -467,6 +503,38 @@ class HNW_window(QMainWindow, Ui_HNW):
             rect.setRect(x, y, w, h)
             self.setGeometry(rect)
 
+    def _snap_geometry(self, zone: str) -> QRect:
+        """Return the target geometry for a given snap zone."""
+        screen = QApplication.primaryScreen().availableGeometry()
+        w, h = screen.width(), screen.height()
+        x, y = screen.x(), screen.y()
+        if zone == 'left':
+            return QRect(x, y, w // 2, h)
+        elif zone == 'right':
+            return QRect(x + w // 2, y, w - w // 2, h)
+        else:  # 'top' → full screen (maximize)
+            return QRect(x, y, w, h)
+
+    def _show_snap_preview(self, zone: str):
+        geo = self._snap_geometry(zone)
+        self._snap_preview.setGeometry(geo)
+        self._snap_preview.show()
+        self._snap_preview.raise_()
+
+    def _hide_snap_preview(self):
+        self._snap_preview.hide()
+
+    def _apply_snap(self, zone: str):
+        if zone == 'top':
+            if not self.isMaximized():
+                self.resize_x_y = [self.width(), self.height()]
+            self.snap_state = None
+            self.slot_handler.ui_max(target_type='max')
+        else:
+            self.snap_state = zone
+            geo = self._snap_geometry(zone)
+            self.setGeometry(geo)
+
     def init_window(self):
         '''
         初始化子窗口
@@ -526,12 +594,22 @@ class HNW_window(QMainWindow, Ui_HNW):
         }
         # 记录最大化前的状态 不直接使用内置的normalGeometry
         self.resize_x_y = [self.width(), self.height()]
-        # 屏幕大小
-        self.screen_height = QApplication.primaryScreen().geometry().bottom()
-        self.screen_width = QApplication.primaryScreen().geometry().right()
+        # 屏幕大小（用 availableGeometry 支持多显示器和任务栏）
+        screen_geo = QApplication.primaryScreen().availableGeometry()
+        self.screen_height = screen_geo.height()
+        self.screen_width = screen_geo.width()
+        self.screen_x = screen_geo.x()
+        self.screen_y = screen_geo.y()
         # 最小化标记 最大化标记 用于在缩放、拖动操作中控制特殊行为
         self.min_flag = False
         self.max_flag = False
+        # Snap 区域标记（left / right / top / None）
+        self.snap_zone = None
+        # 半屏 Snap 状态（left / right / None），用于 drag-from-snap 时恢复原始尺寸
+        self.snap_state = None
+
+        # Snap 预览窗口
+        self._snap_preview = SnapPreviewWindow()
 
         # 0 激活SlotHandler
         self.slot_handler = SlotHandler(self)
