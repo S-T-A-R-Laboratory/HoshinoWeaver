@@ -31,7 +31,14 @@ function(hnw_link_openmp target_name)
     else()
         find_package(OpenMP REQUIRED COMPONENTS CXX)
         target_link_libraries("${target_name}" PRIVATE OpenMP::OpenMP_CXX)
-        # MinGW on Windows: links libgomp dynamically (libgomp-1.dll).
-        # make_package.py collects that DLL for distribution.
+        # MinGW on Windows: CMake's FindOpenMP populates compile flags via the
+        # imported target but, on some CMake versions, leaves link options empty
+        # (OpenMP_CXX_LIB_NAMES="" and no -fopenmp in INTERFACE_LINK_OPTIONS),
+        # which causes undefined references to GOMP_*/omp_* during linking.
+        # Pass -fopenmp explicitly on the link line — the canonical GCC idiom.
+        # libgomp-1.dll is linked dynamically; make_package.py collects it.
+        if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            target_link_options("${target_name}" PRIVATE -fopenmp)
+        endif()
     endif()
 endfunction()
