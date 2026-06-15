@@ -338,7 +338,7 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
             self._merge_chunk(state, chunk_data, chunk_weight, frame_idx)
 
     def _run_pass_cpp(self, state, chunk_stack):
-        """C++ path: stack all frames, compute mask, call kernel."""
+        """C++ path: stack all frames, call kernel with skip_zero_rgb."""
         n_frames = len(chunk_stack)
         first_data = chunk_stack[0][0]
         h, w = first_data.shape[:2]
@@ -351,36 +351,19 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
         for f, (chunk_data, _) in enumerate(chunk_stack):
             stack_2d[f] = chunk_data.reshape(-1)
 
-        # Build per-frame mask
+        # Build static mask only (empty pixel detection delegated to kernel)
         static_mask = state['static_mask']
         chunk_mask = None
-        if static_mask is not None or is_rgb:
-            chunk_mask = np.ones((n_frames, plane_size), dtype=np.uint8)
-            static_flat = None
-            if static_mask is not None:
-                if channels > 1:
-                    static_flat = np.broadcast_to(
-                        static_mask[..., np.newaxis],
-                        (h, w, channels)).reshape(-1).astype(np.uint8)
-                else:
-                    static_flat = static_mask.reshape(-1).astype(np.uint8)
-
-            for f, (chunk_data, _) in enumerate(chunk_stack):
-                if static_flat is not None:
-                    chunk_mask[f] &= static_flat
-                if is_rgb:
-                    empty = np.all(chunk_data[..., :3] == 0, axis=-1)
-                    if empty.any():
-                        if channels > 1:
-                            empty_flat = np.broadcast_to(
-                                empty[..., np.newaxis],
-                                (h, w, channels)).reshape(-1)
-                        else:
-                            empty_flat = empty.reshape(-1)
-                        chunk_mask[f] &= (~empty_flat).astype(np.uint8)
-
-            if chunk_mask.all():
-                chunk_mask = None
+        if static_mask is not None:
+            if channels > 1:
+                static_flat = np.broadcast_to(
+                    static_mask[..., np.newaxis],
+                    (h, w, channels)).reshape(-1).astype(np.uint8)
+            else:
+                static_flat = static_mask.reshape(-1).astype(np.uint8)
+            chunk_mask = np.broadcast_to(
+                static_flat[np.newaxis, :], (n_frames, plane_size)
+            ).copy()
 
         # Prepare FGP totals
         fgp_chunk = state['fgp_chunk']
@@ -392,7 +375,8 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
         acc_sum, acc_sq, acc_n = custom_sigma_clip_iterative_chunk(
             stack_2d, total_sum, total_sq, total_n,
             self._configs['rej_high'], self._configs['rej_low'],
-            self._configs['max_iter'], mask=chunk_mask)
+            self._configs['max_iter'], mask=chunk_mask,
+            skip_zero_rgb=is_rgb, channels=channels)
 
         # Build accepted FGP from results
         chunk_shape = first_data.shape
@@ -412,18 +396,11 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
         cache = state['_mask_cache']
         if frame_idx not in cache:
             static_mask = state['static_mask']
-            spatial_mask = None
-            if chunk_data.ndim == 3 and chunk_data.shape[2] >= 3:
-                empty_mask = np.all(chunk_data[..., :3] == 0, axis=-1)
-                if static_mask is not None:
-                    spatial_mask = static_mask & (~empty_mask)
-                elif empty_mask.any():
-                    spatial_mask = ~empty_mask
-            elif static_mask is not None:
-                spatial_mask = static_mask
-            cache[frame_idx] = spatial_mask
+            cache[frame_idx] = static_mask
+        is_rgb = chunk_data.ndim == 3 and chunk_data.shape[2] >= 3
         state['clip_merger'].merge(chunk_data, chunk_weight,
-                                   spatial_mask=cache[frame_idx])
+                                   spatial_mask=cache[frame_idx],
+                                   skip_zero_rgb=is_rgb)
 
     def _check_convergence(self, state, pass_idx):
         if state['_cpp_done']:
@@ -588,41 +565,25 @@ class SigmaClipFusedChunkOp(ChunkIteratorBaseOp):
         for f, (chunk_data, _) in enumerate(chunk_stack):
             stack_2d[f] = chunk_data.reshape(-1)
 
-        # Build per-frame mask (static + RGB empty)
+        # Build static mask only (empty pixel detection delegated to kernel)
         static_mask = state['static_mask']
         chunk_mask = None
-        if static_mask is not None or is_rgb:
-            chunk_mask = np.ones((n_frames, plane_size), dtype=np.uint8)
-            static_flat = None
-            if static_mask is not None:
-                if channels > 1:
-                    static_flat = np.broadcast_to(
-                        static_mask[..., np.newaxis],
-                        (h, w, channels)).reshape(-1).astype(np.uint8)
-                else:
-                    static_flat = static_mask.reshape(-1).astype(np.uint8)
-
-            for f, (chunk_data, _) in enumerate(chunk_stack):
-                if static_flat is not None:
-                    chunk_mask[f] &= static_flat
-                if is_rgb:
-                    empty = np.all(chunk_data[..., :3] == 0, axis=-1)
-                    if empty.any():
-                        if channels > 1:
-                            empty_flat = np.broadcast_to(
-                                empty[..., np.newaxis],
-                                (h, w, channels)).reshape(-1)
-                        else:
-                            empty_flat = empty.reshape(-1)
-                        chunk_mask[f] &= (~empty_flat).astype(np.uint8)
-
-            if chunk_mask.all():
-                chunk_mask = None
+        if static_mask is not None:
+            if channels > 1:
+                static_flat = np.broadcast_to(
+                    static_mask[..., np.newaxis],
+                    (h, w, channels)).reshape(-1).astype(np.uint8)
+            else:
+                static_flat = static_mask.reshape(-1).astype(np.uint8)
+            chunk_mask = np.broadcast_to(
+                static_flat[np.newaxis, :], (n_frames, plane_size)
+            ).copy()
 
         # Call fused kernel (computes mean + iterative clip)
         acc_sum, acc_sq, acc_n = sigma_clip_fused_chunk(
             stack_2d, self._configs['rej_high'], self._configs['rej_low'],
-            self._configs['max_iter'], mask=chunk_mask)
+            self._configs['max_iter'], mask=chunk_mask,
+            skip_zero_rgb=is_rgb, channels=channels)
 
         chunk_shape = first_data.shape
         source_dtype = first_data.dtype

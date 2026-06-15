@@ -231,26 +231,47 @@ def _validate_ref_stats(
     return ref_mean_arr, ref_std_arr
 
 
-def fgp_accumulate_numpy(base: Any, fresh: np.ndarray, weight: Any = None) -> Any:
+def fgp_accumulate_numpy(base: Any, fresh: np.ndarray, weight: Any = None,
+                         skip_zero_rgb: bool = False) -> Any:
     sum_mu, square_sum, count = _maybe_prepare_target(base, weight)
     fresh_arr = _validate_fresh(sum_mu, fresh)
     int_weight = _validate_integer_weight(weight)
+
+    if skip_zero_rgb and fresh_arr.ndim >= 3 and fresh_arr.shape[-1] >= 3:
+        zero_mask = np.all(fresh_arr[..., :3] == 0, axis=-1, keepdims=True)
+        active = ~np.broadcast_to(zero_mask, fresh_arr.shape)
+    else:
+        active = None
+
     if int_weight is None:
-        sum_mu += fresh_arr
-        square_sum += np.square(fresh_arr, dtype=square_sum.dtype)
-        count += 1
+        if active is not None:
+            sum_mu += np.where(active, fresh_arr, 0)
+            square_sum += np.where(active, np.square(fresh_arr, dtype=square_sum.dtype), 0)
+            count += np.where(active, 1, 0).astype(count.dtype)
+        else:
+            sum_mu += fresh_arr
+            square_sum += np.square(fresh_arr, dtype=square_sum.dtype)
+            count += 1
         return base
-    sum_mu += np.multiply(fresh_arr, int_weight, dtype=sum_mu.dtype)
-    square_sum += np.multiply(
-        np.square(fresh_arr, dtype=square_sum.dtype),
-        int_weight,
-        dtype=square_sum.dtype,
-    )
-    count += int_weight
+
+    if active is not None:
+        sum_mu += np.where(active, np.multiply(fresh_arr, int_weight, dtype=sum_mu.dtype), 0)
+        square_sum += np.where(active, np.multiply(
+            np.square(fresh_arr, dtype=square_sum.dtype), int_weight, dtype=square_sum.dtype), 0)
+        count += np.where(active, int_weight, 0).astype(count.dtype)
+    else:
+        sum_mu += np.multiply(fresh_arr, int_weight, dtype=sum_mu.dtype)
+        square_sum += np.multiply(
+            np.square(fresh_arr, dtype=square_sum.dtype),
+            int_weight,
+            dtype=square_sum.dtype,
+        )
+        count += int_weight
     return base
 
 
-def fgp_accumulate_compiled(base: Any, fresh: np.ndarray, weight: Any = None) -> Any:
+def fgp_accumulate_compiled(base: Any, fresh: np.ndarray, weight: Any = None,
+                            skip_zero_rgb: bool = False) -> Any:
     module, _ = _load_compiled_module_result()
     if module is None:
         raise RuntimeError("compiled custom op backend is unavailable")
@@ -258,7 +279,8 @@ def fgp_accumulate_compiled(base: Any, fresh: np.ndarray, weight: Any = None) ->
     fresh_arr = _validate_fresh(sum_mu, fresh)
     int_weight = _validate_integer_weight(weight)
     _apply_compiled_threads("fgp_accumulate", fresh_arr)
-    module.fgp_accumulate(sum_mu, square_sum, count, fresh_arr, int_weight)
+    module.fgp_accumulate(sum_mu, square_sum, count, fresh_arr, int_weight,
+                          skip_zero_rgb)
     return base
 
 
@@ -274,17 +296,17 @@ def _select_fgp_backend(preference: str) -> tuple[str, Callable[[Any, np.ndarray
     return "numpy", fgp_accumulate_numpy
 
 
-def fgp_accumulate(base: Any, fresh: np.ndarray, weight: Any = None) -> Any:
+def fgp_accumulate(base: Any, fresh: np.ndarray, weight: Any = None,
+                   skip_zero_rgb: bool = False) -> Any:
     int_weight = _validate_integer_weight(weight)
     if weight is not None and int_weight is None:
-        # 浮点权重等非整数权重暂时保留旧语义，避免在 fast path 里改变算法定义。
         return _python_fallback(base, np.asarray(fresh), weight)
     backend_name, backend = _select_fgp_backend(_fallback_preference())
     if backend_name == "compiled":
         sum_mu, _, _ = _validate_target(base)
         fresh_arr = _validate_fresh(sum_mu, fresh)
         _apply_compiled_threads("fgp_accumulate", fresh_arr)
-    return backend(base, fresh, int_weight)
+    return backend(base, fresh, int_weight, skip_zero_rgb=skip_zero_rgb)
 
 
 def fgp_add_numpy(base: Any, other: Any) -> Any:
@@ -490,12 +512,16 @@ def fgp_masked_mean_merge_numpy(
     sum_mu: np.ndarray,
     square_sum: np.ndarray,
     n: np.ndarray,
+    skip_zero_rgb: bool = False,
 ) -> None:
     sum_arr, square_arr, count_arr = _validate_buffers(
         sum_mu, square_sum, n, op_name="fgp_masked_mean_merge")
     fresh_arr = _validate_fresh(sum_arr, fresh, op_name="fgp_masked_mean_merge")
     mask_arr = _validate_spatial_mask(fresh_arr, mask, op_name="fgp_masked_mean_merge")
     active = _broadcast_mask(mask_arr, fresh_arr)
+    if skip_zero_rgb and fresh_arr.ndim >= 3 and fresh_arr.shape[-1] >= 3:
+        zero_mask = np.all(fresh_arr[..., :3] == 0, axis=-1, keepdims=True)
+        active = active & ~np.broadcast_to(zero_mask, fresh_arr.shape)
     sum_arr += np.multiply(fresh_arr, active, dtype=sum_arr.dtype)
     square_arr += np.multiply(
         np.square(fresh_arr, dtype=square_arr.dtype),
@@ -511,6 +537,7 @@ def fgp_masked_mean_merge_compiled(
     sum_mu: np.ndarray,
     square_sum: np.ndarray,
     n: np.ndarray,
+    skip_zero_rgb: bool = False,
 ) -> None:
     module, _ = _load_compiled_module_result()
     if module is None:
@@ -520,7 +547,8 @@ def fgp_masked_mean_merge_compiled(
     fresh_arr = _validate_fresh(sum_arr, fresh, op_name="fgp_masked_mean_merge")
     mask_arr = _validate_spatial_mask(fresh_arr, mask, op_name="fgp_masked_mean_merge")
     _apply_compiled_threads("fgp_masked_mean_merge", fresh_arr)
-    module.fgp_masked_mean_merge(sum_arr, square_arr, count_arr, fresh_arr, mask_arr)
+    module.fgp_masked_mean_merge(sum_arr, square_arr, count_arr, fresh_arr, mask_arr,
+                                 skip_zero_rgb)
 
 
 def fgp_masked_mean_merge(
@@ -529,17 +557,20 @@ def fgp_masked_mean_merge(
     sum_mu: np.ndarray,
     square_sum: np.ndarray,
     n: np.ndarray,
+    skip_zero_rgb: bool = False,
 ) -> None:
     available, compiled_error = _compiled_backend_available(
         "fgp_masked_mean_merge",
         _fallback_preference(),
     )
     if available:
-        fgp_masked_mean_merge_compiled(fresh, mask, sum_mu, square_sum, n)
+        fgp_masked_mean_merge_compiled(fresh, mask, sum_mu, square_sum, n,
+                                       skip_zero_rgb)
         return
     if compiled_error:
         _debug_log(f"compiled backend unavailable, reason: {compiled_error}")
-    fgp_masked_mean_merge_numpy(fresh, mask, sum_mu, square_sum, n)
+    fgp_masked_mean_merge_numpy(fresh, mask, sum_mu, square_sum, n,
+                                skip_zero_rgb)
 
 
 def sigma_clip_fused_merge_numpy(
@@ -549,6 +580,7 @@ def sigma_clip_fused_merge_numpy(
     sum_mu: np.ndarray,
     square_sum: np.ndarray,
     n: np.ndarray,
+    skip_zero_rgb: bool = False,
 ) -> None:
     sum_arr, square_arr, count_arr = _validate_buffers(
         sum_mu, square_sum, n, op_name="sigma_clip_fused_merge")
@@ -556,6 +588,9 @@ def sigma_clip_fused_merge_numpy(
     rej_high_arr, rej_low_arr = _validate_rejection_images(
         fresh_arr, rej_high_img, rej_low_img, op_name="sigma_clip_fused_merge")
     rejected = (fresh_arr < rej_low_arr) | (fresh_arr > rej_high_arr)
+    if skip_zero_rgb and fresh_arr.ndim >= 3 and fresh_arr.shape[-1] >= 3:
+        zero_mask = np.all(fresh_arr[..., :3] == 0, axis=-1, keepdims=True)
+        rejected = rejected & ~np.broadcast_to(zero_mask, fresh_arr.shape)
     sum_arr += np.multiply(fresh_arr, rejected, dtype=sum_arr.dtype)
     square_arr += np.multiply(
         np.square(fresh_arr, dtype=square_arr.dtype),
@@ -572,6 +607,7 @@ def sigma_clip_fused_merge_compiled(
     sum_mu: np.ndarray,
     square_sum: np.ndarray,
     n: np.ndarray,
+    skip_zero_rgb: bool = False,
 ) -> None:
     module, _ = _load_compiled_module_result()
     if module is None:
@@ -589,6 +625,7 @@ def sigma_clip_fused_merge_compiled(
         fresh_arr,
         rej_high_arr,
         rej_low_arr,
+        skip_zero_rgb,
     )
 
 
@@ -599,6 +636,7 @@ def sigma_clip_fused_merge(
     sum_mu: np.ndarray,
     square_sum: np.ndarray,
     n: np.ndarray,
+    skip_zero_rgb: bool = False,
 ) -> None:
     available, compiled_error = _compiled_backend_available(
         "sigma_clip_fused_merge",
@@ -606,12 +644,14 @@ def sigma_clip_fused_merge(
     )
     if available:
         sigma_clip_fused_merge_compiled(
-            fresh, rej_high_img, rej_low_img, sum_mu, square_sum, n)
+            fresh, rej_high_img, rej_low_img, sum_mu, square_sum, n,
+            skip_zero_rgb)
         return
     if compiled_error:
         _debug_log(f"compiled backend unavailable, reason: {compiled_error}")
     sigma_clip_fused_merge_numpy(
-        fresh, rej_high_img, rej_low_img, sum_mu, square_sum, n)
+        fresh, rej_high_img, rej_low_img, sum_mu, square_sum, n,
+        skip_zero_rgb)
 
 
 def sigma_clip_fused_masked_merge_numpy(
@@ -622,6 +662,7 @@ def sigma_clip_fused_masked_merge_numpy(
     sum_mu: np.ndarray,
     square_sum: np.ndarray,
     n: np.ndarray,
+    skip_zero_rgb: bool = False,
 ) -> None:
     sum_arr, square_arr, count_arr = _validate_buffers(
         sum_mu, square_sum, n, op_name="sigma_clip_fused_masked_merge")
@@ -635,6 +676,9 @@ def sigma_clip_fused_masked_merge_numpy(
         op_name="sigma_clip_fused_masked_merge",
     )
     active = _broadcast_mask(mask_arr, fresh_arr)
+    if skip_zero_rgb and fresh_arr.ndim >= 3 and fresh_arr.shape[-1] >= 3:
+        zero_mask = np.all(fresh_arr[..., :3] == 0, axis=-1, keepdims=True)
+        active = active & ~np.broadcast_to(zero_mask, fresh_arr.shape)
     rejected = active & ((fresh_arr < rej_low_arr) | (fresh_arr > rej_high_arr))
     sum_arr += np.multiply(fresh_arr, rejected, dtype=sum_arr.dtype)
     square_arr += np.multiply(
@@ -653,6 +697,7 @@ def sigma_clip_fused_masked_merge_compiled(
     sum_mu: np.ndarray,
     square_sum: np.ndarray,
     n: np.ndarray,
+    skip_zero_rgb: bool = False,
 ) -> None:
     module, _ = _load_compiled_module_result()
     if module is None:
@@ -677,6 +722,7 @@ def sigma_clip_fused_masked_merge_compiled(
         rej_high_arr,
         rej_low_arr,
         mask_arr,
+        skip_zero_rgb,
     )
 
 
@@ -688,6 +734,7 @@ def sigma_clip_fused_masked_merge(
     sum_mu: np.ndarray,
     square_sum: np.ndarray,
     n: np.ndarray,
+    skip_zero_rgb: bool = False,
 ) -> None:
     available, compiled_error = _compiled_backend_available(
         "sigma_clip_fused_masked_merge",
@@ -695,9 +742,11 @@ def sigma_clip_fused_masked_merge(
     )
     if available:
         sigma_clip_fused_masked_merge_compiled(
-            fresh, mask, rej_high_img, rej_low_img, sum_mu, square_sum, n)
+            fresh, mask, rej_high_img, rej_low_img, sum_mu, square_sum, n,
+            skip_zero_rgb)
         return
     if compiled_error:
         _debug_log(f"compiled backend unavailable, reason: {compiled_error}")
     sigma_clip_fused_masked_merge_numpy(
-        fresh, mask, rej_high_img, rej_low_img, sum_mu, square_sum, n)
+        fresh, mask, rej_high_img, rej_low_img, sum_mu, square_sum, n,
+        skip_zero_rgb)

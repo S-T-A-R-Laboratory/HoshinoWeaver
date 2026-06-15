@@ -62,13 +62,15 @@ class BaseMerger(metaclass=ABCMeta):
     def merge(self,
               new_img: np.ndarray,
               weight: Optional[Union[float, NDArray]] = None,
-              spatial_mask: Optional[np.ndarray] = None):
+              spatial_mask: Optional[np.ndarray] = None,
+              skip_zero_rgb: bool = False):
         """合并新图像到堆叠结果。
 
         Args:
             new_img: np.ndarray 图像。
             weight:  浮点权重 (0-1 范围)。Merger 根据 int_weight 开关
                      自动决定是否转为整型放缩权重。
+            skip_zero_rgb: 是否将 RGB 全零像素视为无效并跳过。
         """
         raw = new_img
         if self._source_dtype is None:
@@ -176,7 +178,8 @@ class MeanMerger(BaseMerger):
     def merge(self,
               new_img: np.ndarray,
               weight: Optional[Union[float, NDArray]] = None,
-              spatial_mask: Optional[np.ndarray] = None):
+              spatial_mask: Optional[np.ndarray] = None,
+              skip_zero_rgb: bool = False):
         raw = new_img
         if self._source_dtype is None:
             self._source_dtype = raw.dtype
@@ -191,7 +194,8 @@ class MeanMerger(BaseMerger):
             if current is None:
                 self.result = self._pre_process(raw, weight)
                 return
-            self.result = custom_fgp_accumulate(current, raw, weight)
+            self.result = custom_fgp_accumulate(current, raw, weight,
+                                               skip_zero_rgb=skip_zero_rgb)
             return
 
         if self._sum_mu is None:
@@ -206,7 +210,8 @@ class MeanMerger(BaseMerger):
                 raise NotImplementedError(
                     "spatial_mask + weight combination is not yet supported")
             custom_fgp_masked_mean_merge(raw, spatial_mask, self._sum_mu,
-                                         self._square_sum, self._n)
+                                         self._square_sum, self._n,
+                                         skip_zero_rgb=skip_zero_rgb)
 
     @property
     def result(self):
@@ -287,7 +292,8 @@ class SigmaClippingMerger(MeanMerger):
     def merge(self,
               new_img: np.ndarray,
               weight: Optional[Union[float, NDArray]] = None,
-              spatial_mask: Optional[np.ndarray] = None):
+              spatial_mask: Optional[np.ndarray] = None,
+              skip_zero_rgb: bool = False):
         raw = new_img
         if self._source_dtype is None:
             self._source_dtype = raw.dtype
@@ -310,6 +316,7 @@ class SigmaClippingMerger(MeanMerger):
                 self._sum_mu,
                 self._square_sum,
                 self._n,
+                skip_zero_rgb=skip_zero_rgb,
             )
         else:
             custom_sigma_clip_fused_merge(
@@ -319,6 +326,7 @@ class SigmaClippingMerger(MeanMerger):
                 self._sum_mu,
                 self._square_sum,
                 self._n,
+                skip_zero_rgb=skip_zero_rgb,
             )
 
 

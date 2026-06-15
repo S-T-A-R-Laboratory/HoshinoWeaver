@@ -27,6 +27,15 @@ namespace {
 #endif
 
 template <typename T>
+inline bool is_pixel_zero_rgb_chunk(const T* HNW_RESTRICT ptr,
+                                    ssize_t base, ssize_t channels) {
+    for (ssize_t c = 0; c < channels && c < 3; ++c) {
+        if (ptr[base + c] != static_cast<T>(0)) return false;
+    }
+    return true;
+}
+
+template <typename T>
 void sigma_clip_iterative_chunk_kernel(
     const T* HNW_RESTRICT stack,
     ssize_t n_frames,
@@ -40,7 +49,9 @@ void sigma_clip_iterative_chunk_kernel(
     const uint8_t* HNW_RESTRICT mask,  // NULL or (n_frames * plane_size)
     double* HNW_RESTRICT out_sum,
     double* HNW_RESTRICT out_sq,
-    double* HNW_RESTRICT out_n) {
+    double* HNW_RESTRICT out_n,
+    bool skip_zero_rgb = false,
+    ssize_t channels = 1) {
 
     // Working arrays
     std::vector<double> cur_sum(static_cast<size_t>(plane_size));
@@ -89,17 +100,38 @@ void sigma_clip_iterative_chunk_kernel(
             const T* HNW_RESTRICT frame_row = stack + f * plane_size;
             const uint8_t* HNW_RESTRICT mask_row =
                 mask ? mask + f * plane_size : nullptr;
+
+            if (skip_zero_rgb && channels >= 3) {
+                const ssize_t spatial = plane_size / channels;
+                for (ssize_t px = 0; px < spatial; ++px) {
+                    const ssize_t base = px * channels;
+                    if (is_pixel_zero_rgb_chunk(frame_row, base, channels))
+                        continue;
+                    for (ssize_t c = 0; c < channels; ++c) {
+                        const ssize_t idx = base + c;
+                        if (converged[idx]) continue;
+                        if (mask_row && !mask_row[idx]) continue;
+                        const double val = static_cast<double>(frame_row[idx]);
+                        if (val < low[idx] || val > high[idx]) {
+                            rej_sum[idx] += val;
+                            rej_sq[idx] += val * val;
+                            rej_n[idx] += 1.0;
+                        }
+                    }
+                }
+            } else {
 #if HNW_ENABLE_OMP_SIMD
 #pragma omp simd
 #endif
-            for (ssize_t idx = 0; idx < plane_size; ++idx) {
-                if (converged[idx]) continue;
-                if (mask_row && !mask_row[idx]) continue;
-                const double val = static_cast<double>(frame_row[idx]);
-                if (val < low[idx] || val > high[idx]) {
-                    rej_sum[idx] += val;
-                    rej_sq[idx] += val * val;
-                    rej_n[idx] += 1.0;
+                for (ssize_t idx = 0; idx < plane_size; ++idx) {
+                    if (converged[idx]) continue;
+                    if (mask_row && !mask_row[idx]) continue;
+                    const double val = static_cast<double>(frame_row[idx]);
+                    if (val < low[idx] || val > high[idx]) {
+                        rej_sum[idx] += val;
+                        rej_sq[idx] += val * val;
+                        rej_n[idx] += 1.0;
+                    }
                 }
             }
         }
@@ -143,7 +175,9 @@ py::tuple sigma_clip_iterative_chunk_dispatch(
     double rej_high,
     double rej_low,
     int max_iter,
-    const py::object& mask_obj) {
+    const py::object& mask_obj,
+    bool skip_zero_rgb,
+    ssize_t channels) {
 
     // Validate stack shape: must be 2D (n_frames, plane_size)
     if (stack.ndim() != 2) {
@@ -205,7 +239,8 @@ py::tuple sigma_clip_iterative_chunk_dispatch(
             mask_ptr,
             static_cast<double*>(out_sum_info.ptr),
             static_cast<double*>(out_sq_info.ptr),
-            static_cast<double*>(out_n_info.ptr));
+            static_cast<double*>(out_n_info.ptr),
+            skip_zero_rgb, channels);
     } else if (py::isinstance<py::array_t<uint16_t>>(stack)) {
         auto stack_arr = stack.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>();
         auto stack_info = stack_arr.request();
@@ -220,7 +255,8 @@ py::tuple sigma_clip_iterative_chunk_dispatch(
             mask_ptr,
             static_cast<double*>(out_sum_info.ptr),
             static_cast<double*>(out_sq_info.ptr),
-            static_cast<double*>(out_n_info.ptr));
+            static_cast<double*>(out_n_info.ptr),
+            skip_zero_rgb, channels);
     } else {
         throw std::invalid_argument(
             "sigma_clip_iterative_chunk: unsupported stack dtype; expected uint8/uint16");
@@ -242,7 +278,9 @@ void sigma_clip_fused_chunk_kernel(
     const uint8_t* HNW_RESTRICT mask,  // NULL or (n_frames * plane_size)
     double* HNW_RESTRICT out_sum,
     double* HNW_RESTRICT out_sq,
-    double* HNW_RESTRICT out_n) {
+    double* HNW_RESTRICT out_n,
+    bool skip_zero_rgb = false,
+    ssize_t channels = 1) {
 
     // Phase 1: Compute total FGP from stack (respecting mask)
     std::vector<double> total_sum(static_cast<size_t>(plane_size), 0.0);
@@ -253,15 +291,33 @@ void sigma_clip_fused_chunk_kernel(
         const T* HNW_RESTRICT frame_row = stack + f * plane_size;
         const uint8_t* HNW_RESTRICT mask_row =
             mask ? mask + f * plane_size : nullptr;
+
+        if (skip_zero_rgb && channels >= 3) {
+            const ssize_t spatial = plane_size / channels;
+            for (ssize_t px = 0; px < spatial; ++px) {
+                const ssize_t base = px * channels;
+                if (is_pixel_zero_rgb_chunk(frame_row, base, channels))
+                    continue;
+                for (ssize_t c = 0; c < channels; ++c) {
+                    const ssize_t idx = base + c;
+                    if (mask_row && !mask_row[idx]) continue;
+                    const double val = static_cast<double>(frame_row[idx]);
+                    total_sum[idx] += val;
+                    total_sq[idx] += val * val;
+                    total_n[idx] += 1.0;
+                }
+            }
+        } else {
 #if HNW_ENABLE_OMP_SIMD
 #pragma omp simd
 #endif
-        for (ssize_t idx = 0; idx < plane_size; ++idx) {
-            if (mask_row && !mask_row[idx]) continue;
-            const double val = static_cast<double>(frame_row[idx]);
-            total_sum[idx] += val;
-            total_sq[idx] += val * val;
-            total_n[idx] += 1.0;
+            for (ssize_t idx = 0; idx < plane_size; ++idx) {
+                if (mask_row && !mask_row[idx]) continue;
+                const double val = static_cast<double>(frame_row[idx]);
+                total_sum[idx] += val;
+                total_sq[idx] += val * val;
+                total_n[idx] += 1.0;
+            }
         }
     }
 
@@ -271,7 +327,8 @@ void sigma_clip_fused_chunk_kernel(
         total_sum.data(), total_sq.data(), total_n.data(),
         rej_high, rej_low, max_iter,
         mask,
-        out_sum, out_sq, out_n);
+        out_sum, out_sq, out_n,
+        skip_zero_rgb, channels);
 }
 
 py::tuple sigma_clip_fused_chunk_dispatch(
@@ -279,7 +336,9 @@ py::tuple sigma_clip_fused_chunk_dispatch(
     double rej_high,
     double rej_low,
     int max_iter,
-    const py::object& mask_obj) {
+    const py::object& mask_obj,
+    bool skip_zero_rgb,
+    ssize_t channels) {
 
     if (stack.ndim() != 2) {
         throw std::invalid_argument(
@@ -326,7 +385,8 @@ py::tuple sigma_clip_fused_chunk_dispatch(
             mask_ptr,
             static_cast<double*>(out_sum_info.ptr),
             static_cast<double*>(out_sq_info.ptr),
-            static_cast<double*>(out_n_info.ptr));
+            static_cast<double*>(out_n_info.ptr),
+            skip_zero_rgb, channels);
     } else if (py::isinstance<py::array_t<uint16_t>>(stack)) {
         auto stack_arr = stack.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>();
         auto stack_info = stack_arr.request();
@@ -338,7 +398,8 @@ py::tuple sigma_clip_fused_chunk_dispatch(
             mask_ptr,
             static_cast<double*>(out_sum_info.ptr),
             static_cast<double*>(out_sq_info.ptr),
-            static_cast<double*>(out_n_info.ptr));
+            static_cast<double*>(out_n_info.ptr),
+            skip_zero_rgb, channels);
     } else {
         throw std::invalid_argument(
             "sigma_clip_fused_chunk: unsupported stack dtype; expected uint8/uint16");
@@ -360,6 +421,8 @@ void bind_sigma_clip_chunk_ops(py::module_& m) {
           py::arg("rej_low"),
           py::arg("max_iter"),
           py::arg("mask") = py::none(),
+          py::arg("skip_zero_rgb") = false,
+          py::arg("channels") = static_cast<ssize_t>(1),
           "Iterative sigma clipping on a chunk stack. Returns (accepted_sum, accepted_sq, accepted_n).");
 
     m.def("sigma_clip_fused_chunk",
@@ -369,5 +432,7 @@ void bind_sigma_clip_chunk_ops(py::module_& m) {
           py::arg("rej_low"),
           py::arg("max_iter"),
           py::arg("mask") = py::none(),
+          py::arg("skip_zero_rgb") = false,
+          py::arg("channels") = static_cast<ssize_t>(1),
           "Fused mean + iterative sigma clipping on a chunk stack. Returns (accepted_sum, accepted_sq, accepted_n).");
 }
