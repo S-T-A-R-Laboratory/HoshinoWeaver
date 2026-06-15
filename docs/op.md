@@ -202,30 +202,6 @@ class BaseQueue:
 - get时自动删除缓存文件
 - 适用于大数据对象的传递
 
-### IPCQueue
-跨进程异步队列，继承 `BaseQueue`。用于多进程模式下不同进程的 Op 之间通信。
-
-**传输策略（分层）：**
-
-| 数据类型 | 传输方式 |
-|---------|---------|
-| `np.ndarray`（大于阈值） | `multiprocessing.shared_memory` 零拷贝 |
-| `ShmTransportable` 对象（如 `FloatImage`） | 主数组走 shm + 元数据走 pickle |
-| 其他对象（float、FGP 等） | `pickle` via `Pipe` |
-| 控制帧（sentinel / cancel） | 标记帧 via `Pipe` |
-
-**背压机制：** 双信号量（`mp.Semaphore`），与 `RichContextQueue(maxsize=N)` 语义一致。
-
-**SharedMemory 生命周期：** producer 创建 → 发送描述符 → consumer 读取 + unlink → `cleanup()` 安全网兜底。
-
-**ShmTransportable 基类：** 轻量包装类继承此 ABC 即可获得 SharedMemory 传输优化：
-```python
-class ShmTransportable(ABC):
-    def shm_nbytes(self) -> int: ...
-    def shm_pack_into(self, buf) -> bytes: ...
-    @classmethod
-    def shm_unpack_from(cls, buf, meta: bytes) -> Self: ...
-```
 
 ## 实现示例
 
@@ -298,7 +274,7 @@ class CancellationToken:
 ```
 
 ### 队列自动信号处理
-`BaseQueue.get()`（RichContextQueue 和 IPCQueue 均实现）会自动检测并处理信号：
+`BaseQueue.get()` 会自动检测并处理信号：
 - 遇到`_SENTINEL`：回填后抛出`StreamExhausted`（替代 PEP 479 禁止的 `StopIteration`）
 - 遇到`CancellationToken`：回填后抛出`CancellationError`
 
@@ -360,7 +336,6 @@ Main 进程:  TrackerEventConsumer.run()  →  tracker.update(name, 1)  →  tqd
 ### 跨进程取消
 
 - `cancel_event` 使用 `multiprocessing.Event`（跨平台），替代 `asyncio.Event`
-- `CancellationToken` 通过 IPCQueue 的控制帧传播（`("cancel", error_str, source_node)` 标记帧）
 - `_run_cpu` 的取消检查 `mp.Event.is_set()` 是线程安全的，直接兼容
 
 ## Meta YAML 路由预处理

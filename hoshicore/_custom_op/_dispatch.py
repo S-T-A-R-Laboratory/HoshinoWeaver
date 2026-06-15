@@ -9,6 +9,7 @@ from functools import lru_cache
 from typing import Any
 
 import numpy as np
+from loguru import logger
 
 from hoshicore._custom_op import thread_tuning
 
@@ -20,6 +21,7 @@ def debug_enabled() -> bool:
 def debug_log(module_name: str, message: str) -> None:
     if debug_enabled():
         print(f"[hoshicore._custom_op.{module_name}] {message}", file=sys.stderr)
+    logger.info(f"[hoshicore._custom_op.{module_name}] {message}")
 
 
 def fallback_preference() -> str:
