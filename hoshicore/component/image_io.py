@@ -102,7 +102,7 @@ def load_img(file_path: str) -> Optional[np.ndarray]:
                 img = raw.postprocess(
                     output_bps=16,
                     output_color=rawpy.rawpy.ColorSpace(4),
-                    use_camera_wb=True)  # type: ignore
+                    use_camera_wb=True, no_auto_bright=True)  # type: ignore
             # switch RGB to BGR
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         return img
