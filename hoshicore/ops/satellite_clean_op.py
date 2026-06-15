@@ -33,6 +33,7 @@ class SatelliteCleanOp(BaseOp):
     """
 
     EXECUTOR = "cpu"
+    REPORTS_PROGRESS = True
     INPUTS: dict[str, Any] = {
         "data": {"type": "sequence", "required": True},
     }
@@ -69,7 +70,7 @@ class SatelliteCleanOp(BaseOp):
         half_W = (W - 1) // 2
         
         if tot_num is not None:
-            self.tracker.create_bar(self.name, tot_num)
+            self.tracker.create_bar(self.name, tot_num, desc=self.display_name)
 
         buffer: deque[_FrameSlot] = deque()
         output_count = 0

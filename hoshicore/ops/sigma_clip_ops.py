@@ -61,6 +61,7 @@ class DiskBufferWriterOp(BaseOp):
 
     EXECUTOR = "cpu"
     IS_DISK_BUFFER = True  # 段检测标记：识别为磁盘缓冲终端
+    REPORTS_PROGRESS = True
     INPUTS: dict[str, dict[str, Any]] = {
         "data": {
             "type": "sequence",
@@ -135,7 +136,7 @@ class DiskBufferWriterOp(BaseOp):
         if tot_num is not None:
             self.tracker.create_bar(self.name,
                                 tot_num,
-                                desc=f"{self.name} [{mode_label}]")
+                                desc=f"{self.display_name} [{mode_label}]")
         try:
             for i in self._input_range():
                 cur_filename = f"the {i + 1}-th frame"
@@ -734,6 +735,7 @@ class MedianReduceOp(BaseOp):
     EXECUTOR = "cpu"
     BUFFER_ITERATOR = True     # 段检测标记：消费 buffer
     CHUNK_PLANNED = True
+    REPORTS_PROGRESS = True
     ITERATOR_TYPE = "median"   # 不可分布式，Collector 需特殊处理
     CONFIGS: dict[str, dict[str, Any]] = {
         "buffer_handle": {
@@ -784,7 +786,7 @@ class MedianReduceOp(BaseOp):
         n_chunks = (h + chunk_rows - 1) // chunk_rows
 
         self.tracker.create_bar(self.name, n_chunks,
-                                desc=f"{self.name} [Median]", unit="chunks")
+                                desc=f"{self.display_name} [Median]", unit="chunks")
 
         try:
             for chunk_idx in range(n_chunks):
@@ -845,6 +847,7 @@ class ThresholdMaxIteratorOp(BaseOp):
 
     EXECUTOR = "cpu"
     BUFFER_ITERATOR = True
+    REPORTS_PROGRESS = True
     ITERATOR_TYPE = "threshold_max"
     CONFIGS: dict[str, dict[str, Any]] = {
         "fgp_total": {
@@ -897,7 +900,7 @@ class ThresholdMaxIteratorOp(BaseOp):
 
             self.tracker.create_bar(
                 self.name, n_frames,
-                desc=f"{self.name} [ThresholdMax]")
+                desc=f"{self.display_name} [ThresholdMax]")
 
             async for raw, weight in frame_buffer.iter_prefetch():
                 frame = raw.astype(np.float64)

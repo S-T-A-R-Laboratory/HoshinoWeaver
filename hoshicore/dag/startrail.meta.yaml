@@ -100,6 +100,7 @@ nodes:
 
   core_algo:
     route_key: mode
+    label: "星轨叠加"
     inputs:
       data: star_shrink.result
       weight: weight_generator.result

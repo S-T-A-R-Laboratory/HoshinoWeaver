@@ -47,6 +47,7 @@ class TrailStackerOp(BaseOp):
     }
     MERGER = MaxMerger
     MAX_SIZE: int = 1
+    REPORTS_PROGRESS = True
 
     @classmethod
     def estimate_resources(cls, configs, frame_bytes, n_frames,
@@ -76,7 +77,7 @@ class TrailStackerOp(BaseOp):
         err_msg_collector = []
 
         if tot_num is not None:
-            self.tracker.create_bar(self.name, tot_num)
+            self.tracker.create_bar(self.name, tot_num, desc=self.display_name)
 
         try:
             for i in self._input_range():

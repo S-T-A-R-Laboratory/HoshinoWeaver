@@ -220,6 +220,9 @@ def instantiate_and_wire(
                 f"Op '{op_name}' (node '{node_name}') not found in registry. "
                 f"Available: {sorted(registry.keys())}")
         instances[node_name] = registry[op_name](name=node_name)
+        label = nodes_spec[node_name].get("label")
+        if label:
+            instances[node_name].display_name = label
         logger.debug(
             f"Instantiated '{node_name}' → {registry[op_name].__name__}")
 
@@ -426,14 +429,15 @@ async def run_dag(
                                                        global_configs,
                                                        op_registry)
 
-    # 注入进度追踪器
-    if tracker is not None:
+    # 注入进度追踪器：仅限速节点获得真实 tracker，其余保留 DummyTracker
+    real_tracker = tracker if tracker is not None else (
+        ProgressTracker() if progress else None)
+    if real_tracker is not None:
+        selected = _select_reporting_nodes(dag, ops)
         for op in ops:
-            op.tracker = tracker
-    elif progress:
-        tracker = ProgressTracker()
-        for op in ops:
-            op.tracker = tracker
+            if op.name in selected:
+                op.tracker = real_tracker
+        tracker = real_tracker  # 供 finally 调用 close_all
 
     executor = DAGExecutor(ops)
 
@@ -628,6 +632,27 @@ def _spec_needs_meta_resolve(spec: dict[str, Any]) -> bool:
             if isinstance(ns, dict) and ("route_key" in ns or "enable" in ns):
                 return True
     return False
+
+
+def _select_reporting_nodes(
+    dag: ValidatedDag,
+    ops: list[BaseOp],
+) -> set[str]:
+    """计算应上报进度的节点集合（限速节点）。
+
+    1. 优先取所有 REPORTS_PROGRESS=True 的节点。
+    2. 若无带标志节点（纯 map 管线），回退为 output_links 引用的 provider 节点。
+    """
+    by_flag = {op.name for op in ops if getattr(op, "REPORTS_PROGRESS", False)}
+    if by_flag:
+        return by_flag
+
+    sinks: set[str] = set()
+    for link in dag.output_links.values():
+        parsed = _parse_link(link)
+        if parsed[0] == "node":
+            sinks.add(parsed[1])
+    return sinks
 
 
 def _resolve_configs(

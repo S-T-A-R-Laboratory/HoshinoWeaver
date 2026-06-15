@@ -326,7 +326,7 @@ class QtSignalTracker(DummyTracker, QObject):
 
     def _emit(self):
         pct = min(int(self._completed_items / self._total_items * 100), 99) if self._total_items > 0 else 0
-        active = next((b['desc'] for b in self._bars.values() if b['progress'] < b['total']), "")
+        active = next((f"正在执行：{b['desc']}" for b in self._bars.values() if b['progress'] < b['total']), "")
         self.progress_updated.emit(pct, active)
 
 class uQDialog(QDialog):

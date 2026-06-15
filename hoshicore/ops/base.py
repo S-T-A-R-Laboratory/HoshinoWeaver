@@ -20,6 +20,7 @@ class BaseOp(object):
     OUTPUTS: dict[str, Any] = {}
     MAX_SIZE: int = 1
     VARIABLE_OUTPUT: bool = False  # True 时标记为变长输出（Filter 类）
+    REPORTS_PROGRESS: bool = False  # True 时该 Op 被视为限速节点，注入真实 tracker
     CHUNK_PLANNED: bool = False  # True 时 chunk_rows 由 runtime planner 管理
 
     @classmethod
@@ -68,6 +69,7 @@ class BaseOp(object):
         }
         self.length: Optional[int] = None
         self.name = name
+        self.display_name = name  # 进度条展示名；wiring 从节点 spec 的 label 覆盖
         self.tracker = DummyTracker()
         self._cancel_event: Optional[
             Any] = None  # asyncio.Event 或 mp.Event，由 wiring 注入
@@ -252,7 +254,7 @@ class ParallelBaseOp(BaseOp):
     async def _execute_serial(self, configs: dict[str, Any]) -> None:
         """串行执行（支持定长和 sentinel 驱动两种模式）"""
         if self.length is not None:
-            self.tracker.create_bar(self.name, self.length)
+            self.tracker.create_bar(self.name, self.length, desc=self.display_name)
         for i in self._input_range():
             data = self._async_convert_inputs()
             try:
@@ -264,9 +266,9 @@ class ParallelBaseOp(BaseOp):
                     if hasattr(awaitable, 'close'):
                         awaitable.close()
                 break
+            await self._broadcast_outputs(result)
             if self.length is not None:
                 self.tracker.update(self.name)
-            await self._broadcast_outputs(result)
         if self.length is not None:
             self.tracker.close_bar(self.name)
 
@@ -280,7 +282,7 @@ class ParallelBaseOp(BaseOp):
         但所有主流 CPython 版本均如此。
         """
         if self.length is not None:
-            self.tracker.create_bar(self.name, self.length)
+            self.tracker.create_bar(self.name, self.length, desc=self.display_name)
 
         _STOP = object()
         pending: dict[int, Any] = {}
@@ -371,6 +373,7 @@ class ChunkIteratorBaseOp(BaseOp):
     （chunk 内所有 pass 复用 OS page cache）。
     """
     BUFFER_ITERATOR = True
+    REPORTS_PROGRESS = True  # Chunk 类为限速节点
     CHUNK_PLANNED = True
     CHUNK_ROWS: int = 256
     CHUNK_OVERLAP: int = 0
@@ -399,7 +402,8 @@ class ChunkIteratorBaseOp(BaseOp):
                 for cidx in range(n_chunks)
             ]
 
-            self.tracker.create_bar(self.name, n_chunks, unit="chunks")
+            self.tracker.create_bar(self.name, n_chunks, unit="chunks",
+                                    desc=self.display_name)
             chunk_idx = 0
             async for chunk_stack in frame_buffer.iter_chunk_prefetch(row_ranges):
                 row_start, row_end = row_ranges[chunk_idx]

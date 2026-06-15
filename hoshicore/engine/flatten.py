@@ -315,6 +315,13 @@ def _expand_one_sub_dag(
         if "outputs" in child_spec:
             new_spec["outputs"] = copy.deepcopy(child_spec["outputs"])
 
+        # 保留/继承 label：子节点自身 label 优先，否则继承父引用节点的 label
+        child_label = child_spec.get("label")
+        if child_label is None:
+            child_label = parent_node_spec.get("label")
+        if child_label is not None:
+            new_spec["label"] = child_label
+
         expanded_nodes[prefixed_name] = new_spec
 
     # ── 6) 重写父图中引用此 SubDAG 输出的所有消费者 ──

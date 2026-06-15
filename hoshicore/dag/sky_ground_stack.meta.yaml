@@ -164,6 +164,7 @@ nodes:
   sky_stacker:
     op: stacker.meta.yaml # fixed-op；route_key 选择 route_configs 分支
     route_key: sky_stacker
+    label: "天空叠加"
     routes:
       stacker: routes.sky_stacker # 透传父图选择到子图 stacker route
     inputs:
@@ -193,6 +194,7 @@ nodes:
     op: stacker.meta.yaml # fixed-op；route_key 选择 route_configs 分支
     enable: configs.enable_ground
     route_key: ground_stacker
+    label: "地景叠加"
     routes:
       stacker: routes.ground_stacker # 透传父图选择到子图 stacker route
     inputs:

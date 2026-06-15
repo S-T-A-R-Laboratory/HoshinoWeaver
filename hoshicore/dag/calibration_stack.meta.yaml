@@ -106,6 +106,7 @@ nodes:
   # ── Bias master ──
   bias_stacker:
     route_key: bias_stacker
+    label: "偏置叠加"
     route_inputs:
       mean:   { data: inputs.bias_fnames }
       median: { data: inputs.bias_fnames }
@@ -128,6 +129,7 @@ nodes:
   # ── Dark master ──
   dark_stacker:
     route_key: dark_stacker
+    label: "暗场叠加"
     route_inputs:
       mean:   { data: inputs.dark_fnames }
       median: { data: inputs.dark_fnames }
@@ -150,6 +152,7 @@ nodes:
   # ── Flat master ──
   flat_stacker:
     route_key: flat_stacker
+    label: "平场叠加"
     route_inputs:
       mean:   { data: inputs.flat_fnames }
       median: { data: inputs.flat_fnames }
@@ -181,6 +184,7 @@ nodes:
   # ── 主堆栈 ──
   main_stacker:
     route_key: main_stacker
+    label: "主帧叠加"
     inputs:
       data: flat_divide.result
     route_configs:
