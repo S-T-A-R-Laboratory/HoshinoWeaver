@@ -1,3 +1,4 @@
+*.py text eol=lf
 ui/resource.py filter=lfs diff=lfs merge=lfs -text
 docs/manual/src/gui_demo_1.jpg filter=lfs diff=lfs merge=lfs -text
 docs/manual/src/mask_fig_1.jpg filter=lfs diff=lfs merge=lfs -text
