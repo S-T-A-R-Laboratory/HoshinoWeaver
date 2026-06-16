@@ -123,14 +123,20 @@ class BaseFrameBuffer:
             chunk_weight = weight
         return chunk_frame, chunk_weight
 
+    # chunk 数据量低于此阈值时使用串行加载（避免线程调度开销 > IO 并行收益）
+    _PARALLEL_LOAD_THRESHOLD = 32 * 1024 * 1024  # 32 MB
+    # 并行加载并发数上限（避免与 OpenMP kernel 争抢内存带宽）
+    _PARALLEL_LOAD_WORKERS = 4
+
     async def iter_chunk_prefetch(
         self,
         row_ranges: list[tuple[int, int]],
     ) -> AsyncIterator[list[tuple[np.ndarray, Optional[Union[float, np.ndarray]]]]]:
         """异步预读迭代器（chunk 级别）：将下一 chunk 的 IO 与当前 chunk 的计算重叠。
 
-        对每个 (row_start, row_end) 区间，并行加载所有帧的行切片，
-        使下一 chunk 的磁盘读取与当前 chunk 的 CPU 计算同时进行。
+        对每个 (row_start, row_end) 区间，加载所有帧的行切片。
+        当 chunk 数据量 > 32 MB 且为磁盘型 buffer 时，使用线程并发加载帧；
+        否则使用单线程串行加载（开销更低）。
 
         用法::
 
@@ -148,12 +154,44 @@ class BaseFrameBuffer:
             return
         n_frames = len(self)
 
-        def _load_chunk(row_start: int, row_end: int):
-            return [self.get_rows(i, row_start, row_end) for i in range(n_frames)]
+        # 估算单 chunk 数据量，决定加载策略
+        sample_rs, sample_re = row_ranges[0]
+        sample_frame, sample_weight = self.get_rows(0, sample_rs, sample_re)
+        per_frame_bytes = sample_frame.nbytes
+        if isinstance(sample_weight, np.ndarray):
+            per_frame_bytes += sample_weight.nbytes
+        chunk_bytes = n_frames * per_frame_bytes
+        del sample_frame, sample_weight
+
+        use_parallel = (
+            chunk_bytes > self._PARALLEL_LOAD_THRESHOLD
+            and not isinstance(self, MemoryFrameBuffer)
+        )
+
+        if use_parallel:
+            sem = asyncio.Semaphore(self._PARALLEL_LOAD_WORKERS)
+
+            async def _load_one(idx: int, rs: int, re: int):
+                async with sem:
+                    return await asyncio.to_thread(self.get_rows, idx, rs, re)
+
+            async def _load_chunk_parallel(rs: int, re: int):
+                tasks = [_load_one(i, rs, re) for i in range(n_frames)]
+                return list(await asyncio.gather(*tasks))
+
+            _load_chunk_coro = _load_chunk_parallel
+        else:
+            def _load_chunk_serial(rs: int, re: int):
+                return [self.get_rows(i, rs, re) for i in range(n_frames)]
+
+            async def _load_chunk_threaded(rs: int, re: int):
+                return await asyncio.to_thread(_load_chunk_serial, rs, re)
+
+            _load_chunk_coro = _load_chunk_threaded
 
         rs, re = row_ranges[0]
         prefetch_task: asyncio.Task = asyncio.create_task(
-            asyncio.to_thread(_load_chunk, rs, re)
+            _load_chunk_coro(rs, re)
         )
 
         for i, (rs, re) in enumerate(row_ranges):
@@ -161,7 +199,7 @@ class BaseFrameBuffer:
             if next_i < len(row_ranges):
                 next_rs, next_re = row_ranges[next_i]
                 next_task: asyncio.Task = asyncio.create_task(
-                    asyncio.to_thread(_load_chunk, next_rs, next_re)
+                    _load_chunk_coro(next_rs, next_re)
                 )
             else:
                 next_task = None
