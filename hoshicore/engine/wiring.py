@@ -437,6 +437,7 @@ async def run_dag(
         for op in ops:
             if op.name in selected:
                 op.tracker = real_tracker
+                real_tracker.pre_register(op.name)
         tracker = real_tracker  # 供 finally 调用 close_all
 
     executor = DAGExecutor(ops)
