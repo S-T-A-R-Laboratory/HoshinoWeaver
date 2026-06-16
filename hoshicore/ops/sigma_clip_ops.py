@@ -721,11 +721,10 @@ class HuberMeanIteratorOp(ChunkIteratorBaseOp):
 
 
 @register_op()
-class MedianReduceOp(BaseOp):
+class MedianReduceOp(ChunkIteratorBaseOp):
     """中位数堆栈：从磁盘缓冲帧中计算逐像素中位数。
 
-    按空间分块（chunk_rows 行）处理以控制内存峰值。
-    对每个块加载所有帧的对应行范围，沿帧轴取 median。
+    使用 ChunkIteratorBaseOp 单 pass 模式。
 
     输入 buffer_handle 来自 DiskBufferWriterOp。
 
@@ -733,10 +732,8 @@ class MedianReduceOp(BaseOp):
     """
 
     EXECUTOR = "cpu"
-    BUFFER_ITERATOR = True     # 段检测标记：消费 buffer
-    CHUNK_PLANNED = True
-    REPORTS_PROGRESS = True
-    ITERATOR_TYPE = "median"   # 不可分布式，Collector 需特殊处理
+    ITERATOR_TYPE = "median"
+    CHUNK_ROWS = 32
     CONFIGS: dict[str, dict[str, Any]] = {
         "buffer_handle": {
             "type": "image",
@@ -753,80 +750,39 @@ class MedianReduceOp(BaseOp):
         },
     }
 
-    @staticmethod
-    def _reduce_chunk(stack: np.ndarray) -> np.ndarray:
-        return custom_median_reduce_chunk(stack)
-
     @classmethod
     def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
         _ = dtype_bytes
         return (n_frames + 1) * row_bytes
 
-    async def _async_execute(self, configs: dict[str, Any]) -> None:
-        frame_buffer: DiskFrameBuffer = configs['buffer_handle']
-        chunk_rows: int = configs['chunk_rows']
-        n_frames = len(frame_buffer)
+    def _init_chunk_state(self, configs, row_start, row_end, w):
+        return {'result': None}
 
-        if n_frames == 0:
-            raise ValueError(f"{self.name}: buffer is empty, nothing to stack.")
+    def _max_passes(self, configs):
+        return 1
 
-        # 读取第一帧获取尺寸信息
+    def _run_pass(self, state, chunk_stack):
+        n_frames = len(chunk_stack)
+        first_data = chunk_stack[0][0]
+        stack = np.empty((n_frames, *first_data.shape), dtype=first_data.dtype)
+        for f, (chunk_data, _) in enumerate(chunk_stack):
+            stack[f] = chunk_data
+        state['result'] = custom_median_reduce_chunk(stack)
+
+    def _check_convergence(self, state, pass_idx):
+        return True
+
+    def _finalize_chunk(self, state):
+        return state['result']
+
+    def _wrap_output(self, result, configs):
+        frame_buffer = configs['buffer_handle']
         first_frame, _ = frame_buffer[0]
-        h, w = first_frame.shape[:2]
-        channels = first_frame.shape[2] if first_frame.ndim == 3 else 1
         source_dtype = first_frame.dtype
-
-        logger.info(
-            f"{self.name}: computing median of {n_frames} frames "
-            f"({h}x{w}x{channels}, dtype={source_dtype}), "
-            f"chunk_rows={chunk_rows}")
-
-        # 按行分块计算中位数
-        result_chunks = []
-        n_chunks = (h + chunk_rows - 1) // chunk_rows
-
-        self.tracker.create_bar(self.name, n_chunks,
-                                desc=f"{self.display_name} [Median]", unit="chunks")
-
-        try:
-            for chunk_idx in range(n_chunks):
-                row_start = chunk_idx * chunk_rows
-                row_end = min(row_start + chunk_rows, h)
-                actual_rows = row_end - row_start
-
-                # 加载所有帧的对应行范围
-                if first_frame.ndim == 3:
-                    stack = np.empty(
-                        (n_frames, actual_rows, w, channels),
-                        dtype=source_dtype)
-                else:
-                    stack = np.empty(
-                        (n_frames, actual_rows, w), dtype=source_dtype)
-
-                for frame_idx in range(n_frames):
-                    frame_data, _ = frame_buffer.get_rows(
-                        frame_idx, row_start, row_end)
-                    stack[frame_idx] = frame_data
-
-                # 沿帧轴取中位数
-                chunk_median = await self._run_cpu(self._reduce_chunk, stack)
-                result_chunks.append(chunk_median)
-                self.tracker.update(self.name)
-
-            # 拼接所有块
-            result_array = np.concatenate(result_chunks, axis=0)
-
-            result = FloatImage(data=result_array, dtype=source_dtype)
-            await self._broadcast_outputs({"result": result})
-
-            logger.info(f"{self.name}: median stacking complete.")
-
-        except Exception as e:
-            logger.error(f"{self.name} failed: {e}")
-            raise
-        finally:
-            self.tracker.close_bar(self.name)
-            frame_buffer.cleanup()
+        del first_frame
+        result_img = FloatImage(data=result, dtype=source_dtype)
+        logger.info(f"{self.name}: median stacking complete.")
+        return {"result": result_img}
 
 
 @register_op()
