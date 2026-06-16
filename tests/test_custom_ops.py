@@ -1030,6 +1030,47 @@ class TestCustomOpsFallback(unittest.TestCase):
         self.assertEqual(c_n[1], 19.0)
         self.assertEqual(c_n[2], 19.0)
 
+    def test_sigma_clip_chunk_skip_zero_rgb_matches_numpy(self) -> None:
+        """Chunk kernel skips RGB all-zero pixels consistently with numpy."""
+        rng = np.random.default_rng(123)
+        n_frames = 12
+        spatial = 17
+        channels = 3
+        plane_size = spatial * channels
+        stack = rng.integers(
+            90, 120, size=(n_frames, plane_size), dtype=np.uint16)
+        stack[:, 6:9] = 0
+        stack[4, 12:15] = 0
+        stack[3, 25] = 900
+
+        mask = (rng.random((n_frames, plane_size)) > 0.2).astype(np.uint8)
+        stack_f64 = stack.astype(np.float64)
+        active = mask.astype(bool)
+        zero_pixels = np.all(
+            stack.reshape(n_frames, spatial, channels)[..., :3] == 0,
+            axis=-1,
+        )
+        zero_flat = np.broadcast_to(
+            zero_pixels[..., None], (n_frames, spatial, channels)
+        ).reshape(n_frames, plane_size)
+        active &= ~zero_flat
+        active_f64 = active.astype(np.float64)
+        total_sum = (stack_f64 * active_f64).sum(axis=0)
+        total_sq = (stack_f64 ** 2 * active_f64).sum(axis=0)
+        total_n = active_f64.sum(axis=0)
+
+        c_sum, c_sq, c_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5,
+            mask=mask, skip_zero_rgb=True, channels=channels)
+        n_sum, n_sq, n_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk_numpy(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5,
+            mask=mask, skip_zero_rgb=True, channels=channels)
+
+        np.testing.assert_array_equal(c_n, n_n)
+        np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
+        np.testing.assert_allclose(c_sq, n_sq, rtol=1e-10)
+        np.testing.assert_array_equal(c_n[6:9], np.zeros(3))
+
     def test_sigma_clip_fused_chunk_with_mask(self) -> None:
         """Fused chunk kernel respects mask."""
         np.random.seed(654)
@@ -1050,6 +1091,32 @@ class TestCustomOpsFallback(unittest.TestCase):
         np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
         self.assertEqual(c_n[8], 0.0)
         self.assertLess(c_n[4], 25.0)
+
+    def test_sigma_clip_fused_chunk_skip_zero_rgb_matches_numpy(self) -> None:
+        """Fused chunk kernel excludes RGB all-zero pixels in total stats."""
+        rng = np.random.default_rng(456)
+        n_frames = 14
+        spatial = 19
+        channels = 3
+        plane_size = spatial * channels
+        stack = rng.integers(
+            80, 130, size=(n_frames, plane_size), dtype=np.uint16)
+        stack[:, 9:12] = 0
+        stack[2, 30:33] = 0
+        stack[5, 44] = 700
+        mask = (rng.random((n_frames, plane_size)) > 0.15).astype(np.uint8)
+
+        c_sum, c_sq, c_n = sigma_clip_chunk_ops.sigma_clip_fused_chunk(
+            stack, 3.0, 3.0, 5, mask=mask,
+            skip_zero_rgb=True, channels=channels)
+        n_sum, n_sq, n_n = sigma_clip_chunk_ops.sigma_clip_fused_chunk_numpy(
+            stack, 3.0, 3.0, 5, mask=mask,
+            skip_zero_rgb=True, channels=channels)
+
+        np.testing.assert_array_equal(c_n, n_n)
+        np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
+        np.testing.assert_allclose(c_sq, n_sq, rtol=1e-10)
+        np.testing.assert_array_equal(c_n[9:12], np.zeros(3))
 
 
 if __name__ == "__main__":

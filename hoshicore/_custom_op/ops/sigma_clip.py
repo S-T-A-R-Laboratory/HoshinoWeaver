@@ -243,16 +243,33 @@ def sigma_clip_fused_chunk_numpy(
     n_frames, plane_size = stack.shape
     stack_f64 = stack.astype(np.float64)
 
-    # Compute masked totals
+    # Compute masked totals. RGB 全零像素与 C++ 路径一致，作为无效样本排除。
+    zero_frame_mask = None
+    if skip_zero_rgb and channels >= 3:
+        spatial = plane_size // channels
+        stack_3d = stack.reshape(n_frames, spatial, channels)
+        pixel_zero = np.all(stack_3d[..., :3] == 0, axis=-1)
+        zero_frame_mask = np.broadcast_to(
+            pixel_zero[..., np.newaxis], (n_frames, spatial, channels)
+        ).reshape(n_frames, plane_size)
+
     if mask is not None:
         mask = np.ascontiguousarray(mask, dtype=np.uint8)
         if mask.ndim != 2 or mask.shape[0] != n_frames or mask.shape[1] != plane_size:
             raise ValueError(
                 "sigma_clip_fused_chunk: mask must have shape (n_frames, plane_size)")
-        mask_f64 = mask.astype(np.float64)
-        total_sum = (stack_f64 * mask_f64).sum(axis=0)
-        total_sq = (stack_f64 ** 2 * mask_f64).sum(axis=0)
-        total_n = mask_f64.sum(axis=0)
+        active = mask.astype(np.bool_)
+    else:
+        active = None
+
+    if zero_frame_mask is not None:
+        active = ~zero_frame_mask if active is None else active & ~zero_frame_mask
+
+    if active is not None:
+        active_f64 = active.astype(np.float64)
+        total_sum = (stack_f64 * active_f64).sum(axis=0)
+        total_sq = (stack_f64 ** 2 * active_f64).sum(axis=0)
+        total_n = active_f64.sum(axis=0)
     else:
         total_sum = stack_f64.sum(axis=0)
         total_sq = (stack_f64 ** 2).sum(axis=0)

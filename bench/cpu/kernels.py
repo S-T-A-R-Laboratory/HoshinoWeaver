@@ -511,6 +511,24 @@ def bench_sigma_clip_chunk_backend(
     _ = fn(stack_2d, total_sum, total_sq, total_n, 3.0, 3.0, 5)
 
 
+def bench_sigma_clip_chunk_full_backend(
+    stack_2d: np.ndarray,
+    *,
+    backend: str,
+) -> None:
+    stack_f64 = stack_2d.astype(np.float64)
+    total_sum = stack_f64.sum(axis=0)
+    total_sq = (stack_f64 ** 2).sum(axis=0)
+    total_n = np.full(stack_2d.shape[1], float(stack_2d.shape[0]))
+    bench_sigma_clip_chunk_backend(
+        stack_2d,
+        total_sum,
+        total_sq,
+        total_n,
+        backend=backend,
+    )
+
+
 def bench_sigma_clip_fused_chunk_backend(
     stack_2d: np.ndarray,
     *,
@@ -674,6 +692,22 @@ def main() -> None:
         ),
         "sigma_clip_chunk_compiled": lambda: bench_sigma_clip_chunk_backend(
             sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n,
+            backend="compiled",
+        ),
+        "sigma_clip_iterative_chunk_numpy": lambda: bench_sigma_clip_chunk_backend(
+            sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n,
+            backend="numpy",
+        ),
+        "sigma_clip_iterative_chunk_compiled": lambda: bench_sigma_clip_chunk_backend(
+            sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n,
+            backend="compiled",
+        ),
+        "sigma_clip_chunk_full_numpy": lambda: bench_sigma_clip_chunk_full_backend(
+            sc_chunk_stack,
+            backend="numpy",
+        ),
+        "sigma_clip_chunk_full_compiled": lambda: bench_sigma_clip_chunk_full_backend(
+            sc_chunk_stack,
             backend="compiled",
         ),
         "sigma_clip_fused_chunk_numpy": lambda: bench_sigma_clip_fused_chunk_backend(

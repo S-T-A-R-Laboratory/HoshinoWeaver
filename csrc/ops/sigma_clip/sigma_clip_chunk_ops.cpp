@@ -71,9 +71,12 @@ void sigma_clip_iterative_chunk_kernel(
     constexpr double dtype_max = static_cast<double>(std::numeric_limits<T>::max());
 
     for (int iter = 0; iter < max_iter; ++iter) {
-        // 1. Compute thresholds from current accepted stats
-#if HNW_ENABLE_OMP_SIMD
-#pragma omp simd
+        // 1. Compute thresholds from current accepted stats.
+        // 每个 idx 独立，按像素并行不会产生写冲突。
+#if defined(_OPENMP) && HNW_ENABLE_OMP_SIMD
+#pragma omp parallel for simd schedule(static)
+#elif defined(_OPENMP)
+#pragma omp parallel for schedule(static)
 #endif
         for (ssize_t idx = 0; idx < plane_size; ++idx) {
             if (converged[idx]) continue;
@@ -95,18 +98,23 @@ void sigma_clip_iterative_chunk_kernel(
         std::vector<double> rej_sq(static_cast<size_t>(plane_size), 0.0);
         std::vector<double> rej_n(static_cast<size_t>(plane_size), 0.0);
 
-        // 3. Scan all frames (inner pixel loop is contiguous — SIMD friendly)
-        for (ssize_t f = 0; f < n_frames; ++f) {
-            const T* HNW_RESTRICT frame_row = stack + f * plane_size;
-            const uint8_t* HNW_RESTRICT mask_row =
-                mask ? mask + f * plane_size : nullptr;
-
-            if (skip_zero_rgb && channels >= 3) {
-                const ssize_t spatial = plane_size / channels;
-                for (ssize_t px = 0; px < spatial; ++px) {
-                    const ssize_t base = px * channels;
+        // 3. Scan all frames. 按输出像素分片，每个线程只写自己的 rej_* 区间。
+        if (skip_zero_rgb && channels >= 3) {
+            const ssize_t spatial = plane_size / channels;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+            for (ssize_t px = 0; px < spatial; ++px) {
+                const ssize_t base = px * channels;
+                for (ssize_t f = 0; f < n_frames; ++f) {
+                    const T* HNW_RESTRICT frame_row = stack + f * plane_size;
+                    const uint8_t* HNW_RESTRICT mask_row =
+                        mask ? mask + f * plane_size : nullptr;
                     if (is_pixel_zero_rgb_chunk(frame_row, base, channels))
                         continue;
+#if defined(HNW_ENABLE_OMP_SIMD) && HNW_ENABLE_OMP_SIMD
+#pragma omp simd
+#endif
                     for (ssize_t c = 0; c < channels; ++c) {
                         const ssize_t idx = base + c;
                         if (converged[idx]) continue;
@@ -119,12 +127,17 @@ void sigma_clip_iterative_chunk_kernel(
                         }
                     }
                 }
-            } else {
-#if HNW_ENABLE_OMP_SIMD
-#pragma omp simd
+            }
+        } else {
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
 #endif
-                for (ssize_t idx = 0; idx < plane_size; ++idx) {
-                    if (converged[idx]) continue;
+            for (ssize_t idx = 0; idx < plane_size; ++idx) {
+                if (converged[idx]) continue;
+                for (ssize_t f = 0; f < n_frames; ++f) {
+                    const T* HNW_RESTRICT frame_row = stack + f * plane_size;
+                    const uint8_t* HNW_RESTRICT mask_row =
+                        mask ? mask + f * plane_size : nullptr;
                     if (mask_row && !mask_row[idx]) continue;
                     const double val = static_cast<double>(frame_row[idx]);
                     if (val < low[idx] || val > high[idx]) {
@@ -137,7 +150,10 @@ void sigma_clip_iterative_chunk_kernel(
         }
 
         // 4. Update accepted stats + convergence check
-        bool all_converged = true;
+        int any_changed = 0;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static) reduction(max:any_changed)
+#endif
         for (ssize_t idx = 0; idx < plane_size; ++idx) {
             if (converged[idx]) continue;
             const double new_n = total_n[idx] - rej_n[idx];
@@ -155,10 +171,10 @@ void sigma_clip_iterative_chunk_kernel(
                 cur_sum[idx] = new_sum;
                 cur_sq[idx] = new_sq;
                 cur_n[idx] = new_n;
-                all_converged = false;
+                any_changed = 1;
             }
         }
-        if (all_converged) break;
+        if (any_changed == 0) break;
     }
 
     // Output
@@ -287,17 +303,22 @@ void sigma_clip_fused_chunk_kernel(
     std::vector<double> total_sq(static_cast<size_t>(plane_size), 0.0);
     std::vector<double> total_n(static_cast<size_t>(plane_size), 0.0);
 
-    for (ssize_t f = 0; f < n_frames; ++f) {
-        const T* HNW_RESTRICT frame_row = stack + f * plane_size;
-        const uint8_t* HNW_RESTRICT mask_row =
-            mask ? mask + f * plane_size : nullptr;
-
-        if (skip_zero_rgb && channels >= 3) {
-            const ssize_t spatial = plane_size / channels;
-            for (ssize_t px = 0; px < spatial; ++px) {
-                const ssize_t base = px * channels;
+    if (skip_zero_rgb && channels >= 3) {
+        const ssize_t spatial = plane_size / channels;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+        for (ssize_t px = 0; px < spatial; ++px) {
+            const ssize_t base = px * channels;
+            for (ssize_t f = 0; f < n_frames; ++f) {
+                const T* HNW_RESTRICT frame_row = stack + f * plane_size;
+                const uint8_t* HNW_RESTRICT mask_row =
+                    mask ? mask + f * plane_size : nullptr;
                 if (is_pixel_zero_rgb_chunk(frame_row, base, channels))
                     continue;
+#if defined(HNW_ENABLE_OMP_SIMD) && HNW_ENABLE_OMP_SIMD
+#pragma omp simd
+#endif
                 for (ssize_t c = 0; c < channels; ++c) {
                     const ssize_t idx = base + c;
                     if (mask_row && !mask_row[idx]) continue;
@@ -307,11 +328,16 @@ void sigma_clip_fused_chunk_kernel(
                     total_n[idx] += 1.0;
                 }
             }
-        } else {
-#if HNW_ENABLE_OMP_SIMD
-#pragma omp simd
+        }
+    } else {
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
 #endif
-            for (ssize_t idx = 0; idx < plane_size; ++idx) {
+        for (ssize_t idx = 0; idx < plane_size; ++idx) {
+            for (ssize_t f = 0; f < n_frames; ++f) {
+                const T* HNW_RESTRICT frame_row = stack + f * plane_size;
+                const uint8_t* HNW_RESTRICT mask_row =
+                    mask ? mask + f * plane_size : nullptr;
                 if (mask_row && !mask_row[idx]) continue;
                 const double val = static_cast<double>(frame_row[idx]);
                 total_sum[idx] += val;
