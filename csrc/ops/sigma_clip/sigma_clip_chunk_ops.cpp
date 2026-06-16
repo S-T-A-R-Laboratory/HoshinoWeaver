@@ -150,9 +150,9 @@ void sigma_clip_iterative_chunk_kernel(
         }
 
         // 4. Update accepted stats + convergence check
-        int any_changed = 0;
+        int changed_count = 0;
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(static) reduction(max:any_changed)
+#pragma omp parallel for schedule(static) reduction(+:changed_count)
 #endif
         for (ssize_t idx = 0; idx < plane_size; ++idx) {
             if (converged[idx]) continue;
@@ -171,10 +171,10 @@ void sigma_clip_iterative_chunk_kernel(
                 cur_sum[idx] = new_sum;
                 cur_sq[idx] = new_sq;
                 cur_n[idx] = new_n;
-                any_changed = 1;
+                changed_count += 1;
             }
         }
-        if (any_changed == 0) break;
+        if (changed_count == 0) break;
     }
 
     // Output
