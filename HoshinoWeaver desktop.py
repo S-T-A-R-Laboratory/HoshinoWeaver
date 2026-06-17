@@ -11,10 +11,9 @@ import asyncio
 import ctypes
 import json
 import platform
-import time
 
 from loguru import logger as _logger
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QIcon, QMouseEvent
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
                                QFrame, QHeaderView, QMainWindow, QScrollArea,
@@ -150,8 +149,7 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # 启动guide页面
         if self._CONFIG['guide_always_display']:
-            time.sleep(0.5)
-            self.slot_handler.show_guide_window()
+            QTimer.singleShot(500, self.slot_handler.show_guide_window)
 
     def hover_border_frame(self):
         '''
@@ -558,29 +556,24 @@ class HNW_window(QMainWindow, Ui_HNW):
                 try:
                     data = json.loads(f.read())
                     self._CONFIG['guide_always_display'] = data['guide_always_display']
-                except:
-                    self.update_config()
+                except (json.JSONDecodeError, KeyError):
+                    self.update_config_file()
         else:
-            try:
-                os.makedirs(config_path)
-            except FileExistsError:
-                pass
-            with open(os.path.join(config_path, config_file),'w',encoding='utf-8') as f:
-                f.write(json.dumps(self._CONFIG))
+            self.update_config_file()
 
     def update_config(self,key,val):
         self._CONFIG[key] = val
         self.update_config_file()
 
-    def update_config_file(self): 
+    _PERSIST_KEYS = ('guide_always_display',)
+
+    def update_config_file(self):
         config_path = self._CONFIG['config_path']
         config_file = self._CONFIG['config_file']
-        try:
-            os.makedirs(config_path)
-        except FileExistsError:
-            pass
+        os.makedirs(config_path, exist_ok=True)
+        data = {k: self._CONFIG[k] for k in self._PERSIST_KEYS if k in self._CONFIG}
         with open(os.path.join(config_path, config_file),'w',encoding='utf-8') as f:
-            f.write(json.dumps(self._CONFIG))
+            f.write(json.dumps(data))
 
 
 if __name__ == '__main__':
@@ -590,7 +583,7 @@ if __name__ == '__main__':
 
     _init_logger(_logger, debug_mode=False, trace_mode=False, log_path=None, task="gui")
 
-    app = QApplication()
+    app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))
 
     loop = QEventLoop(app)

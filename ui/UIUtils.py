@@ -4,6 +4,7 @@
 
 import asyncio
 import re
+from pathlib import Path
 
 from typing import Any
 
@@ -249,7 +250,7 @@ class SlotHandler(QMainWindow):
         def open_dialog(self, category):
             folder_dialog = QFileDialog(
                 self,
-                caption='添加%s' % '星空图像' if category == '亮场' else category)
+                caption=f'添加{"星空图像" if category == "亮场" else category}')
             folder_dialog.setFileMode(QFileDialog.Directory)
             if folder_dialog.exec_() == QDialog.Accepted:
                 folder_path = folder_dialog.selectedUrls()[0].toLocalFile()
@@ -280,8 +281,7 @@ class SlotHandler(QMainWindow):
 
     def open_add_file_dialog(self, category):
         file_dialog = QFileDialog(self,
-                                  caption='添加%s' %
-                                  '星空图像' if category == '亮场' else category)
+                                  caption=f'添加{"星空图像" if category == "亮场" else category}')
         file_dialog.setFileMode(QFileDialog.ExistingFiles)
         file_dialog.setNameFilters([
             '全部支持文件(*.cr2 *.cr3 *.arw *.nef *.dng *.rw2 *.orf *.raf *.tiff *.tif *.jpeg *.jpg *.png *.bmp *.gif *.fits)',
@@ -335,7 +335,7 @@ class SlotHandler(QMainWindow):
 
         category_item = self.window.star_trail_file_tree_categore[category]
         # 将文件添加至树
-        file_name = file_path.split('/')[-1]
+        file_name = Path(file_path).name
 
         widget = QWidget()
         layout = QHBoxLayout()
@@ -371,11 +371,11 @@ class SlotHandler(QMainWindow):
         widget.setLayout(layout)
 
         file_item = QTreeWidgetItem(category_item)
-        file_item.__file_path = file_path
-        file_item.__category = category
-        file_item.__remove_bnt = remove_button
-        file_item.__view_bnt = view_button
-        file_item.__file_label = file_label
+        file_item._file_path = file_path
+        file_item._category = category
+        file_item._remove_btn = remove_button
+        file_item._view_btn = view_button
+        file_item._file_label = file_label
         self.window.star_trail_file_tree.setItemWidget(file_item, 0, widget)
 
         # 点击时将该条选中，取消其他已选中
@@ -410,8 +410,8 @@ class SlotHandler(QMainWindow):
 
     @Slot()
     def remove_file_from_tree(self, file_item, mode='SingleImg'):
-        category = file_item.__category
-        file_path = file_item.__file_path
+        category = file_item._category
+        file_path = file_item._file_path
         # 从列表删除文件
         tree = file_item.parent()
         index = self.window.star_trail_file_tree.indexOfTopLevelItem(file_item)
@@ -547,7 +547,7 @@ class SlotHandler(QMainWindow):
                 self.window.star_trail_process_bar.setStyleSheet(
                     "#star_trail_process_bar {background-color: rgba(2, 53, 57,50);}"
                 )
-                self.window._task = asyncio.ensure_future(self.start_task())
+                self.window._task = asyncio.create_task(self.start_task())
 
     @asyncSlot()
     async def start_task(self):
@@ -709,7 +709,7 @@ class SlotHandler(QMainWindow):
         elif menu_text == '添加文件夹':
             self.add_folder(category=categore)
         elif menu_text == '预览':
-            self.view_file(menu_item.__file_path)
+            self.view_file(menu_item._file_path)
         elif menu_text == '从列表删除':
             selected_img_items = self.window.star_trail_file_tree.selectedItems(
             )
@@ -726,16 +726,16 @@ class SlotHandler(QMainWindow):
             ):
                 for i in range(file_tree.childCount()):
                     file_item = file_tree.child(i)
-                    file_item.__remove_bnt.setEnabled(True)
-                    file_item.__view_bnt.setEnabled(True)
+                    file_item._remove_btn.setEnabled(True)
+                    file_item._view_btn.setEnabled(True)
         else:
             self.window._preview_useable = False
             for category, file_tree in self.window.star_trail_file_tree_categore.items(
             ):
                 for i in range(file_tree.childCount()):
                     file_item = file_tree.child(i)
-                    file_item.__remove_bnt.setEnabled(False)
-                    file_item.__view_bnt.setEnabled(False)
+                    file_item._remove_btn.setEnabled(False)
+                    file_item._view_btn.setEnabled(False)
 
     @Slot()
     def set_widget_handleable(self,

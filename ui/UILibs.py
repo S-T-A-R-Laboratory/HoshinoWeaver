@@ -23,6 +23,8 @@ class imgDisplayQFrame(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.pixmap = None
+        self._scaled_pixmap = None
+        self._cached_scale = None
         self.scale_factor = 1.0
         self.max_scale = 10.0
         self.min_scale = 1.0
@@ -59,9 +61,11 @@ class imgDisplayQFrame(QFrame):
 
             if not pixmap.isNull():
                 self.pixmap = pixmap
+                self._invalidate_scaled_cache()
                 self.setImage()
         else:
             self.pixmap = None
+            self._invalidate_scaled_cache()
             self.setImage()
 
     def setImage(self, scale_factor = None):
@@ -86,16 +90,23 @@ class imgDisplayQFrame(QFrame):
             self.min_scale = min(self.width() / self.pixmap.width(), 
                                  self.height() / self.pixmap.height())
 
+    def _invalidate_scaled_cache(self):
+        self._scaled_pixmap = None
+        self._cached_scale = None
+
     def paintEvent(self, event):
         if self.pixmap:
+            if self._cached_scale != self.scale_factor:
+                self._scaled_pixmap = self.pixmap.scaled(
+                    self.pixmap.size() * self.scale_factor,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation)
+                self._cached_scale = self.scale_factor
+
             painter = QPainter(self)
-            scaled_pixmap = self.pixmap.scaled(self.pixmap.size() * self.scale_factor, 
-                                               Qt.KeepAspectRatio, 
-                                               Qt.SmoothTransformation)
-            
-            x = (self.width() - scaled_pixmap.width()) / 2 + self.offset.x()
-            y = (self.height() - scaled_pixmap.height()) / 2 + self.offset.y()
-            painter.drawPixmap(x, y, scaled_pixmap)
+            x = (self.width() - self._scaled_pixmap.width()) / 2 + self.offset.x()
+            y = (self.height() - self._scaled_pixmap.height()) / 2 + self.offset.y()
+            painter.drawPixmap(x, y, self._scaled_pixmap)
         else:
             super().paintEvent(event)
 
