@@ -163,9 +163,6 @@ class SlotHandler(QMainWindow):
             }}
         """)
 
-        self.window.dragging = False
-        self.window.resizing = False
-
     @Slot()
     def show_setting_menu(self):
         self.menu = QMenu(self)
