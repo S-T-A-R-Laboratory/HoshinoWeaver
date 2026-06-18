@@ -19,7 +19,7 @@ from qasync import asyncSlot
 from hoshicore.component.image_io import scan_all_exif
 # 导入Core接口
 from hoshicore.engine.executor import DAGExecutionError
-from hoshicore.engine.preflight import PreflightAction, PreflightReport
+from hoshicore.engine.preflight import PreflightAction, CheckResult
 from hoshicore.engine.wiring import run_from_yaml
 # 导入图标资源
 from ui import resource
@@ -38,32 +38,33 @@ def _format_exception_chain(exc: BaseException) -> str:
     return "\n← ".join(lines)
 
 
-def _gui_preflight_callback(report: PreflightReport) -> PreflightAction:
+def _gui_preflight_callback(result: CheckResult) -> PreflightAction:
     """GUI 预检回调：弹出对话框让用户选择。"""
     text_lines: list[str] = []
-    for w in report.warnings:
-        text_lines.append(w)
+    for issue in result.issues:
+        text_lines.append(issue.message)
 
-    has_fallback = bool(report.proposed_fallbacks)
-    if has_fallback:
+    has_fix = result.has_fix
+    if has_fix:
         text_lines.append("")
-        text_lines.append("建议降级方案：")
-        for fb in report.proposed_fallbacks:
-            text_lines.append(
-                f"  {fb.config_key}: {fb.current_value} → {fb.proposed_value}"
-                f"（{fb.reason}）")
+        text_lines.append("建议修复方案：")
+        for issue in result.issues:
+            if issue.fix is not None:
+                text_lines.append(
+                    f"  {issue.fix.config_key}: {issue.fix.current_value} → {issue.fix.proposed_value}"
+                    f"（{issue.fix.reason}）")
     else:
-        text_lines.append("\n无可用的自动降级方案。")
+        text_lines.append("\n无可用的自动修复方案。")
 
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
-    msg.setWindowTitle("资源预检警告")
+    msg.setWindowTitle(f"{result.check_name}警告")
     msg.setText("\n".join(text_lines))
 
     btn_apply = None
-    if has_fallback:
-        label = ("应用降级并继续（资源仍可能不足）"
-                 if report.budget_exceeded_after_fallback else "应用建议")
+    if has_fix:
+        label = ("应用修复并继续（问题仍可能存在）"
+                 if result.still_problematic_after_fix else "应用建议")
         btn_apply = msg.addButton(label, QMessageBox.AcceptRole)
     btn_ignore = msg.addButton("忽略并继续", QMessageBox.RejectRole)
     msg.addButton("中止", QMessageBox.DestructiveRole)
@@ -640,6 +641,9 @@ class SlotHandler(QMainWindow):
             msg_box.exec()
         except Exception as e:
             logger.error(f"任务执行失败: {e}")
+            import traceback
+            logger.error("异常链:\n" + _format_exception_chain(e))
+            logger.error("异常栈:\n" + traceback.format_exc())
             self.window.status_text.setStyleSheet(
                 "#status_text {color:rgba(200,0,0,200)}")
             self.window.star_trial_tips.setStyleSheet(
@@ -654,7 +658,8 @@ class SlotHandler(QMainWindow):
             msg_box.setWindowTitle("任务失败")
             msg_box.setText(f"{type(root).__name__}: {root}")
             msg_box.setDetailedText(
-                f"完整异常链:\n{_format_exception_chain(e)}")
+                f"异常链:\n{_format_exception_chain(e)}\n\n异常栈:\n{traceback.format_exc()}"
+            )
             msg_box.exec()
         finally:
             self._set_start_btn_stop_mode(False)

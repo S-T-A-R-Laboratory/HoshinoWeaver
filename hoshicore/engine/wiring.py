@@ -33,8 +33,9 @@ from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
 from .executor import DAGExecutionError, DAGExecutor
 from .flatten import INACTIVE_MARKER
-from .preflight import (PreflightAbortError, PreflightAction,
-                            apply_fallbacks, preflight_check)
+from .preflight import (PreflightAbortError, PreflightAction, CheckResult,
+                        RESOURCE_CHECK_NAME, apply_check_fixes,
+                        config_validity_check, run_preflight_checks)
 from .registry import REGISTERED_OP
 from .runtime_plan import apply_runtime_plan, plan_runtime
 
@@ -51,7 +52,9 @@ _DEFAULT_SETTINGS_PATH = _HOSHICORE_ROOT / "default_settings.yaml"
 
 # 默认搜索路径列表：op 字段以 .yaml 结尾时，按序搜索。
 # 用户可通过 set_dag_search_paths() 追加自定义目录。
-DEFAULT_DAG_SEARCH_PATHS: list[Path] = [Path(x[0]) for x in os.walk(_BUILTIN_DAG_DIR)]
+DEFAULT_DAG_SEARCH_PATHS: list[Path] = [
+    Path(x[0]) for x in os.walk(_BUILTIN_DAG_DIR)
+]
 
 
 def set_dag_search_paths(paths: list[Path]) -> None:
@@ -84,8 +87,8 @@ def _load_default_settings(path: Optional[Path] = None) -> dict[str, Any]:
     _FRONTEND_ONLY = {"output_format"}
     return {
         key: entry.get("value")
-        for key, entry in raw.items()
-        if isinstance(entry, dict) and entry.get("enabled") and key not in _FRONTEND_ONLY
+        for key, entry in raw.items() if isinstance(entry, dict)
+        and entry.get("enabled") and key not in _FRONTEND_ONLY
     }
 
 
@@ -95,12 +98,14 @@ def load_output_defaults(path: Optional[Path] = None) -> dict[str, Any]:
     返回 flat dict，键包括：output_format, output_dtype, jpg_quality, png_compressing。
     供 OutputPanel.apply_defaults() 使用，不传给后端管线。
     """
-    _OUTPUT_KEYS = {"output_format", "output_dtype", "jpg_quality", "png_compressing"}
+    _OUTPUT_KEYS = {
+        "output_format", "output_dtype", "jpg_quality", "png_compressing"
+    }
     raw = _read_raw_settings(path)
     return {
         key: entry.get("value")
-        for key, entry in raw.items()
-        if key in _OUTPUT_KEYS and isinstance(entry, dict) and entry.get("enabled")
+        for key, entry in raw.items() if key in _OUTPUT_KEYS
+        and isinstance(entry, dict) and entry.get("enabled")
     }
 
 
@@ -286,8 +291,8 @@ def instantiate_and_wire(
         cfg_section = node_spec.get("configs")
         if isinstance(cfg_section, dict):
             yaml_cfg_keys = {
-                k for k, v in cfg_section.items()
-                if v != INACTIVE_MARKER
+                k
+                for k, v in cfg_section.items() if v != INACTIVE_MARKER
             }
 
         yaml_inp_keys: set[str] = set()
@@ -463,11 +468,13 @@ async def run_dag(
 
     async def _collect_outputs():
         """结果收集，容忍取消（队列被 force_cancel 时静默退出）。"""
+
         async def _get_one(name, queue):
             try:
                 results[name] = await queue.get()
             except (CancellationError, asyncio.CancelledError):
                 pass
+
         await asyncio.gather(
             *[_get_one(n, q) for n, q in output_queues.items()])
 
@@ -480,8 +487,8 @@ async def run_dag(
 
     try:
         watcher_task = asyncio.create_task(_watch_external_cancel())
-        await asyncio.gather(
-            _run_feeders(), executor.execute(), _collect_outputs())
+        await asyncio.gather(_run_feeders(), executor.execute(),
+                             _collect_outputs())
     except DAGExecutionError:
         raise
     except (CancellationError, asyncio.CancelledError):
@@ -561,49 +568,51 @@ async def run_from_yaml(
     spec = flatten_sub_dags(spec, dag_search_paths=dag_search_paths)
     dag = validate_and_build_order(spec)
 
-    # ── 资源预检 ──
-    report = preflight_check(dag, global_configs, global_inputs, op_registry)
-    if report.proposed_fallbacks:
-        if preflight_callback is not None:
-            action: PreflightAction = preflight_callback(report)
-            if action == "apply":
-                apply_fallbacks(report, global_configs)
-                for fb in report.applied_fallbacks:
-                    logger.info(fb)
-            elif action == "ignore":
-                for w in report.warnings:
-                    logger.info(f"[Preflight] 用户忽略建议: {w}")
-            else:  # "abort"
-                raise PreflightAbortError(
-                    "用户拒绝资源预检建议，执行已中止。")
-        elif global_configs.get("auto_fallback", True):
-            apply_fallbacks(report, global_configs)
-            for fb in report.applied_fallbacks:
-                logger.info(fb)
-        else:
-            for w in report.warnings:
-                logger.warning(w)
-    elif report.warnings:
-        # 有警告但无可用 fallback（如内存超限但 buffer_mode 已经是 disk）
-        if preflight_callback is not None:
-            action = preflight_callback(report)
-            if action == "abort":
-                raise PreflightAbortError(
-                    "资源不足且无可用降级方案，用户中止执行。")
-        else:
-            for w in report.warnings:
-                logger.warning(w)
+    # ── 预检 ──
+    preflight_report, check_results = run_preflight_checks(
+        dag,
+        global_configs,
+        global_inputs,
+        checks=[config_validity_check],
+        op_registry=op_registry)
 
-    if (report.applied_fallbacks and
-            report.post_fallback_non_chunk_mem is not None):
-        report.non_chunk_mem = report.post_fallback_non_chunk_mem
+    resource_fix_applied = False
+    for result in check_results:
+        if not result.issues:
+            continue
+        if preflight_callback is not None:
+            action: PreflightAction = preflight_callback(result)
+            if action == "apply" and result.has_fix:
+                msgs = apply_check_fixes(result, global_configs)
+                for msg in msgs:
+                    logger.info(msg)
+                if result.check_name == RESOURCE_CHECK_NAME:
+                    resource_fix_applied = True
+            elif action == "ignore":
+                for issue in result.issues:
+                    logger.info(f"[Preflight] 用户忽略: {issue.message}")
+            else:  # "abort"
+                raise PreflightAbortError("用户中止预检，执行已取消。")
+        else:
+            if result.has_fix and global_configs.get("auto_fallback", True):
+                msgs = apply_check_fixes(result, global_configs)
+                for msg in msgs:
+                    logger.info(msg)
+                if result.check_name == RESOURCE_CHECK_NAME:
+                    resource_fix_applied = True
+            else:
+                for issue in result.issues:
+                    logger.warning(issue.message)
+
+    if resource_fix_applied and preflight_report.post_fallback_non_chunk_mem is not None:
+        preflight_report.non_chunk_mem = preflight_report.post_fallback_non_chunk_mem
 
     runtime_plan = plan_runtime(
         dag,
         global_configs,
         global_inputs,
         op_registry=op_registry,
-        preflight_report=report,
+        preflight_report=preflight_report,
         explicit_config_keys=explicit_config_keys,
     )
     apply_runtime_plan(runtime_plan, global_configs)
@@ -691,7 +700,8 @@ def _flatten_config_specs(
     """
     for name, spec in specs.items():
         full_key = f"{prefix}{name}" if prefix else name
-        if isinstance(spec, dict) and "type" not in spec and "default" not in spec:
+        if isinstance(spec,
+                      dict) and "type" not in spec and "default" not in spec:
             _flatten_config_specs(spec, user_configs, f"{full_key}.", resolved)
         else:
             if full_key in user_configs:

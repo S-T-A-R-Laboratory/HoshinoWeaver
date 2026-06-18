@@ -10,7 +10,7 @@ from loguru import logger as default_logger
 from hoshicore.component.utils import init_logger, is_support_format
 from hoshicore.engine.executor import DAGExecutionError
 from hoshicore.engine.inspect import InspectResult, inspect_yaml
-from hoshicore.engine.preflight import PreflightAction, PreflightReport
+from hoshicore.engine.preflight import PreflightAction, CheckResult
 from hoshicore.engine.wiring import run_from_yaml
 
 
@@ -113,28 +113,29 @@ def _format_default(value: object) -> str:
     return str(value)
 
 
-def _cli_preflight_callback(report: PreflightReport) -> PreflightAction:
+def _cli_preflight_callback(result: CheckResult) -> PreflightAction:
     """CLI 预检回调：打印警告和建议，等待用户选择。"""
     print("\n" + "=" * 60)
-    print("  资源预检警告")
+    print(f"  {result.check_name}警告")
     print("=" * 60)
 
-    for w in report.warnings:
-        print(f"  ⚠ {w}")
+    for issue in result.issues:
+        print(f"  ⚠ {issue.message}")
 
-    has_fallback = bool(report.proposed_fallbacks)
-    if has_fallback:
-        print("\n建议降级方案：")
-        for fb in report.proposed_fallbacks:
-            print(f"  {fb.config_key}: {fb.current_value} -> {fb.proposed_value}"
-                  f" ({fb.reason})")
+    has_fix = result.has_fix
+    if has_fix:
+        print("\n建议修复方案：")
+        for issue in result.issues:
+            if issue.fix is not None:
+                print(f"  {issue.fix.config_key}: {issue.fix.current_value} -> {issue.fix.proposed_value}"
+                      f" ({issue.fix.reason})")
     else:
-        print("\n无可用的自动降级方案。")
+        print("\n无可用的自动修复方案。")
 
     print("\n请选择操作：")
-    if has_fallback:
-        suffix = "（资源仍可能不足）" if report.budget_exceeded_after_fallback else ""
-        print(f"  [A] 应用降级并继续{suffix}")
+    if has_fix:
+        suffix = "（问题仍可能存在）" if result.still_problematic_after_fix else ""
+        print(f"  [A] 应用修复并继续{suffix}")
     print("  [I] 忽略警告，按原配置继续")
     print("  [Q] 中止执行")
     print()
@@ -144,13 +145,13 @@ def _cli_preflight_callback(report: PreflightReport) -> PreflightAction:
             choice = input("输入选择: ").strip().upper()
         except (EOFError, KeyboardInterrupt):
             return "abort"
-        if choice in ("A", "APPLY") and has_fallback:
+        if choice in ("A", "APPLY") and has_fix:
             return "apply"
         if choice in ("I", "IGNORE"):
             return "ignore"
         if choice in ("Q", "QUIT", "ABORT"):
             return "abort"
-        hint = "A、I 或 Q" if has_fallback else "I 或 Q"
+        hint = "A、I 或 Q" if has_fix else "I 或 Q"
         print(f"  无效输入，请输入 {hint}")
 
 

@@ -1,13 +1,18 @@
+import os
+
 import numpy as np
 import pytest
 import tifffile
 
 from hoshicore.engine.preflight import (
-    FallbackProposal,
+    CheckResult,
+    PreflightFix,
+    PreflightIssue,
     PreflightReport,
     ResourceEstimate,
-    apply_fallbacks,
-    preflight_check,
+    apply_check_fixes,
+    config_validity_check,
+    run_preflight_checks,
     _resolve_node_configs,
 )
 from hoshicore.ops.base import BaseOp
@@ -99,24 +104,39 @@ class TestResolveNodeConfigs:
         assert result["temp_path"] is None
 
 
-class TestApplyFallbacks:
-    def test_applies_proposals(self):
-        report = PreflightReport(
-            estimate=ResourceEstimate(5000, 0),
-            available_memory_bytes=3000,
-            available_disk_bytes=10000,
-            proposed_fallbacks=[
-                FallbackProposal("buffer_mode", "memory", "disk", "内存不足")
+class TestApplyCheckFixes:
+    def test_applies_fixes(self):
+        result = CheckResult(
+            check_name="test",
+            issues=[
+                PreflightIssue(
+                    severity="warning",
+                    code="resource.memory",
+                    message="内存不足",
+                    fix=PreflightFix("buffer_mode", "memory", "disk", "内存不足"),
+                )
             ],
         )
         configs = {"buffer_mode": "memory"}
-        apply_fallbacks(report, configs)
+        msgs = apply_check_fixes(result, configs)
         assert configs["buffer_mode"] == "disk"
-        assert len(report.applied_fallbacks) == 1
-        assert "memory → disk" in report.applied_fallbacks[0]
+        assert len(msgs) == 1
+        assert "memory → disk" in msgs[0]
+
+    def test_skips_issues_without_fix(self):
+        result = CheckResult(
+            check_name="test",
+            issues=[
+                PreflightIssue(severity="warning", code="x", message="纯警告"),
+            ],
+        )
+        configs = {"buffer_mode": "disk"}
+        msgs = apply_check_fixes(result, configs)
+        assert configs["buffer_mode"] == "disk"
+        assert msgs == []
 
 
-class TestPreflightCheck:
+class TestRunPreflightChecks:
     def _make_dag(self, nodes=None, exec_order=None):
         from hoshicore.engine.build import ValidatedDag
         return ValidatedDag(
@@ -130,10 +150,21 @@ class TestPreflightCheck:
 
     def test_no_fnames_returns_empty(self):
         dag = self._make_dag()
-        report = preflight_check(dag, {}, {})
+        report, results = run_preflight_checks(dag, {}, {})
         assert report.estimate.peak_memory_bytes == 0
         assert report.estimate.peak_disk_bytes == 0
-        assert report.warnings == []
+        assert results[0].issues == []  # resource check result
+
+    def test_invalid_temp_path_does_not_crash(self, tmp_path):
+        """temp_path 不存在时回退到系统默认路径计算磁盘空间，不抛异常。"""
+        frame = tmp_path / "frame.tif"
+        tifffile.imwrite(str(frame), np.zeros((10, 10), dtype=np.uint16))
+        dag = self._make_dag()
+        missing = str(tmp_path / "nonexistent_cache")
+        report, results = run_preflight_checks(
+            dag, {"buffer_mode": "disk", "temp_path": missing},
+            {"fnames": [str(frame)]})
+        assert report.available_disk_bytes > 0
 
     def test_estimates_with_tiff_input(self, tmp_path):
         for i in range(5):
@@ -153,14 +184,15 @@ class TestPreflightCheck:
         )
 
         effective_configs = {"buffer_mode": "disk"}
-        report = preflight_check(dag, effective_configs, {"fnames": fnames})
+        report, results = run_preflight_checks(
+            dag, effective_configs, {"fnames": fnames})
 
         # 5 frames × 100×200×3 × 2 bytes = 600,000 bytes disk
         assert report.estimate.peak_disk_bytes == 600000
         assert report.estimate.peak_memory_bytes == 0
         assert report.non_chunk_mem == 0
 
-    def test_memory_mode_triggers_warning_when_insufficient(self, tmp_path):
+    def test_memory_mode_triggers_issue_when_insufficient(self, tmp_path):
         from unittest.mock import patch
 
         path = tmp_path / "frame.tif"
@@ -182,13 +214,15 @@ class TestPreflightCheck:
         with patch("hoshicore.engine.preflight.psutil") as mock_psutil:
             mock_psutil.virtual_memory.return_value = FakeVMem()
             effective_configs = {"buffer_mode": "memory"}
-            report = preflight_check(
+            report, results = run_preflight_checks(
                 dag, effective_configs,
                 {"fnames": [str(path)] * 10})
 
-        assert len(report.warnings) > 0
-        assert len(report.proposed_fallbacks) == 1
-        assert report.proposed_fallbacks[0].proposed_value == "disk"
+        resource_result = results[0]
+        assert len(resource_result.issues) > 0
+        fixes = [i.fix for i in resource_result.issues if i.fix]
+        assert len(fixes) == 1
+        assert fixes[0].proposed_value == "disk"
 
     def test_chunk_planned_op_excluded_from_non_chunk_mem(self, tmp_path):
         path = tmp_path / "frame.tif"
@@ -202,7 +236,7 @@ class TestPreflightCheck:
             exec_order=["fixed", "planned"],
         )
 
-        report = preflight_check(
+        report, results = run_preflight_checks(
             dag, {}, {"fnames": [str(path)]},
             op_registry={
                 "_FixedMemOp": _FixedMemOp,
@@ -221,7 +255,7 @@ class TestPreflightCheck:
             exec_order=["seq"],
         )
 
-        report = preflight_check(
+        report, results = run_preflight_checks(
             dag, {}, {"fnames": [str(path)]},
             op_registry={"_SequenceOutputOp": _SequenceOutputOp})
 
@@ -249,10 +283,82 @@ class TestPreflightCheck:
 
         with patch("hoshicore.engine.preflight.psutil") as mock_psutil:
             mock_psutil.virtual_memory.return_value = FakeVMem()
-            report = preflight_check(
+            report, results = run_preflight_checks(
                 dag, {"buffer_mode": "memory"},
                 {"fnames": [str(path)] * 10})
 
-        assert report.proposed_fallbacks
+        resource_result = results[0]
+        assert resource_result.has_fix
         assert report.non_chunk_mem == 2000
         assert report.post_fallback_non_chunk_mem == 0
+
+
+class TestConfigValidityCheck:
+    def _make_dag(self):
+        from hoshicore.engine.build import ValidatedDag
+        return ValidatedDag(
+            nodes={}, global_inputs={}, global_configs={},
+            output_links={}, node_deps={}, exec_order=[],
+        )
+
+    def test_no_temp_path_configured(self):
+        dag = self._make_dag()
+        result = config_validity_check(dag, {"buffer_mode": "disk"}, {})
+        assert result.issues == []
+
+    def test_memory_mode_skips_check(self, tmp_path):
+        # even if temp_path is invalid, memory mode doesn't need it
+        dag = self._make_dag()
+        result = config_validity_check(
+            dag, {"buffer_mode": "memory", "temp_path": "/nonexistent/path"}, {})
+        assert result.issues == []
+
+    def test_replay_mode_skips_check(self, tmp_path):
+        dag = self._make_dag()
+        result = config_validity_check(
+            dag, {"buffer_mode": "replay", "temp_path": "/nonexistent/path"}, {})
+        assert result.issues == []
+
+    def test_missing_temp_path(self, tmp_path):
+        dag = self._make_dag()
+        missing = str(tmp_path / "nonexistent_dir")
+        result = config_validity_check(
+            dag, {"buffer_mode": "disk", "temp_path": missing}, {})
+        assert len(result.issues) == 1
+        assert result.issues[0].code == "config.cache_path.missing"
+        assert result.issues[0].severity == "error"
+        assert result.issues[0].fix is not None
+        assert result.issues[0].fix.config_key == "temp_path"
+        assert result.issues[0].fix.current_value == missing
+
+    def test_not_writable_temp_path(self, tmp_path):
+        dag = self._make_dag()
+        locked = tmp_path / "locked_dir"
+        locked.mkdir()
+        original_mode = locked.stat().st_mode
+        try:
+            locked.chmod(0o444)
+            # skip on Windows where chmod has no effect on directories
+            if os.access(str(locked), os.W_OK):
+                pytest.skip("chmod has no effect on this platform")
+            result = config_validity_check(
+                dag, {"buffer_mode": "disk", "temp_path": str(locked)}, {})
+            assert len(result.issues) == 1
+            assert result.issues[0].code == "config.cache_path.not_writable"
+            assert result.issues[0].fix is not None
+        finally:
+            locked.chmod(original_mode)
+
+    def test_valid_temp_path(self, tmp_path):
+        dag = self._make_dag()
+        result = config_validity_check(
+            dag, {"buffer_mode": "disk", "temp_path": str(tmp_path)}, {})
+        assert result.issues == []
+
+    def test_fix_proposes_system_default(self, tmp_path):
+        import tempfile
+        dag = self._make_dag()
+        missing = str(tmp_path / "nonexistent")
+        result = config_validity_check(
+            dag, {"buffer_mode": "disk", "temp_path": missing}, {})
+        assert result.issues[0].fix.proposed_value == tempfile.gettempdir()
