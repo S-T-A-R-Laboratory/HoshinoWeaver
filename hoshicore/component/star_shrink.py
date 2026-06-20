@@ -2,8 +2,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
-
-from .data_container import rescale_array
+from scipy.ndimage import median_filter
 
 OPENCV_SHAPE_MAPPING = {"RECT": cv2.MORPH_RECT, "CROSS": cv2.MORPH_CROSS}
 
@@ -62,19 +61,117 @@ def morph_shrink(img: np.ndarray,
     return result
 
 
+def morph_shrink_luma(img: np.ndarray,
+                      ksize: int = 5,
+                      shape: str = "CIRCLE",
+                      times: int = 1) -> np.ndarray:
+    """LAB 空间仅腐蚀 L 通道，ab 通道原封不动，避免色偏。
+
+    Args:
+        img: 输入图像，2D 或 3D（BGR），uint8/uint16/float32。
+        ksize: 腐蚀核大小。
+        shape: 核形状，"RECT" / "CROSS" / "CIRCLE"。
+        times: 腐蚀迭代次数。
+
+    Returns:
+        np.ndarray: 腐蚀结果，dtype 与输入一致。
+    """
+    cv_kernel = get_morph_kernel(shape, ksize)
+    raw_dtype = img.dtype
+
+    if img.dtype.kind == 'f':
+        img_f = img.astype(np.float32)
+        max_val = 1.0
+    else:
+        max_val = float(np.iinfo(img.dtype).max)
+        img_f = img.astype(np.float32) / max_val
+
+    if img.ndim == 2:
+        result_f = cv2.morphologyEx(img_f, cv2.MORPH_ERODE, cv_kernel,
+                                    iterations=times)
+    else:
+        lab = cv2.cvtColor(img_f, cv2.COLOR_BGR2LAB)
+        lab[:, :, 0] = cv2.morphologyEx(lab[:, :, 0], cv2.MORPH_ERODE,
+                                         cv_kernel, iterations=times)
+        result_f = np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2BGR), 0.0, 1.0)
+
+    if img.dtype.kind == 'f':
+        return result_f.astype(raw_dtype)
+    return np.round(result_f * max_val).astype(raw_dtype)
+
+
+def peak_recovery(img_original: np.ndarray,
+                  img_eroded: np.ndarray,
+                  bg_ksize: int = 25,
+                  strength: float = 0.85,
+                  scale: float = 0.20) -> np.ndarray:
+    """亮度自适应峰值恢复：按像素高于背景的归一化程度决定恢复权重。
+
+    公式（float32 [0,1] 空间）：
+        bg_L       = mean_blur(L_original, bg_ksize)
+        above_bg   = clip(L_original - bg_L, 0, inf)
+        above_bg_n = above_bg / max(above_bg)     # 归一化，最亮星=1
+        w = clip(above_bg_n / scale, 0, 1) * strength
+        result = img_eroded + w * (img_original - img_eroded)
+
+    Args:
+        img_original: 腐蚀前原始图像。
+        img_eroded: 腐蚀后图像（由 morph_shrink_luma 生成）。
+        bg_ksize: 背景估算核大小（均值模糊），需大于最大星点直径。
+        strength: 最大恢复比例 [0,1]，0=不恢复，1=完全恢复峰值。
+        scale: above_bg_n 归一化阈值，达到此值时 weight 饱和到 strength。
+               值越小，受保护的星越多。
+
+    Returns:
+        np.ndarray: 恢复后图像，dtype 与 img_original 一致。
+    """
+    raw_dtype = img_original.dtype
+
+    def _to_float(arr: np.ndarray) -> np.ndarray:
+        if arr.dtype.kind == 'f':
+            return arr.astype(np.float32)
+        return arr.astype(np.float32) / float(np.iinfo(arr.dtype).max)
+
+    orig_f = _to_float(img_original)
+    eroded_f = _to_float(img_eroded)
+
+    gray = cv2.cvtColor(orig_f, cv2.COLOR_BGR2GRAY) if orig_f.ndim == 3 else orig_f
+
+    dk = bg_ksize if bg_ksize % 2 == 1 else bg_ksize + 1
+    bg = cv2.blur(gray, ksize=(dk, dk))
+
+    above_bg = np.maximum(gray - bg, 0.0)
+    peak_bg = float(np.max(above_bg))
+    if peak_bg < 1e-6:
+        return img_eroded
+
+    above_bg_n = above_bg / peak_bg
+    w = np.clip(above_bg_n / scale, 0.0, 1.0) * strength
+    if orig_f.ndim == 3:
+        w = w[:, :, None]
+
+    result_f = eroded_f + w * (orig_f - eroded_f)
+
+    if raw_dtype.kind == 'f':
+        return result_f.astype(raw_dtype)
+    max_val = float(np.iinfo(raw_dtype).max)
+    return np.round(np.clip(result_f * max_val, 0.0, max_val)).astype(raw_dtype)
+
+
 def deringing(img: np.ndarray,
               shrink_img: np.ndarray,
-              algo: str = "median",
+              algo: str = "gaussian",
               ksize: int = 25) -> np.ndarray:
     """缓解缩星后的振铃（黑圈）现象。
 
     对原图做大核模糊得到平滑背景估计，取 max(shrink, blurred) 填补凹陷。
+    内部使用 float32 计算，避免降位到 uint8 导致的量化失真。
 
     Args:
         img: 原始图像（缩星前），用于估计背景。
         shrink_img: 缩星后的图像。
-        algo: 模糊算法，"median" 或 "mean"。
-        ksize: 模糊核大小（奇数）。
+        algo: 模糊算法，"gaussian"（默认，快速）/ "mean" / "median"（慢，仅小图）。
+        ksize: 模糊核大小（奇数）。"gaussian" 使用 sigmaX = ksize / 3。
 
     Returns:
         np.ndarray: 振铃修复后的图像，dtype 与 shrink_img 一致。
@@ -82,16 +179,29 @@ def deringing(img: np.ndarray,
     dk = ksize if ksize % 2 == 1 else ksize + 1
     raw_dtype = shrink_img.dtype
 
-    blurred = rescale_array(img, img.dtype, np.dtype("uint8"))
-    if algo == "median":
-        blurred = cv2.medianBlur(blurred, ksize=dk)
+    def _to_float(arr: np.ndarray) -> np.ndarray:
+        if arr.dtype.kind == 'f':
+            return arr.astype(np.float32)
+        return arr.astype(np.float32) / float(np.iinfo(arr.dtype).max)
+
+    img_f = _to_float(img)
+    shrink_f = _to_float(shrink_img)
+
+    if algo == "gaussian":
+        blurred = cv2.GaussianBlur(img_f, (dk, dk), sigmaX=dk / 3.0)
     elif algo == "mean":
-        blurred = cv2.blur(blurred, ksize=(dk, dk))
+        blurred = cv2.blur(img_f, ksize=(dk, dk))
+    elif algo == "median":
+        blurred = median_filter(img_f, size=dk, mode='reflect').astype(np.float32)
     else:
         raise NotImplementedError(f"Unknown deringing algo: {algo}")
-    blurred = rescale_array(blurred, np.dtype("uint8"), raw_dtype)
 
-    return np.maximum(shrink_img, blurred)
+    result_f = np.maximum(shrink_f, blurred)
+
+    if raw_dtype.kind == 'f':
+        return result_f.astype(raw_dtype)
+    max_val = float(np.iinfo(raw_dtype).max)
+    return np.round(np.clip(result_f * max_val, 0.0, max_val)).astype(raw_dtype)
 
 
 def apply_mask(img: np.ndarray,
@@ -173,10 +283,11 @@ def apply_mask_guided(img: np.ndarray,
     assert img.shape[:2] == star_mask.shape, \
         f"star_mask shape {star_mask.shape} != img spatial shape {img.shape[:2]}"
 
-    if img.dtype.kind == 'f':
-        guide = img.astype(np.float32)
+    max_val = np.iinfo(img.dtype).max if img.dtype.kind != 'f' else 1.0
+    if processed.dtype.kind == 'f':
+        guide = processed.astype(np.float32)
     else:
-        guide = img.astype(np.float32) / np.iinfo(img.dtype).max
+        guide = processed.astype(np.float32) / max_val
 
     if guide.ndim == 3:
         guide_gray = cv2.cvtColor(guide, cv2.COLOR_BGR2GRAY)

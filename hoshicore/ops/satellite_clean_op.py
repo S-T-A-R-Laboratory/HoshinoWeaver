@@ -91,6 +91,16 @@ class SatelliteCleanOp(BaseOp):
                         f"{self.name}: star extraction failed, frame will not be aligned ({e})")
                     geo = None
 
+                
+                # DEBUG: save star positions overlay
+                #if geo is not None:
+                #    _dbg = (frame_arr[:, :, :3] * 255).astype(np.uint8) if frame_arr.dtype == np.float32 else frame_arr[:, :, :3].copy()
+                #    if _dbg.dtype != np.uint8:
+                #        _dbg = (_dbg / (_dbg.max() or 1) * 255).astype(np.uint8)
+                #    for pt in geo.positions:
+                #        cv2.circle(_dbg, (int(pt[0]), int(pt[1])), 15, (0, 255, 0), 2)
+                #    cv2.imwrite(f"debug_stars_frame_{i:03d}.jpg", _dbg)
+                
                 slot = _FrameSlot(original=frame_arr, geo=geo)
                 if buffer:
                     H = await self._run_cpu(
