@@ -37,6 +37,17 @@ configs:
     label: "缩星"
     description: "缩小星点，使轨迹更稀疏。适用于星点密集的原始图像。"
     widget: switch
+  star_shrink_mode:
+    label: "缩星力度"
+    description: "力度越高星点越小。"
+    widget: select
+    visible_when: { key: "enable_star_shrink", eq: true }
+    options:
+      - { value: "light",      label: "轻度" }
+      - { value: "moderate",   label: "适中" }
+      - { value: "strong",     label: "较强" }
+      - { value: "aggressive", label: "强力" }
+      - { value: "removal",    label: "去星" }
   enable_satellite_clean:
     label: "去卫星线"
     description: "去除卫星/飞机轨迹。"
@@ -150,6 +161,7 @@ layout:
         [
           int_weight,
           enable_star_shrink,
+          star_shrink_mode,
           enable_satellite_clean,
           sat_window_size,
           mask,
@@ -162,6 +174,7 @@ layout:
       fout,
       int_weight,
       enable_star_shrink,
+      star_shrink_mode,
       enable_satellite_clean,
       sat_window_size,
       mask,

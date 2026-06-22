@@ -64,7 +64,8 @@ def morph_shrink(img: np.ndarray,
 def morph_shrink_luma(img: np.ndarray,
                       ksize: int = 5,
                       shape: str = "CIRCLE",
-                      times: int = 1) -> np.ndarray:
+                      times: int = 1,
+                      ratio: Optional[float] = None) -> np.ndarray:
     """LAB 空间仅腐蚀 L 通道，ab 通道原封不动，避免色偏。
 
     Args:
@@ -72,10 +73,14 @@ def morph_shrink_luma(img: np.ndarray,
         ksize: 腐蚀核大小。
         shape: 核形状，"RECT" / "CROSS" / "CIRCLE"。
         times: 腐蚀迭代次数。
+        ratio: 每步腐蚀结果的混合权重 [0, 1]。None = 自动（1/times）。
+               1.0 = 每步完全替换（等价于旧 iterations=times 行为）。
 
     Returns:
         np.ndarray: 腐蚀结果，dtype 与输入一致。
     """
+    if ratio is None:
+        ratio = 1.0 / times
     cv_kernel = get_morph_kernel(shape, ksize)
     raw_dtype = img.dtype
 
@@ -87,12 +92,18 @@ def morph_shrink_luma(img: np.ndarray,
         img_f = img.astype(np.float32) / max_val
 
     if img.ndim == 2:
-        result_f = cv2.morphologyEx(img_f, cv2.MORPH_ERODE, cv_kernel,
-                                    iterations=times)
+        current = img_f.copy()
+        for _ in range(times):
+            eroded = cv2.morphologyEx(current, cv2.MORPH_ERODE, cv_kernel)
+            current = eroded * ratio + current * (1.0 - ratio)
+        result_f = current
     else:
         lab = cv2.cvtColor(img_f, cv2.COLOR_BGR2LAB)
-        lab[:, :, 0] = cv2.morphologyEx(lab[:, :, 0], cv2.MORPH_ERODE,
-                                         cv_kernel, iterations=times)
+        L = lab[:, :, 0].copy()
+        for _ in range(times):
+            eroded = cv2.morphologyEx(L, cv2.MORPH_ERODE, cv_kernel)
+            L = eroded * ratio + L * (1.0 - ratio)
+        lab[:, :, 0] = L
         result_f = np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2BGR), 0.0, 1.0)
 
     if img.dtype.kind == 'f':
@@ -161,7 +172,7 @@ def peak_recovery(img_original: np.ndarray,
 def deringing(img: np.ndarray,
               shrink_img: np.ndarray,
               algo: str = "gaussian",
-              ksize: int = 25) -> np.ndarray:
+              ksize: int = 11) -> np.ndarray:
     """缓解缩星后的振铃（黑圈）现象。
 
     对原图做大核模糊得到平滑背景估计，取 max(shrink, blurred) 填补凹陷。
