@@ -19,7 +19,7 @@ _RESOLUTION_UNIT_FACTORS = {
 
 _EXIF_MANU_BLACKLIST  = {
     "makernote", "sony", "canon", "nikon", "fujifilm", "olympus", "panasonic",
-    "minolta", "samsung"
+    "minolta", "samsung", "subimage"
 }
 
 
