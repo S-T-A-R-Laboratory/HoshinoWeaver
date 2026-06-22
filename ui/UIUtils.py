@@ -3,6 +3,7 @@
 '''
 
 import asyncio
+import os
 import re
 from pathlib import Path
 
@@ -392,7 +393,6 @@ class SlotHandler(QMainWindow):
     @Slot()
     def add_file_to_tree_from_floder(self, folder_path, category):
         # 从文件夹添加所有符合格式的文件
-        import os
         for root, _, files in os.walk(folder_path):
             for file in files:
                 # 按支持的文件类型进行过滤
@@ -580,10 +580,21 @@ class SlotHandler(QMainWindow):
         self.window._last_output_path = global_configs.get("output_filename", "")
 
         try:
-            logger.info(f"Starting YAML: {yaml_path};\n"
-                        f"Collected route choices: {route_choices};\n"
-                        f"global_inputs: {global_inputs};\n"
-                        f"global_configs: {global_configs}")
+            cli_parts = ["python launcher.py", f'"{yaml_path}"']
+            for k, v in route_choices.items():
+                cli_parts.append(f"--route {k}={v}")
+            for k, v in global_inputs.items():
+                if isinstance(v, list) and v:
+                    parent = os.path.dirname(v[0])
+                    if all(os.path.dirname(f) == parent for f in v):
+                        cli_parts.append(f'--input {k}="{parent}"')
+                    else:
+                        cli_parts.append(f"--input {k}=<{len(v)} files>")
+                else:
+                    cli_parts.append(f'--input {k}="{v}"')
+            for k, v in global_configs.items():
+                cli_parts.append(f"--config {k}={v}")
+            logger.info("Equivalent command line:\n  " + " \\\n    ".join(cli_parts))
             await run_from_yaml(yaml_path,
                                 global_inputs,
                                 global_configs,
