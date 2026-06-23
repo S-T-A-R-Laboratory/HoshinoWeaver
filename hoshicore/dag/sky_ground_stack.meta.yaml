@@ -148,6 +148,7 @@ nodes:
       result: {type: image}
 
   star_aligner:
+    label: "星点对齐"
     op: StarAlignmentOp
     inputs:
       data: apply_sky_mask.result

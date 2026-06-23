@@ -467,7 +467,10 @@ class ChunkIteratorBaseOp(BaseOp):
 class FilterBaseOp(BaseOp):
     """Filter 类算子基类：输出序列长度不等于输入序列长度。
 
-    子类实现 _async_execute，在循环中选择性地调用 _broadcast_outputs。
+    子类实现 _async_filter，在循环中选择性地调用 _broadcast_outputs。
+    基类管理进度条生命周期（基于输入长度），子类每消费一帧后调用
+    self.tracker.update(self.name) 推进进度。
+
     输出自动标记为 sentinel 驱动（_infer_output_length → None）。
     wiring 层通过 VARIABLE_OUTPUT 做静态冲突检测。
 
@@ -478,7 +481,7 @@ class FilterBaseOp(BaseOp):
             INPUTS = {"data": {"type": "sequence", "required": True}}
             OUTPUTS = {"result": {"type": "sequence"}}
 
-            async def _async_execute(self, configs):
+            async def _async_filter(self, configs):
                 for i in self._input_range():
                     data = self._async_convert_inputs()
                     try:
@@ -487,8 +490,23 @@ class FilterBaseOp(BaseOp):
                         break
                     if predicate(item):
                         await self._broadcast_outputs({"result": item})
+                    self.tracker.update(self.name)
     """
     VARIABLE_OUTPUT = True
+    REPORTS_PROGRESS = True
 
     def _infer_output_length(self, input_lengths):
         return None
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        if self.length is not None:
+            self.tracker.create_bar(self.name, self.length,
+                                    desc=self.display_name)
+        try:
+            await self._async_filter(configs)
+        finally:
+            if self.length is not None:
+                self.tracker.close_bar(self.name)
+
+    async def _async_filter(self, configs: dict[str, Any]) -> None:
+        raise NotImplementedError("FilterBaseOp subclass must implement _async_filter")

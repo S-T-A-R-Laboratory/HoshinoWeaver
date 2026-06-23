@@ -22,11 +22,11 @@ from ..component.norma.cache import GeometryView
 from ..component.queue import StreamExhausted
 from ..engine.registry import register_op
 from ..component.data_container import FloatImage
-from .base import BaseOp
+from .base import FilterBaseOp
 
 
 @register_op()
-class StarAlignmentOp(BaseOp):
+class StarAlignmentOp(FilterBaseOp):
     """星点对齐：将序列帧对齐到参考帧。
 
     支持两条路径：
@@ -38,7 +38,6 @@ class StarAlignmentOp(BaseOp):
     """
 
     EXECUTOR = "cpu"
-    VARIABLE_OUTPUT = True
     INPUTS: dict[str, Any] = {
         "data": {"type": "sequence"},
         "exifs": {"type": "sequence", "required": False},
@@ -62,10 +61,7 @@ class StarAlignmentOp(BaseOp):
         # TODO: 对齐本身资源未计算
         return (2 * frame_bytes, 0)
 
-    def _infer_output_length(self, input_lengths):
-        return None
-
-    async def _async_execute(self, configs: dict[str, Any]) -> None:
+    async def _async_filter(self, configs: dict[str, Any]) -> None:
         reference = configs.get('reference')
         method = configs.get('method', 'auto')
         same_camera = configs.get('same_camera', True)
@@ -117,6 +113,7 @@ class StarAlignmentOp(BaseOp):
                 await self._broadcast_outputs(
                     {"result": frame, "aligned_exifs": exif_obj})
                 aligned_count += 1
+                self.tracker.update(self.name)
                 continue
 
             # 后续帧：对齐
@@ -147,6 +144,8 @@ class StarAlignmentOp(BaseOp):
                 traceback_str = traceback.format_exc()
                 logger.error(traceback_str)
                 raise e
+
+            self.tracker.update(self.name)
 
         logger.info(
             f"{self.name}: aligned {aligned_count} frames, "

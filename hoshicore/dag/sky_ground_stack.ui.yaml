@@ -60,7 +60,7 @@ configs:
     hidden: true
   align_method:
     label: "对齐方式"
-    description: "星点对齐算法。homography适合已经经过镜头畸变矫正的图像，distortion适合未矫正的图像，但计算速度较慢。"
+    description: "星点对齐算法。透视变换适合移动范围小且已经经过镜头畸变矫正的图像，畸变优化适合未矫正的图像，但计算速度较慢。"
     widget: select
     options:
       - { value: "auto",       label: "自动" }

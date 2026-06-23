@@ -187,7 +187,7 @@ def instantiate_and_wire(
     global_inputs: dict[str, Any],
     global_configs: dict[str, Any],
     op_registry: Optional[dict[str, type[BaseOp]]] = None,
-) -> tuple[list[BaseOp], list[Awaitable[None]], dict[str, RichContextQueue]]:
+) -> tuple[list[BaseOp], list[Awaitable[None]], dict[str, RichContextQueue], set[str]]:
     """
     根据 ValidatedDag 实例化 Op、连接队列、生成 feeder 协程。
 
@@ -384,11 +384,11 @@ def instantiate_and_wire(
                 f"Output '{out_name}' ← {provider_node}.{output_name}")
 
     # ══════ 6) 静态检测变长源冲突 ══════
-    _check_variable_source_conflicts(dag, instances)
+    variable_input_nodes = _check_variable_source_conflicts(dag, instances)
 
     logger.info(f"DAG wired: {len(instances)} node(s), "
                 f"{len(feeders)} feeder(s), {len(output_queues)} output(s)")
-    return list(instances.values()), feeders, output_queues
+    return list(instances.values()), feeders, output_queues, variable_input_nodes
 
 
 # ────────────────────────────────────────────────────────────────
@@ -430,15 +430,14 @@ async def run_dag(
     if dag_search_paths is not None:
         set_dag_search_paths(dag_search_paths)
 
-    ops, feeders, output_queues = instantiate_and_wire(dag, global_inputs,
-                                                       global_configs,
-                                                       op_registry)
+    ops, feeders, output_queues, variable_input_nodes = instantiate_and_wire(
+        dag, global_inputs, global_configs, op_registry)
 
     # 注入进度追踪器：仅限速节点获得真实 tracker，其余保留 DummyTracker
     real_tracker = tracker if tracker is not None else (
         ProgressTracker() if progress else None)
     if real_tracker is not None:
-        selected = _select_reporting_nodes(dag, ops)
+        selected = _select_reporting_nodes(dag, ops, variable_input_nodes)
         for op in ops:
             if op.name in selected:
                 op.tracker = real_tracker
@@ -647,13 +646,16 @@ def _spec_needs_meta_resolve(spec: dict[str, Any]) -> bool:
 def _select_reporting_nodes(
     dag: ValidatedDag,
     ops: list[BaseOp],
+    variable_input_nodes: set[str] = frozenset(),
 ) -> set[str]:
     """计算应上报进度的节点集合（限速节点）。
 
-    1. 优先取所有 REPORTS_PROGRESS=True 的节点。
+    1. 优先取所有 REPORTS_PROGRESS=True 的节点，排除序列输入来自变长源的节点
+       （运行时收到 length=None，无法创建有意义的进度条）。
     2. 若无带标志节点（纯 map 管线），回退为 output_links 引用的 provider 节点。
     """
     by_flag = {op.name for op in ops if getattr(op, "REPORTS_PROGRESS", False)}
+    by_flag -= variable_input_nodes
     if by_flag:
         return by_flag
 
@@ -720,8 +722,8 @@ def _flatten_config_specs(
 def _check_variable_source_conflicts(
     dag: ValidatedDag,
     instances: dict[str, BaseOp],
-) -> None:
-    """静态检测变长源冲突：不同 VARIABLE_OUTPUT 源的序列输出汇入同一节点时报错。
+) -> set[str]:
+    """静态检测变长源冲突，并返回序列输入来自变长源的节点集合。
 
     沿拓扑序为每个 (node, output_port) 标记其变长源：
         - None: 固定长度
@@ -732,10 +734,14 @@ def _check_variable_source_conflicts(
         - 普通节点：继承上游唯一变长源（若有）
         - 多个不同变长源汇入 → ValueError
         - 固定长度 + 变长源混合 → ValueError
+
+    Returns:
+        节点名集合：其序列输入来自 VARIABLE_OUTPUT 源（运行时将收到 length=None）。
     """
     nodes_spec = dag.nodes
     # (provider_node, output_port) → 变长源节点名 or None
     port_var_source: dict[tuple[str, str], Optional[str]] = {}
+    variable_input_nodes: set[str] = set()
 
     for node_name in dag.exec_order:
         op_inst = instances[node_name]
@@ -783,6 +789,9 @@ def _check_variable_source_conflicts(
                 f"(variable source: {next(iter(input_var_sources))}). "
                 f"Use FilterGate pattern to align sequences before merging.")
 
+        if input_var_sources:
+            variable_input_nodes.add(node_name)
+
         # ── 确定本节点序列输出的变长源 ──
         if op_inst.VARIABLE_OUTPUT:
             var_source = node_name
@@ -794,3 +803,5 @@ def _check_variable_source_conflicts(
         for output_name, output_spec in op_inst.OUTPUTS.items():
             if output_spec.get("type") == "sequence":
                 port_var_source[(node_name, output_name)] = var_source
+
+    return variable_input_nodes
