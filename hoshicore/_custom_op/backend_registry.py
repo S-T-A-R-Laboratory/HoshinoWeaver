@@ -45,6 +45,7 @@ _CANDIDATES: tuple[BackendCandidate, ...] = (
     BackendCandidate("fgp_accumulate", "openmp_cpu", "fgp_accumulate"),
     BackendCandidate("fgp_add", "openmp_cpu", "fgp_add"),
     BackendCandidate("fgp_masked_mean_merge", "openmp_cpu", "fgp_masked_mean_merge"),
+    BackendCandidate("median_filter_2d", "openmp_cpu", "median_filter_2d"),
     BackendCandidate("huber_weighted_accumulate", "openmp_cpu", "huber_weighted_accumulate"),
     BackendCandidate("sigma_clip_fused_merge", "openmp_cpu", "sigma_clip_fused_merge"),
     BackendCandidate(

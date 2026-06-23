@@ -25,6 +25,10 @@ add_library(hnw_ops_cpu_fgp STATIC
     ops/fgp/fgp_ops.cpp
 )
 
+add_library(hnw_ops_cpu_filter STATIC
+    ops/filter/filter_ops.cpp
+)
+
 add_library(hnw_ops_cpu_max STATIC
     ops/max/max_ops.cpp
 )
@@ -44,6 +48,7 @@ add_library(hnw_ops_cpu_sigma_clip STATIC
 set(hnw_cpu_targets
     hnw_ops_common
     hnw_ops_cpu_fgp
+    hnw_ops_cpu_filter
     hnw_ops_cpu_max
     hnw_ops_cpu_median
     hnw_ops_cpu_noise
@@ -84,6 +89,7 @@ target_include_directories(
 target_link_libraries(_C PRIVATE
     hnw_ops_common
     hnw_ops_cpu_fgp
+    hnw_ops_cpu_filter
     hnw_ops_cpu_max
     hnw_ops_cpu_median
     hnw_ops_cpu_noise

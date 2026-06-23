@@ -8,6 +8,7 @@ from hoshicore._custom_op.ops.fgp import (
     sigma_clip_fused_masked_merge,
     sigma_clip_fused_merge,
 )
+from hoshicore._custom_op.ops.filter import median_filter_2d
 from hoshicore._custom_op.ops.max import (
     build_info,
     custom_ops_available,
@@ -32,6 +33,7 @@ __all__ = [
     "fgp_masked_mean_merge",
     "huber_weighted_accumulate",
     "max_combine",
+    "median_filter_2d",
     "median_reduce_chunk",
     "sigma_clip_fused_chunk",
     "sigma_clip_fused_masked_merge",

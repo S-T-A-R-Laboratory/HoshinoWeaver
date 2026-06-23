@@ -17,6 +17,7 @@
 - SigmaClippingMerger 单轮 pass
 - HuberWeightedMerger 单轮 pass
 - 中位数块计算
+- 二维空间中值滤波
 
 运行方式：
 ```bash
@@ -41,6 +42,7 @@ from bench.common import (
 )
 from hoshicore._custom_op import build_info as custom_ops_build_info
 import hoshicore._custom_op.ops.fgp as fgp_ops
+import hoshicore._custom_op.ops.filter as filter_ops
 import hoshicore._custom_op.ops.max as max_ops
 import hoshicore._custom_op.ops.median as median_ops
 import hoshicore._custom_op.ops.noise as noise_ops
@@ -471,6 +473,19 @@ def bench_median_reduce_chunk_backend(
         _ = reduce_chunk(stack)
 
 
+def bench_median_filter_2d_backend(
+    image: np.ndarray,
+    *,
+    ksize: int,
+    backend: str,
+) -> None:
+    median_filter = {
+        "numpy": filter_ops.median_filter_2d_numpy,
+        "compiled": filter_ops.median_filter_2d_compiled,
+    }[backend]
+    _ = median_filter(image, ksize)
+
+
 def build_sigma_clip_chunk_stack(
     frames: list[np.ndarray], chunk_rows: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -551,6 +566,7 @@ def main() -> None:
     parser.add_argument("--input-dir", type=str, default=None)
     parser.add_argument("--input-mode", choices=["auto", "cache", "images", "synthetic"], default="auto")
     parser.add_argument("--chunk-rows", type=int, default=32)
+    parser.add_argument("--filter-ksize", type=int, default=25)
     parser.add_argument("--mask-density", type=float, default=0.75)
     parser.add_argument("--sigma-rej-high", type=float, default=3.0)
     parser.add_argument("--sigma-rej-low", type=float, default=3.0)
@@ -686,6 +702,16 @@ def main() -> None:
             median_chunk_stacks,
             backend="compiled",
         ),
+        "median_filter_2d_numpy": lambda: bench_median_filter_2d_backend(
+            frames[0],
+            ksize=args.filter_ksize,
+            backend="numpy",
+        ),
+        "median_filter_2d_compiled": lambda: bench_median_filter_2d_backend(
+            frames[0],
+            ksize=args.filter_ksize,
+            backend="compiled",
+        ),
         "sigma_clip_chunk_numpy": lambda: bench_sigma_clip_chunk_backend(
             sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n,
             backend="numpy",
@@ -745,6 +771,7 @@ def main() -> None:
             "input_dir": args.input_dir,
             "input_mode": args.input_mode,
             "chunk_rows": args.chunk_rows,
+            "filter_ksize": args.filter_ksize,
             "mask_density": args.mask_density,
             "sigma_rej_high": args.sigma_rej_high,
             "sigma_rej_low": args.sigma_rej_low,

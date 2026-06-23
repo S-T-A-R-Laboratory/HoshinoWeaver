@@ -3,6 +3,19 @@ from typing import Optional, Union
 import cv2
 import numpy as np
 
+from hoshicore._custom_op import median_filter_2d
+
+
+def _integer_gray_for_large_median(img: np.ndarray) -> np.ndarray | None:
+    if img.dtype not in (np.uint8, np.uint16):
+        return None
+    if img.ndim == 2:
+        return np.ascontiguousarray(img)
+    if img.ndim == 3 and img.shape[-1] == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return np.ascontiguousarray(gray)
+    return None
+
 
 def detect_starmask_by_threshold(img: np.ndarray,
                                  ksize: int = 13,
@@ -37,8 +50,15 @@ def detect_starmask_by_threshold(img: np.ndarray,
         if ksize <= 5:
             bg = cv2.medianBlur(gray, ksize=ksize)
         else:
-            gray_u8 = np.clip(gray * 255, 0, 255).astype(np.uint8)
-            bg = cv2.medianBlur(gray_u8, ksize=ksize).astype(np.float32) / 255.0
+            gray_int = _integer_gray_for_large_median(img)
+            if gray_int is not None:
+                bg_int = median_filter_2d(gray_int, ksize)
+                bg = bg_int.astype(np.float32) / np.iinfo(gray_int.dtype).max
+            else:
+                from scipy.ndimage import median_filter
+
+                size = (ksize, ksize, 1) if gray.ndim == 3 else ksize
+                bg = median_filter(gray, size=size, mode="nearest").astype(np.float32)
     elif med_algo == "mean":
         bg = cv2.blur(gray, ksize=(ksize, ksize))
     else:
