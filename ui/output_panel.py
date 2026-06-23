@@ -38,11 +38,12 @@ class _OutputRegion(QFrame):
 
     changed = Signal()
 
-    def __init__(self, spec: OutputSpec, parent: QWidget | None = None):
+    def __init__(self, spec: OutputSpec, parent: QWidget | None = None,
+                 path_cache: dict[str, str] | None = None):
         super().__init__(parent)
         self.spec = spec
         self._format_param_widgets: dict[str, tuple[QFrame, Callable[[], Any]]] = {}
-        self._path_cache: dict[str, str] = {}
+        self._path_cache: dict[str, str] = path_cache if path_cache is not None else {}
         self._current_format: str | None = None
 
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -345,6 +346,7 @@ class OutputPanel(QWidget):
         self._main_layout.setSpacing(4)
         self._main_layout.setAlignment(Qt.AlignTop)
 
+        self._path_cache: dict[str, dict[str, str]] = {}
         self._regions: list[_OutputRegion] = []
 
     def load_specs(self, specs: list[OutputSpec]):
@@ -357,7 +359,8 @@ class OutputPanel(QWidget):
         self._regions.clear()
 
         for spec in specs:
-            region = _OutputRegion(spec, parent=self)
+            region = _OutputRegion(spec, parent=self,
+                                   path_cache=self._path_cache.setdefault(spec.filename_key, {}))
             region.changed.connect(self.values_changed.emit)
             self._main_layout.addWidget(region)
             self._regions.append(region)

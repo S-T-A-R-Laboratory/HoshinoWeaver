@@ -15,21 +15,25 @@ from hoshicore._custom_op import (
     fgp_masked_mean_merge,
     huber_weighted_accumulate,
     max_combine,
+    median_filter_2d,
     median_reduce_chunk,
     sigma_clip_fused_masked_merge,
     sigma_clip_fused_merge,
     threshold_max_merge as custom_threshold_max_merge,
 )
+import hoshicore._custom_op.backend_registry as backend_registry
 import hoshicore._custom_op.ops.fgp as fgp_ops
+import hoshicore._custom_op.ops.filter as filter_ops
 import hoshicore._custom_op.ops.max as max_ops
 import hoshicore._custom_op.ops.median as median_ops
 import hoshicore._custom_op.ops.noise as noise_ops
 import hoshicore._custom_op.ops.remap as remap_ops
 from hoshicore.component.data_container import FastGaussianParam, HuberMeanParam
-from hoshicore.component.frame_buffer import DiskFrameBuffer
+from hoshicore.component.frame_buffer import MemoryFrameBuffer
 import hoshicore.component.noise_equalization as noise_equalization
 import hoshicore.component.norma.frame_align as frame_align
 import hoshicore.component.norma.types as norma_types
+import hoshicore.component.star_detect as star_detect
 from hoshicore.component.merger import HuberWeightedMerger
 from hoshicore.component.merger import MaxMerger
 from hoshicore.component.merger import MeanMerger
@@ -41,8 +45,35 @@ import hoshicore._custom_op.ops.sigma_clip as sigma_clip_chunk_ops
 from hoshicore.ops.trailstacker import MeanStackerOp
 
 
+def _naive_median_filter_2d(image: np.ndarray, ksize: int) -> np.ndarray:
+    radius = ksize // 2
+    if image.ndim == 2:
+        padded = np.pad(image, ((radius, radius), (radius, radius)), mode="edge")
+        out = np.empty_like(image)
+        for y in range(image.shape[0]):
+            for x in range(image.shape[1]):
+                window = padded[y:y + ksize, x:x + ksize]
+                out[y, x] = np.median(window).astype(image.dtype)
+        return out
+
+    padded = np.pad(
+        image,
+        ((radius, radius), (radius, radius), (0, 0)),
+        mode="edge",
+    )
+    out = np.empty_like(image)
+    for y in range(image.shape[0]):
+        for x in range(image.shape[1]):
+            for c in range(image.shape[2]):
+                window = padded[y:y + ksize, x:x + ksize, c]
+                out[y, x, c] = np.median(window).astype(image.dtype)
+    return out
+
+
 class TestCustomOpsFallback(unittest.TestCase):
     def tearDown(self) -> None:
+        filter_ops._load_compiled_module_result.cache_clear()
+        filter_ops._select_median_filter_backend.cache_clear()
         fgp_ops._load_compiled_module_result.cache_clear()
         fgp_ops._compiled_build_info.cache_clear()
         fgp_ops._select_fgp_backend.cache_clear()
@@ -458,8 +489,116 @@ class TestCustomOpsFallback(unittest.TestCase):
         expected = np.median(stack, axis=0)
         np.testing.assert_allclose(got, expected, rtol=1e-6, atol=1e-6)
 
+    def test_median_filter_2d_uint8_matches_opencv(self) -> None:
+        rng = np.random.default_rng(123)
+        for shape in ((17, 19), (13, 15, 3)):
+            image = rng.integers(0, 255, size=shape, dtype=np.uint8)
+            for ksize in (3, 7, 13):
+                got = median_filter_2d(image, ksize)
+                expected = cv2.medianBlur(image, ksize)
+                np.testing.assert_array_equal(got, expected)
+
+    def test_median_filter_2d_uint16_large_kernel_matches_naive(self) -> None:
+        rng = np.random.default_rng(456)
+        image_2d = rng.integers(0, 65535, size=(6, 7), dtype=np.uint16)
+        image_3d = rng.integers(0, 65535, size=(5, 6, 3), dtype=np.uint16)
+
+        for image, ksize in ((image_2d, 7), (image_3d, 7)):
+            got = median_filter_2d(image, ksize)
+            expected = _naive_median_filter_2d(image, ksize)
+            np.testing.assert_array_equal(got, expected)
+
+    def test_median_filter_2d_compiled_matches_numpy_large_kernel(self) -> None:
+        rng = np.random.default_rng(654)
+        for shape in ((6, 7), (5, 6, 1), (5, 6, 4)):
+            image = rng.integers(0, 65535, size=shape, dtype=np.uint16)
+            got = filter_ops.median_filter_2d_compiled(image, 7)
+            expected = filter_ops.median_filter_2d_numpy(image, 7)
+            np.testing.assert_array_equal(got, expected)
+
+    def test_median_filter_2d_uint16_small_kernel_matches_opencv(self) -> None:
+        rng = np.random.default_rng(789)
+        for shape in ((11, 13), (9, 10, 1), (9, 10, 3)):
+            image = rng.integers(0, 65535, size=shape, dtype=np.uint16)
+            for ksize in (3, 5):
+                got = median_filter_2d(image, ksize)
+                expected = cv2.medianBlur(image, ksize)
+                if image.ndim == 3 and image.shape[2] == 1:
+                    expected = expected[:, :, None]
+                np.testing.assert_array_equal(got, expected)
+
+    def test_median_filter_2d_rejects_invalid_ksize(self) -> None:
+        image = np.arange(9, dtype=np.uint16).reshape(3, 3)
+        with self.assertRaises(ValueError):
+            median_filter_2d(image, 4)
+        with self.assertRaises(ValueError):
+            median_filter_2d(image, 65537)
+
+    def test_median_filter_2d_can_force_numpy_fallback(self) -> None:
+        image = np.array(
+            [[100, 2, 300], [4, 5000, 6], [700, 8, 900]],
+            dtype=np.uint16,
+        )
+
+        with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "numpy"}, clear=False):
+            with mock.patch.object(filter_ops, "_load_compiled_module_result", return_value=(None, "mock error")):
+                filter_ops._select_median_filter_backend.cache_clear()
+                got = filter_ops.median_filter_2d(image, 7)
+
+        expected = _naive_median_filter_2d(image, 7)
+        np.testing.assert_array_equal(got, expected)
+
+    def test_star_detect_uint16_large_median_uses_custom_filter(self) -> None:
+        image = np.zeros((9, 11), dtype=np.uint16)
+        image[4, 5] = 50000
+        filtered_bg = np.zeros_like(image)
+
+        with mock.patch.object(
+            star_detect,
+            "median_filter_2d",
+            return_value=filtered_bg,
+        ) as patched_filter:
+            mask = star_detect.detect_starmask_by_threshold(
+                image,
+                ksize=7,
+                threshold_ratio=1,
+                open_ksize=0,
+                dilate_ksize=0,
+            )
+
+        patched_filter.assert_called_once()
+        args, _ = patched_filter.call_args
+        np.testing.assert_array_equal(args[0], image)
+        self.assertEqual(args[1], 7)
+        self.assertEqual(mask.shape, image.shape)
+        self.assertEqual(mask.dtype, np.uint8)
+
+    def test_star_detect_uint16_large_median_forced_fallback_keeps_precision(self) -> None:
+        image = np.zeros((9, 11), dtype=np.uint16)
+        image[4, 5] = 50000
+        original_median_blur = cv2.medianBlur
+
+        with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "numpy"}, clear=False):
+            filter_ops._select_median_filter_backend.cache_clear()
+            with mock.patch.object(
+                star_detect.cv2,
+                "medianBlur",
+                wraps=original_median_blur,
+            ) as patched_median_blur:
+                mask = star_detect.detect_starmask_by_threshold(
+                    image,
+                    ksize=7,
+                    threshold_ratio=1,
+                    open_ksize=0,
+                    dilate_ksize=0,
+                )
+
+        patched_median_blur.assert_not_called()
+        self.assertEqual(mask.shape, image.shape)
+        self.assertEqual(mask.dtype, np.uint8)
+
     def test_median_reduce_op_routes_chunk_through_custom_op(self) -> None:
-        frame_buffer = DiskFrameBuffer()
+        frame_buffer = MemoryFrameBuffer()
         frames = [
             np.array([[1, 5], [3, 4]], dtype=np.uint16),
             np.array([[2, 4], [7, 1]], dtype=np.uint16),
@@ -469,6 +608,15 @@ class TestCustomOpsFallback(unittest.TestCase):
         for frame in frames:
             frame_buffer.append(frame)
         frame_buffer.acquire()
+
+        async def iter_chunk_prefetch(row_ranges):
+            for row_start, row_end in row_ranges:
+                yield [
+                    frame_buffer.get_rows(i, row_start, row_end)
+                    for i in range(len(frame_buffer))
+                ]
+
+        frame_buffer.iter_chunk_prefetch = iter_chunk_prefetch
 
         op = MedianReduceOp("median_reduce")
         outputs = {}
@@ -812,6 +960,63 @@ class TestCustomOpsFallback(unittest.TestCase):
         info = build_info()
         self.assertIn("thread_policy", info)
 
+    def test_backend_registry_exposes_registered_candidates(self) -> None:
+        candidates = backend_registry.registered_backend_candidates("median_reduce_chunk")
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].logical_op, "median_reduce_chunk")
+        self.assertEqual(candidates[0].backend, "openmp_cpu")
+        self.assertEqual(candidates[0].kernel_name, "median_reduce_chunk")
+
+        filter_candidates = backend_registry.registered_backend_candidates("median_filter_2d")
+        self.assertEqual(len(filter_candidates), 1)
+        self.assertEqual(filter_candidates[0].backend, "openmp_cpu")
+        self.assertEqual(filter_candidates[0].kernel_name, "median_filter_2d")
+
+    def test_backend_registry_reports_missing_compiled_module(self) -> None:
+        selection = backend_registry.select_backend(
+            "median_reduce_chunk",
+            load_module=lambda: (None, "mock import error"),
+        )
+
+        self.assertFalse(selection.native)
+        self.assertEqual(selection.backend, "numpy")
+        self.assertEqual(selection.reason, "mock import error")
+
+    def test_backend_registry_selects_native_kernel(self) -> None:
+        class Module:
+            pass
+
+        module = Module()
+        module.median_reduce_chunk = lambda stack: stack
+
+        selection = backend_registry.select_backend(
+            "median_reduce_chunk",
+            load_module=lambda: (module, None),
+        )
+
+        self.assertTrue(selection.native)
+        self.assertIs(selection.module, module)
+        self.assertEqual(selection.backend, "openmp_cpu")
+
+    def test_backend_registry_respects_build_flag(self) -> None:
+        class Module:
+            camera_model_remap = lambda self: None
+
+            def build_info(self):
+                return {"cuda": False}
+
+        module = Module()
+
+        selection = backend_registry.select_backend(
+            "camera_model_remap",
+            load_module=lambda: (module, None),
+        )
+
+        self.assertFalse(selection.native)
+        self.assertEqual(selection.backend, "numpy")
+        self.assertEqual(selection.reason, "compiled backend missing build flag: cuda")
+
     def test_fgp_masked_mean_merge_can_force_numpy_fallback(self) -> None:
         img = np.array(
             [[[1, 2], [3, 4]], [[5, 6], [7, 8]]],
@@ -977,6 +1182,47 @@ class TestCustomOpsFallback(unittest.TestCase):
         self.assertEqual(c_n[1], 19.0)
         self.assertEqual(c_n[2], 19.0)
 
+    def test_sigma_clip_chunk_skip_zero_rgb_matches_numpy(self) -> None:
+        """Chunk kernel skips RGB all-zero pixels consistently with numpy."""
+        rng = np.random.default_rng(123)
+        n_frames = 12
+        spatial = 17
+        channels = 3
+        plane_size = spatial * channels
+        stack = rng.integers(
+            90, 120, size=(n_frames, plane_size), dtype=np.uint16)
+        stack[:, 6:9] = 0
+        stack[4, 12:15] = 0
+        stack[3, 25] = 900
+
+        mask = (rng.random((n_frames, plane_size)) > 0.2).astype(np.uint8)
+        stack_f64 = stack.astype(np.float64)
+        active = mask.astype(bool)
+        zero_pixels = np.all(
+            stack.reshape(n_frames, spatial, channels)[..., :3] == 0,
+            axis=-1,
+        )
+        zero_flat = np.broadcast_to(
+            zero_pixels[..., None], (n_frames, spatial, channels)
+        ).reshape(n_frames, plane_size)
+        active &= ~zero_flat
+        active_f64 = active.astype(np.float64)
+        total_sum = (stack_f64 * active_f64).sum(axis=0)
+        total_sq = (stack_f64 ** 2 * active_f64).sum(axis=0)
+        total_n = active_f64.sum(axis=0)
+
+        c_sum, c_sq, c_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5,
+            mask=mask, skip_zero_rgb=True, channels=channels)
+        n_sum, n_sq, n_n = sigma_clip_chunk_ops.sigma_clip_iterative_chunk_numpy(
+            stack, total_sum, total_sq, total_n, 3.0, 3.0, 5,
+            mask=mask, skip_zero_rgb=True, channels=channels)
+
+        np.testing.assert_array_equal(c_n, n_n)
+        np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
+        np.testing.assert_allclose(c_sq, n_sq, rtol=1e-10)
+        np.testing.assert_array_equal(c_n[6:9], np.zeros(3))
+
     def test_sigma_clip_fused_chunk_with_mask(self) -> None:
         """Fused chunk kernel respects mask."""
         np.random.seed(654)
@@ -997,6 +1243,32 @@ class TestCustomOpsFallback(unittest.TestCase):
         np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
         self.assertEqual(c_n[8], 0.0)
         self.assertLess(c_n[4], 25.0)
+
+    def test_sigma_clip_fused_chunk_skip_zero_rgb_matches_numpy(self) -> None:
+        """Fused chunk kernel excludes RGB all-zero pixels in total stats."""
+        rng = np.random.default_rng(456)
+        n_frames = 14
+        spatial = 19
+        channels = 3
+        plane_size = spatial * channels
+        stack = rng.integers(
+            80, 130, size=(n_frames, plane_size), dtype=np.uint16)
+        stack[:, 9:12] = 0
+        stack[2, 30:33] = 0
+        stack[5, 44] = 700
+        mask = (rng.random((n_frames, plane_size)) > 0.15).astype(np.uint8)
+
+        c_sum, c_sq, c_n = sigma_clip_chunk_ops.sigma_clip_fused_chunk(
+            stack, 3.0, 3.0, 5, mask=mask,
+            skip_zero_rgb=True, channels=channels)
+        n_sum, n_sq, n_n = sigma_clip_chunk_ops.sigma_clip_fused_chunk_numpy(
+            stack, 3.0, 3.0, 5, mask=mask,
+            skip_zero_rgb=True, channels=channels)
+
+        np.testing.assert_array_equal(c_n, n_n)
+        np.testing.assert_allclose(c_sum, n_sum, rtol=1e-10)
+        np.testing.assert_allclose(c_sq, n_sq, rtol=1e-10)
+        np.testing.assert_array_equal(c_n[9:12], np.zeros(3))
 
 
 if __name__ == "__main__":

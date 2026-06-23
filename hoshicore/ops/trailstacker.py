@@ -47,9 +47,12 @@ class TrailStackerOp(BaseOp):
     }
     MERGER = MaxMerger
     MAX_SIZE: int = 1
+    REPORTS_PROGRESS = True
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = dtype_bytes
         # Max/Min mergers hold 1 result array
         return (frame_bytes, 0)
 
@@ -74,7 +77,7 @@ class TrailStackerOp(BaseOp):
         err_msg_collector = []
 
         if tot_num is not None:
-            self.tracker.create_bar(self.name, tot_num)
+            self.tracker.create_bar(self.name, tot_num, desc=self.display_name)
 
         try:
             for i in self._input_range():
@@ -105,9 +108,7 @@ class TrailStackerOp(BaseOp):
                 # mask shape 对齐：第一帧到来后按实际图像尺寸 resize
                 if mask_needs_resize:
                     h, w = cur_img.shape[:2]
-                    if base_mask is None:
-                        base_mask = np.ones((h, w), dtype=bool)
-                    else:
+                    if base_mask is not None:
                         if base_mask.shape != (h, w):
                             base_mask = cv2.resize(
                                 base_mask.astype(np.float32), (w, h),
@@ -115,18 +116,15 @@ class TrailStackerOp(BaseOp):
                         base_mask = base_mask > 0.5
                     mask_needs_resize = False
 
-                # 每帧独立计算有效 mask：base mask 与本帧空白区域取交
-                if cur_img.ndim == 3 and cur_img.shape[2] >= 3:
-                    empty_mask = np.all(cur_img[..., :3] == 0, axis=-1)
-                    frame_mask = base_mask & (~empty_mask)
-                else:
-                    frame_mask = base_mask
+                # 零像素检测下沉到 C++ kernel 内部，
+                is_rgb = cur_img.ndim == 3 and cur_img.shape[2] >= 3
 
                 try:
                     await self._run_cpu(merger.merge,
                                         cur_img,
                                         weight,
-                                        spatial_mask=frame_mask)
+                                        spatial_mask=base_mask,
+                                        skip_zero_rgb=is_rgb)
                 except AssertionError as e:
                     err_msg_collector.append(
                         f"Shape of {cur_filename} does not match.")
@@ -178,9 +176,32 @@ class MeanStackerOp(TrailStackerOp):
     }
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
-        # MeanMerger holds FGP: mu + var + n = 3 arrays
-        return (3 * frame_bytes, 0)
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        # MeanMerger 常驻 FGP(sum_mu/square_sum/n)。按输入 dtype 字节数估算，
+        # 避免把 uint16 的 uint64/float64 累加器误算成 3 个原始帧。
+        return (_estimate_fgp_bytes(frame_bytes, dtype_bytes,
+                                    bool(configs.get("int_weight", False))), 0)
+
+
+def _estimate_fgp_bytes(
+    frame_bytes: int,
+    dtype_bytes: Optional[int],
+    int_weight: bool,
+) -> int:
+    if dtype_bytes is None or dtype_bytes <= 0:
+        # dtype 未知时回退到旧的 3× 原始帧估算，保持 preflight 保守可用。
+        return 3 * frame_bytes
+
+    pixels = max(1, frame_bytes // dtype_bytes)
+    src_bytes = int(dtype_bytes)
+    if int_weight and src_bytes < 8:
+        src_bytes *= 2
+
+    sum_bytes = src_bytes * 2 if src_bytes < 8 else 8
+    square_bytes = sum_bytes * 2 if sum_bytes < 8 else 8
+    n_bytes = 4 if int_weight else 2
+    return pixels * (sum_bytes + square_bytes + n_bytes)
 
 
 @register_op()

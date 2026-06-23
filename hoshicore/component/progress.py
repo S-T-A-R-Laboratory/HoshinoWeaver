@@ -21,6 +21,9 @@ class DummyTracker:
     所有方法均为 no-op。
     """
 
+    def pre_register(self, name: str) -> None:
+        pass
+
     def create_bar(
         self,
         name: str,

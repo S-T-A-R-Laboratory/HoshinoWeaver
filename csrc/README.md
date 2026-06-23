@@ -210,15 +210,21 @@ Preset 参考：
 2. 在 `CMakeLists.txt` 新增 static library target 并链接到 `_C`
 3. 在 `module.cpp` 中注册 `bind_*_ops(m)`
 4. 在 `hoshicore/_custom_op/ops/` 增加 Python 包装与 numpy fallback
-5. 在 `hoshicore/_custom_op/api.py` + `__init__.py` 导出
-6. 补 focused tests（`tests/test_custom_ops.py`）
-7. 补 microbenchmark（`bench/cpu/kernels.py`）
+5. 在 `hoshicore/_custom_op/backend_registry.py` 注册 `BackendCandidate`
+6. 在 `hoshicore/_custom_op/api.py` + `__init__.py` 导出
+7. 补 focused tests（`tests/test_custom_ops.py`）
+8. 补 microbenchmark（`bench/cpu/kernels.py`）
+
+`BackendCandidate` 用于运行时判断当前包是否实际包含 native kernel。若 CMake /
+打包未包含某个 kernel，Python wrapper 必须回到 numpy/CPU fallback；缺失 native
+backend 只能影响性能，不能影响 public API 可用性。
 
 CUDA 算子沿用同样流程，但额外需要：
 
 1. 在 `CMakeLists.txt` 的 `HNW_ENABLE_CUDA` 分支里接入 `.cu`/binding 源文件
 2. 保持 CPU fallback 语义不变
 3. `.cpp` 绑定文件需 `#include "common/compat.h"`（MSVC `ssize_t` 兼容）
+4. 在 `BackendCandidate` 中标注对应 backend（如 `cuda_host_io`）和 build flag（如 `cuda`）
 
 ## 参考
 

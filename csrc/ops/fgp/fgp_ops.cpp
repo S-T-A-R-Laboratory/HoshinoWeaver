@@ -41,12 +41,23 @@ void validate_accumulator_shapes(const py::array& sum_mu,
     }
 }
 
+template <typename FreshT>
+inline bool is_pixel_zero_rgb(const FreshT* HNW_RESTRICT ptr,
+                              ssize_t base, ssize_t channels) {
+    for (ssize_t c = 0; c < channels && c < 3; ++c) {
+        if (ptr[base + c] != static_cast<FreshT>(0)) return false;
+    }
+    return true;
+}
+
 template <typename FreshT, typename SumT, typename SquareT, typename CountT>
 void fgp_accumulate_inplace_kernel(py::buffer_info& sum_info,
                                    py::buffer_info& square_info,
                                    py::buffer_info& count_info,
                                    const py::buffer_info& fresh_info,
-                                   const uint64_t weight) {
+                                   const uint64_t weight,
+                                   const bool skip_zero_rgb,
+                                   const ssize_t channels) {
     auto* HNW_RESTRICT sum_ptr = static_cast<SumT*>(sum_info.ptr);
     auto* HNW_RESTRICT square_ptr = static_cast<SquareT*>(square_info.ptr);
     auto* HNW_RESTRICT count_ptr = static_cast<CountT*>(count_info.ptr);
@@ -62,23 +73,54 @@ void fgp_accumulate_inplace_kernel(py::buffer_info& sum_info,
     const CountAccumT weight_count = static_cast<CountAccumT>(weight);
 
     py::gil_scoped_release release;
+
+    if (!skip_zero_rgb || channels < 3) {
+        // Original flat loop — no zero-pixel detection needed
 #if defined(_OPENMP) && HNW_ENABLE_OMP_SIMD
 #pragma omp parallel for simd schedule(static)
 #elif defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
-    for (ssize_t i = 0; i < total; ++i) {
-        const SumAccumT value_sum = static_cast<SumAccumT>(fresh_ptr[i]);
-        const SquareAccumT value_square =
-            static_cast<SquareAccumT>(fresh_ptr[i]);
-        sum_ptr[i] = static_cast<SumT>(
-            static_cast<SumAccumT>(sum_ptr[i]) +
-            static_cast<SumAccumT>(value_sum * weight_sum));
-        square_ptr[i] = static_cast<SquareT>(
-            static_cast<SquareAccumT>(square_ptr[i]) +
-            static_cast<SquareAccumT>(value_square * value_square * weight_square));
-        count_ptr[i] = static_cast<CountT>(
-            static_cast<CountAccumT>(count_ptr[i]) + weight_count);
+        for (ssize_t i = 0; i < total; ++i) {
+            const SumAccumT value_sum = static_cast<SumAccumT>(fresh_ptr[i]);
+            const SquareAccumT value_square =
+                static_cast<SquareAccumT>(fresh_ptr[i]);
+            sum_ptr[i] = static_cast<SumT>(
+                static_cast<SumAccumT>(sum_ptr[i]) +
+                static_cast<SumAccumT>(value_sum * weight_sum));
+            square_ptr[i] = static_cast<SquareT>(
+                static_cast<SquareAccumT>(square_ptr[i]) +
+                static_cast<SquareAccumT>(value_square * value_square * weight_square));
+            count_ptr[i] = static_cast<CountT>(
+                static_cast<CountAccumT>(count_ptr[i]) + weight_count);
+        }
+    } else {
+        // Spatial+channel loop with per-pixel zero detection
+        const ssize_t spatial = total / channels;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+        for (ssize_t idx = 0; idx < spatial; ++idx) {
+            const ssize_t base = idx * channels;
+            if (is_pixel_zero_rgb(fresh_ptr, base, channels)) continue;
+#if defined(HNW_ENABLE_OMP_SIMD) && HNW_ENABLE_OMP_SIMD
+#pragma omp simd
+#endif
+            for (ssize_t c = 0; c < channels; ++c) {
+                const ssize_t offset = base + c;
+                const SumAccumT value_sum = static_cast<SumAccumT>(fresh_ptr[offset]);
+                const SquareAccumT value_square =
+                    static_cast<SquareAccumT>(fresh_ptr[offset]);
+                sum_ptr[offset] = static_cast<SumT>(
+                    static_cast<SumAccumT>(sum_ptr[offset]) +
+                    static_cast<SumAccumT>(value_sum * weight_sum));
+                square_ptr[offset] = static_cast<SquareT>(
+                    static_cast<SquareAccumT>(square_ptr[offset]) +
+                    static_cast<SquareAccumT>(value_square * value_square * weight_square));
+                count_ptr[offset] = static_cast<CountT>(
+                    static_cast<CountAccumT>(count_ptr[offset]) + weight_count);
+            }
+        }
     }
 }
 
@@ -119,7 +161,8 @@ void fgp_masked_mean_inplace_kernel(py::buffer_info& sum_info,
                                     py::buffer_info& square_info,
                                     py::buffer_info& count_info,
                                     const py::buffer_info& fresh_info,
-                                    const py::buffer_info& mask_info) {
+                                    const py::buffer_info& mask_info,
+                                    const bool skip_zero_rgb) {
     auto* HNW_RESTRICT sum_ptr = static_cast<SumT*>(sum_info.ptr);
     auto* HNW_RESTRICT square_ptr = static_cast<SquareT*>(square_info.ptr);
     auto* HNW_RESTRICT count_ptr = static_cast<CountT*>(count_info.ptr);
@@ -138,6 +181,10 @@ void fgp_masked_mean_inplace_kernel(py::buffer_info& sum_info,
             continue;
         }
         const ssize_t base = idx * channels;
+        if (skip_zero_rgb && channels >= 3 &&
+            is_pixel_zero_rgb(fresh_ptr, base, channels)) {
+            continue;
+        }
 #if defined(HNW_ENABLE_OMP_SIMD) && HNW_ENABLE_OMP_SIMD
 #pragma omp simd
 #endif
@@ -159,7 +206,9 @@ void sigma_clip_fused_inplace_kernel(py::buffer_info& sum_info,
                                      py::buffer_info& count_info,
                                      const py::buffer_info& fresh_info,
                                      const py::buffer_info& rej_high_info,
-                                     const py::buffer_info& rej_low_info) {
+                                     const py::buffer_info& rej_low_info,
+                                     const bool skip_zero_rgb,
+                                     const ssize_t channels) {
     auto* HNW_RESTRICT sum_ptr = static_cast<SumT*>(sum_info.ptr);
     auto* HNW_RESTRICT square_ptr = static_cast<SquareT*>(square_info.ptr);
     auto* HNW_RESTRICT count_ptr = static_cast<CountT*>(count_info.ptr);
@@ -172,20 +221,47 @@ void sigma_clip_fused_inplace_kernel(py::buffer_info& sum_info,
     const ssize_t total = fresh_info.size;
 
     py::gil_scoped_release release;
+
+    if (!skip_zero_rgb || channels < 3) {
 #if defined(_OPENMP) && HNW_ENABLE_OMP_SIMD
 #pragma omp parallel for simd schedule(static)
 #elif defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
-    for (ssize_t i = 0; i < total; ++i) {
-        const FreshT value = fresh_ptr[i];
-        if (value < rej_low_ptr[i] || value > rej_high_ptr[i]) {
-            const SumT value_sum = static_cast<SumT>(value);
-            const SquareT value_square = static_cast<SquareT>(value);
-            sum_ptr[i] = static_cast<SumT>(sum_ptr[i] + value_sum);
-            square_ptr[i] = static_cast<SquareT>(
-                square_ptr[i] + value_square * value_square);
-            count_ptr[i] = static_cast<CountT>(count_ptr[i] + 1);
+        for (ssize_t i = 0; i < total; ++i) {
+            const FreshT value = fresh_ptr[i];
+            if (value < rej_low_ptr[i] || value > rej_high_ptr[i]) {
+                const SumT value_sum = static_cast<SumT>(value);
+                const SquareT value_square = static_cast<SquareT>(value);
+                sum_ptr[i] = static_cast<SumT>(sum_ptr[i] + value_sum);
+                square_ptr[i] = static_cast<SquareT>(
+                    square_ptr[i] + value_square * value_square);
+                count_ptr[i] = static_cast<CountT>(count_ptr[i] + 1);
+            }
+        }
+    } else {
+        const ssize_t spatial = total / channels;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+        for (ssize_t idx = 0; idx < spatial; ++idx) {
+            const ssize_t base = idx * channels;
+            if (is_pixel_zero_rgb(fresh_ptr, base, channels)) continue;
+#if defined(HNW_ENABLE_OMP_SIMD) && HNW_ENABLE_OMP_SIMD
+#pragma omp simd
+#endif
+            for (ssize_t c = 0; c < channels; ++c) {
+                const ssize_t offset = base + c;
+                const FreshT value = fresh_ptr[offset];
+                if (value < rej_low_ptr[offset] || value > rej_high_ptr[offset]) {
+                    const SumT value_sum = static_cast<SumT>(value);
+                    const SquareT value_square = static_cast<SquareT>(value);
+                    sum_ptr[offset] = static_cast<SumT>(sum_ptr[offset] + value_sum);
+                    square_ptr[offset] = static_cast<SquareT>(
+                        square_ptr[offset] + value_square * value_square);
+                    count_ptr[offset] = static_cast<CountT>(count_ptr[offset] + 1);
+                }
+            }
         }
     }
 }
@@ -197,7 +273,8 @@ void sigma_clip_fused_masked_inplace_kernel(py::buffer_info& sum_info,
                                             const py::buffer_info& fresh_info,
                                             const py::buffer_info& rej_high_info,
                                             const py::buffer_info& rej_low_info,
-                                            const py::buffer_info& mask_info) {
+                                            const py::buffer_info& mask_info,
+                                            const bool skip_zero_rgb) {
     auto* HNW_RESTRICT sum_ptr = static_cast<SumT*>(sum_info.ptr);
     auto* HNW_RESTRICT square_ptr = static_cast<SquareT*>(square_info.ptr);
     auto* HNW_RESTRICT count_ptr = static_cast<CountT*>(count_info.ptr);
@@ -220,6 +297,10 @@ void sigma_clip_fused_masked_inplace_kernel(py::buffer_info& sum_info,
             continue;
         }
         const ssize_t base = idx * channels;
+        if (skip_zero_rgb && channels >= 3 &&
+            is_pixel_zero_rgb(fresh_ptr, base, channels)) {
+            continue;
+        }
 #if defined(HNW_ENABLE_OMP_SIMD) && HNW_ENABLE_OMP_SIMD
 #pragma omp simd
 #endif
@@ -288,7 +369,9 @@ void dispatch_accumulate_count_dtype(
     py::array_t<SquareT, py::array::c_style | py::array::forcecast> square_sum,
     py::array n,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
-    const uint64_t weight) {
+    const uint64_t weight,
+    const bool skip_zero_rgb,
+    const ssize_t channels) {
     if (py::isinstance<py::array_t<uint16_t>>(n)) {
         auto count = n.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>();
         auto sum_info = sum_mu.request();
@@ -296,7 +379,8 @@ void dispatch_accumulate_count_dtype(
         auto count_info = count.request();
         auto fresh_info = fresh.request();
         fgp_accumulate_inplace_kernel<FreshT, SumT, SquareT, uint16_t>(
-            sum_info, square_info, count_info, fresh_info, weight);
+            sum_info, square_info, count_info, fresh_info, weight,
+            skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(n)) {
@@ -306,7 +390,8 @@ void dispatch_accumulate_count_dtype(
         auto count_info = count.request();
         auto fresh_info = fresh.request();
         fgp_accumulate_inplace_kernel<FreshT, SumT, SquareT, uint32_t>(
-            sum_info, square_info, count_info, fresh_info, weight);
+            sum_info, square_info, count_info, fresh_info, weight,
+            skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(n)) {
@@ -316,7 +401,8 @@ void dispatch_accumulate_count_dtype(
         auto count_info = count.request();
         auto fresh_info = fresh.request();
         fgp_accumulate_inplace_kernel<FreshT, SumT, SquareT, uint64_t>(
-            sum_info, square_info, count_info, fresh_info, weight);
+            sum_info, square_info, count_info, fresh_info, weight,
+            skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<double>>(n)) {
@@ -326,7 +412,8 @@ void dispatch_accumulate_count_dtype(
         auto count_info = count.request();
         auto fresh_info = fresh.request();
         fgp_accumulate_inplace_kernel<FreshT, SumT, SquareT, double>(
-            sum_info, square_info, count_info, fresh_info, weight);
+            sum_info, square_info, count_info, fresh_info, weight,
+            skip_zero_rgb, channels);
         return;
     }
     throw std::invalid_argument("fgp_accumulate: unsupported n dtype");
@@ -338,14 +425,16 @@ void dispatch_accumulate_square_dtype(
     py::array square_sum,
     py::array n,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
-    const uint64_t weight) {
+    const uint64_t weight,
+    const bool skip_zero_rgb,
+    const ssize_t channels) {
     if (py::isinstance<py::array_t<uint32_t>>(square_sum)) {
         dispatch_accumulate_count_dtype<FreshT, SumT, uint32_t>(
             sum_mu,
             square_sum.cast<py::array_t<uint32_t, py::array::c_style | py::array::forcecast>>(),
             n,
             fresh,
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(square_sum)) {
@@ -354,7 +443,7 @@ void dispatch_accumulate_square_dtype(
             square_sum.cast<py::array_t<uint64_t, py::array::c_style | py::array::forcecast>>(),
             n,
             fresh,
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<double>>(square_sum)) {
@@ -363,7 +452,7 @@ void dispatch_accumulate_square_dtype(
             square_sum.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(),
             n,
             fresh,
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     throw std::invalid_argument("fgp_accumulate: unsupported square_sum dtype");
@@ -375,14 +464,16 @@ void dispatch_accumulate_sum_dtype(
     py::array square_sum,
     py::array n,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
-    const uint64_t weight) {
+    const uint64_t weight,
+    const bool skip_zero_rgb,
+    const ssize_t channels) {
     if (py::isinstance<py::array_t<uint16_t>>(sum_mu)) {
         dispatch_accumulate_square_dtype<FreshT, uint16_t>(
             sum_mu.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(),
             square_sum,
             n,
             fresh,
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(sum_mu)) {
@@ -391,7 +482,7 @@ void dispatch_accumulate_sum_dtype(
             square_sum,
             n,
             fresh,
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(sum_mu)) {
@@ -400,7 +491,7 @@ void dispatch_accumulate_sum_dtype(
             square_sum,
             n,
             fresh,
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<double>>(sum_mu)) {
@@ -409,7 +500,7 @@ void dispatch_accumulate_sum_dtype(
             square_sum,
             n,
             fresh,
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     throw std::invalid_argument("fgp_accumulate: unsupported sum_mu dtype");
@@ -594,7 +685,8 @@ void dispatch_masked_mean_count_dtype(
     py::array_t<SquareT, py::array::c_style | py::array::forcecast> square_sum,
     py::array n,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
-    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask) {
+    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask,
+    const bool skip_zero_rgb) {
     if (py::isinstance<py::array_t<uint16_t>>(n)) {
         auto count = n.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>();
         auto sum_info = sum_mu.request();
@@ -603,7 +695,8 @@ void dispatch_masked_mean_count_dtype(
         auto fresh_info = fresh.request();
         auto mask_info = mask.request();
         fgp_masked_mean_inplace_kernel<FreshT, SumT, SquareT, uint16_t>(
-            sum_info, square_info, count_info, fresh_info, mask_info);
+            sum_info, square_info, count_info, fresh_info, mask_info,
+            skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(n)) {
@@ -614,7 +707,8 @@ void dispatch_masked_mean_count_dtype(
         auto fresh_info = fresh.request();
         auto mask_info = mask.request();
         fgp_masked_mean_inplace_kernel<FreshT, SumT, SquareT, uint32_t>(
-            sum_info, square_info, count_info, fresh_info, mask_info);
+            sum_info, square_info, count_info, fresh_info, mask_info,
+            skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(n)) {
@@ -625,7 +719,8 @@ void dispatch_masked_mean_count_dtype(
         auto fresh_info = fresh.request();
         auto mask_info = mask.request();
         fgp_masked_mean_inplace_kernel<FreshT, SumT, SquareT, uint64_t>(
-            sum_info, square_info, count_info, fresh_info, mask_info);
+            sum_info, square_info, count_info, fresh_info, mask_info,
+            skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<double>>(n)) {
@@ -636,7 +731,8 @@ void dispatch_masked_mean_count_dtype(
         auto fresh_info = fresh.request();
         auto mask_info = mask.request();
         fgp_masked_mean_inplace_kernel<FreshT, SumT, SquareT, double>(
-            sum_info, square_info, count_info, fresh_info, mask_info);
+            sum_info, square_info, count_info, fresh_info, mask_info,
+            skip_zero_rgb);
         return;
     }
     throw std::invalid_argument("fgp_masked_mean_merge: unsupported n dtype");
@@ -648,14 +744,15 @@ void dispatch_masked_mean_square_dtype(
     py::array square_sum,
     py::array n,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
-    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask) {
+    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask,
+    const bool skip_zero_rgb) {
     if (py::isinstance<py::array_t<uint32_t>>(square_sum)) {
         dispatch_masked_mean_count_dtype<FreshT, SumT, uint32_t>(
             sum_mu,
             square_sum.cast<py::array_t<uint32_t, py::array::c_style | py::array::forcecast>>(),
             n,
             fresh,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(square_sum)) {
@@ -664,7 +761,7 @@ void dispatch_masked_mean_square_dtype(
             square_sum.cast<py::array_t<uint64_t, py::array::c_style | py::array::forcecast>>(),
             n,
             fresh,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<double>>(square_sum)) {
@@ -673,7 +770,7 @@ void dispatch_masked_mean_square_dtype(
             square_sum.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(),
             n,
             fresh,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     throw std::invalid_argument("fgp_masked_mean_merge: unsupported square_sum dtype");
@@ -685,14 +782,15 @@ void dispatch_masked_mean_sum_dtype(
     py::array square_sum,
     py::array n,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
-    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask) {
+    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask,
+    const bool skip_zero_rgb) {
     if (py::isinstance<py::array_t<uint16_t>>(sum_mu)) {
         dispatch_masked_mean_square_dtype<FreshT, uint16_t>(
             sum_mu.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(),
             square_sum,
             n,
             fresh,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(sum_mu)) {
@@ -701,7 +799,7 @@ void dispatch_masked_mean_sum_dtype(
             square_sum,
             n,
             fresh,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(sum_mu)) {
@@ -710,7 +808,7 @@ void dispatch_masked_mean_sum_dtype(
             square_sum,
             n,
             fresh,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<double>>(sum_mu)) {
@@ -719,7 +817,7 @@ void dispatch_masked_mean_sum_dtype(
             square_sum,
             n,
             fresh,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     throw std::invalid_argument("fgp_masked_mean_merge: unsupported sum_mu dtype");
@@ -732,7 +830,9 @@ void dispatch_sigma_clip_count_dtype(
     py::array n,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_high,
-    const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_low) {
+    const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_low,
+    const bool skip_zero_rgb,
+    const ssize_t channels) {
     if (py::isinstance<py::array_t<uint16_t>>(n)) {
         auto count = n.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>();
         auto sum_info = sum_mu.request();
@@ -742,7 +842,7 @@ void dispatch_sigma_clip_count_dtype(
         auto rej_high_info = rej_high.request();
         auto rej_low_info = rej_low.request();
         sigma_clip_fused_inplace_kernel<FreshT, SumT, SquareT, uint16_t>(
-            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info);
+            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(n)) {
@@ -754,7 +854,7 @@ void dispatch_sigma_clip_count_dtype(
         auto rej_high_info = rej_high.request();
         auto rej_low_info = rej_low.request();
         sigma_clip_fused_inplace_kernel<FreshT, SumT, SquareT, uint32_t>(
-            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info);
+            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(n)) {
@@ -766,7 +866,7 @@ void dispatch_sigma_clip_count_dtype(
         auto rej_high_info = rej_high.request();
         auto rej_low_info = rej_low.request();
         sigma_clip_fused_inplace_kernel<FreshT, SumT, SquareT, uint64_t>(
-            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info);
+            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<double>>(n)) {
@@ -778,7 +878,7 @@ void dispatch_sigma_clip_count_dtype(
         auto rej_high_info = rej_high.request();
         auto rej_low_info = rej_low.request();
         sigma_clip_fused_inplace_kernel<FreshT, SumT, SquareT, double>(
-            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info);
+            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, skip_zero_rgb, channels);
         return;
     }
     throw std::invalid_argument("sigma_clip_fused_merge: unsupported n dtype");
@@ -791,7 +891,9 @@ void dispatch_sigma_clip_square_dtype(
     py::array n,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_high,
-    const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_low) {
+    const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_low,
+    const bool skip_zero_rgb,
+    const ssize_t channels) {
     if (py::isinstance<py::array_t<uint32_t>>(square_sum)) {
         dispatch_sigma_clip_count_dtype<FreshT, SumT, uint32_t>(
             sum_mu,
@@ -799,7 +901,7 @@ void dispatch_sigma_clip_square_dtype(
             n,
             fresh,
             rej_high,
-            rej_low);
+            rej_low, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(square_sum)) {
@@ -809,7 +911,7 @@ void dispatch_sigma_clip_square_dtype(
             n,
             fresh,
             rej_high,
-            rej_low);
+            rej_low, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<double>>(square_sum)) {
@@ -819,7 +921,7 @@ void dispatch_sigma_clip_square_dtype(
             n,
             fresh,
             rej_high,
-            rej_low);
+            rej_low, skip_zero_rgb, channels);
         return;
     }
     throw std::invalid_argument("sigma_clip_fused_merge: unsupported square_sum dtype");
@@ -832,7 +934,9 @@ void dispatch_sigma_clip_sum_dtype(
     py::array n,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_high,
-    const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_low) {
+    const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_low,
+    const bool skip_zero_rgb,
+    const ssize_t channels) {
     if (py::isinstance<py::array_t<uint16_t>>(sum_mu)) {
         dispatch_sigma_clip_square_dtype<FreshT, uint16_t>(
             sum_mu.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(),
@@ -840,7 +944,7 @@ void dispatch_sigma_clip_sum_dtype(
             n,
             fresh,
             rej_high,
-            rej_low);
+            rej_low, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(sum_mu)) {
@@ -850,7 +954,7 @@ void dispatch_sigma_clip_sum_dtype(
             n,
             fresh,
             rej_high,
-            rej_low);
+            rej_low, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(sum_mu)) {
@@ -860,7 +964,7 @@ void dispatch_sigma_clip_sum_dtype(
             n,
             fresh,
             rej_high,
-            rej_low);
+            rej_low, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<double>>(sum_mu)) {
@@ -870,7 +974,7 @@ void dispatch_sigma_clip_sum_dtype(
             n,
             fresh,
             rej_high,
-            rej_low);
+            rej_low, skip_zero_rgb, channels);
         return;
     }
     throw std::invalid_argument("sigma_clip_fused_merge: unsupported sum_mu dtype");
@@ -884,7 +988,8 @@ void dispatch_sigma_clip_masked_count_dtype(
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_high,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_low,
-    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask) {
+    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask,
+    const bool skip_zero_rgb) {
     if (py::isinstance<py::array_t<uint16_t>>(n)) {
         auto count = n.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>();
         auto sum_info = sum_mu.request();
@@ -895,7 +1000,7 @@ void dispatch_sigma_clip_masked_count_dtype(
         auto rej_low_info = rej_low.request();
         auto mask_info = mask.request();
         sigma_clip_fused_masked_inplace_kernel<FreshT, SumT, SquareT, uint16_t>(
-            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, mask_info);
+            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, mask_info, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(n)) {
@@ -908,7 +1013,7 @@ void dispatch_sigma_clip_masked_count_dtype(
         auto rej_low_info = rej_low.request();
         auto mask_info = mask.request();
         sigma_clip_fused_masked_inplace_kernel<FreshT, SumT, SquareT, uint32_t>(
-            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, mask_info);
+            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, mask_info, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(n)) {
@@ -921,7 +1026,7 @@ void dispatch_sigma_clip_masked_count_dtype(
         auto rej_low_info = rej_low.request();
         auto mask_info = mask.request();
         sigma_clip_fused_masked_inplace_kernel<FreshT, SumT, SquareT, uint64_t>(
-            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, mask_info);
+            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, mask_info, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<double>>(n)) {
@@ -934,7 +1039,7 @@ void dispatch_sigma_clip_masked_count_dtype(
         auto rej_low_info = rej_low.request();
         auto mask_info = mask.request();
         sigma_clip_fused_masked_inplace_kernel<FreshT, SumT, SquareT, double>(
-            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, mask_info);
+            sum_info, square_info, count_info, fresh_info, rej_high_info, rej_low_info, mask_info, skip_zero_rgb);
         return;
     }
     throw std::invalid_argument("sigma_clip_fused_masked_merge: unsupported n dtype");
@@ -948,7 +1053,8 @@ void dispatch_sigma_clip_masked_square_dtype(
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_high,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_low,
-    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask) {
+    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask,
+    const bool skip_zero_rgb) {
     if (py::isinstance<py::array_t<uint32_t>>(square_sum)) {
         dispatch_sigma_clip_masked_count_dtype<FreshT, SumT, uint32_t>(
             sum_mu,
@@ -957,7 +1063,7 @@ void dispatch_sigma_clip_masked_square_dtype(
             fresh,
             rej_high,
             rej_low,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(square_sum)) {
@@ -968,7 +1074,7 @@ void dispatch_sigma_clip_masked_square_dtype(
             fresh,
             rej_high,
             rej_low,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<double>>(square_sum)) {
@@ -979,7 +1085,7 @@ void dispatch_sigma_clip_masked_square_dtype(
             fresh,
             rej_high,
             rej_low,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     throw std::invalid_argument("sigma_clip_fused_masked_merge: unsupported square_sum dtype");
@@ -993,7 +1099,8 @@ void dispatch_sigma_clip_masked_sum_dtype(
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& fresh,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_high,
     const py::array_t<FreshT, py::array::c_style | py::array::forcecast>& rej_low,
-    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask) {
+    const py::array_t<uint8_t, py::array::c_style | py::array::forcecast>& mask,
+    const bool skip_zero_rgb) {
     if (py::isinstance<py::array_t<uint16_t>>(sum_mu)) {
         dispatch_sigma_clip_masked_square_dtype<FreshT, uint16_t>(
             sum_mu.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(),
@@ -1002,7 +1109,7 @@ void dispatch_sigma_clip_masked_sum_dtype(
             fresh,
             rej_high,
             rej_low,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(sum_mu)) {
@@ -1013,7 +1120,7 @@ void dispatch_sigma_clip_masked_sum_dtype(
             fresh,
             rej_high,
             rej_low,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(sum_mu)) {
@@ -1024,7 +1131,7 @@ void dispatch_sigma_clip_masked_sum_dtype(
             fresh,
             rej_high,
             rej_low,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<double>>(sum_mu)) {
@@ -1035,7 +1142,7 @@ void dispatch_sigma_clip_masked_sum_dtype(
             fresh,
             rej_high,
             rej_low,
-            mask);
+            mask, skip_zero_rgb);
         return;
     }
     throw std::invalid_argument("sigma_clip_fused_masked_merge: unsupported sum_mu dtype");
@@ -1174,53 +1281,55 @@ void fgp_accumulate_dispatch(py::array sum_mu,
                              py::array square_sum,
                              py::array n,
                              const py::array& fresh,
-                             const py::object& weight_obj) {
+                             const py::object& weight_obj,
+                             bool skip_zero_rgb) {
     validate_accumulate_shapes(sum_mu, square_sum, n, fresh);
     uint64_t weight = 1;
     if (!weight_obj.is_none()) {
         weight = py::cast<uint64_t>(weight_obj);
     }
+    const ssize_t channels = (fresh.ndim() >= 3) ? fresh.shape(fresh.ndim() - 1) : 1;
 
     if (py::isinstance<py::array_t<uint8_t>>(fresh)) {
         dispatch_accumulate_sum_dtype<uint8_t>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<uint8_t, py::array::c_style | py::array::forcecast>>(),
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint16_t>>(fresh)) {
         dispatch_accumulate_sum_dtype<uint16_t>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(),
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(fresh)) {
         dispatch_accumulate_sum_dtype<uint32_t>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<uint32_t, py::array::c_style | py::array::forcecast>>(),
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(fresh)) {
         dispatch_accumulate_sum_dtype<uint64_t>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<uint64_t, py::array::c_style | py::array::forcecast>>(),
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<float>>(fresh)) {
         dispatch_accumulate_sum_dtype<float>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>(),
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<double>>(fresh)) {
         dispatch_accumulate_sum_dtype<double>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(),
-            weight);
+            weight, skip_zero_rgb, channels);
         return;
     }
     throw std::invalid_argument("fgp_accumulate: unsupported fresh dtype");
@@ -1242,7 +1351,8 @@ void fgp_masked_mean_dispatch(py::array sum_mu,
                               py::array square_sum,
                               py::array n,
                               const py::array& fresh,
-                              const py::array& mask) {
+                              const py::array& mask,
+                              bool skip_zero_rgb) {
     validate_masked_shapes(sum_mu, square_sum, n, fresh, mask,
                            "fgp_masked_mean_merge");
     auto mask_t =
@@ -1252,42 +1362,42 @@ void fgp_masked_mean_dispatch(py::array sum_mu,
         dispatch_masked_mean_sum_dtype<uint8_t>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<uint8_t, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint16_t>>(fresh)) {
         dispatch_masked_mean_sum_dtype<uint16_t>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(fresh)) {
         dispatch_masked_mean_sum_dtype<uint32_t>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<uint32_t, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(fresh)) {
         dispatch_masked_mean_sum_dtype<uint64_t>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<uint64_t, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<float>>(fresh)) {
         dispatch_masked_mean_sum_dtype<float>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<double>>(fresh)) {
         dispatch_masked_mean_sum_dtype<double>(
             sum_mu, square_sum, n,
             fresh.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     throw std::invalid_argument("fgp_masked_mean_merge: unsupported fresh dtype");
@@ -1298,9 +1408,11 @@ void sigma_clip_fused_dispatch(py::array sum_mu,
                                py::array n,
                                const py::array& fresh,
                                const py::array& rej_high,
-                               const py::array& rej_low) {
+                               const py::array& rej_low,
+                               bool skip_zero_rgb) {
     validate_sigma_shapes(sum_mu, square_sum, n, fresh, rej_high, rej_low,
                           "sigma_clip_fused_merge");
+    const ssize_t channels = (fresh.ndim() >= 3) ? fresh.shape(fresh.ndim() - 1) : 1;
 
     if (py::isinstance<py::array_t<uint8_t>>(fresh)) {
         auto fresh_t =
@@ -1311,7 +1423,7 @@ void sigma_clip_fused_dispatch(py::array sum_mu,
             n,
             fresh_t,
             rej_high.cast<py::array_t<uint8_t, py::array::c_style | py::array::forcecast>>(),
-            rej_low.cast<py::array_t<uint8_t, py::array::c_style | py::array::forcecast>>());
+            rej_low.cast<py::array_t<uint8_t, py::array::c_style | py::array::forcecast>>(), skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint16_t>>(fresh)) {
@@ -1323,7 +1435,7 @@ void sigma_clip_fused_dispatch(py::array sum_mu,
             n,
             fresh_t,
             rej_high.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(),
-            rej_low.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>());
+            rej_low.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(), skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(fresh)) {
@@ -1335,7 +1447,7 @@ void sigma_clip_fused_dispatch(py::array sum_mu,
             n,
             fresh_t,
             rej_high.cast<py::array_t<uint32_t, py::array::c_style | py::array::forcecast>>(),
-            rej_low.cast<py::array_t<uint32_t, py::array::c_style | py::array::forcecast>>());
+            rej_low.cast<py::array_t<uint32_t, py::array::c_style | py::array::forcecast>>(), skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(fresh)) {
@@ -1347,7 +1459,7 @@ void sigma_clip_fused_dispatch(py::array sum_mu,
             n,
             fresh_t,
             rej_high.cast<py::array_t<uint64_t, py::array::c_style | py::array::forcecast>>(),
-            rej_low.cast<py::array_t<uint64_t, py::array::c_style | py::array::forcecast>>());
+            rej_low.cast<py::array_t<uint64_t, py::array::c_style | py::array::forcecast>>(), skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<float>>(fresh)) {
@@ -1359,7 +1471,7 @@ void sigma_clip_fused_dispatch(py::array sum_mu,
             n,
             fresh_t,
             rej_high.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>(),
-            rej_low.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>());
+            rej_low.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>(), skip_zero_rgb, channels);
         return;
     }
     if (py::isinstance<py::array_t<double>>(fresh)) {
@@ -1371,7 +1483,7 @@ void sigma_clip_fused_dispatch(py::array sum_mu,
             n,
             fresh_t,
             rej_high.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(),
-            rej_low.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>());
+            rej_low.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(), skip_zero_rgb, channels);
         return;
     }
     throw std::invalid_argument("sigma_clip_fused_merge: unsupported fresh dtype");
@@ -1383,7 +1495,8 @@ void sigma_clip_fused_masked_dispatch(py::array sum_mu,
                                       const py::array& fresh,
                                       const py::array& rej_high,
                                       const py::array& rej_low,
-                                      const py::array& mask) {
+                                      const py::array& mask,
+                                      bool skip_zero_rgb) {
     validate_sigma_shapes(sum_mu, square_sum, n, fresh, rej_high, rej_low,
                           "sigma_clip_fused_masked_merge");
     validate_masked_shapes(sum_mu, square_sum, n, fresh, mask,
@@ -1401,7 +1514,7 @@ void sigma_clip_fused_masked_dispatch(py::array sum_mu,
             fresh_t,
             rej_high.cast<py::array_t<uint8_t, py::array::c_style | py::array::forcecast>>(),
             rej_low.cast<py::array_t<uint8_t, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint16_t>>(fresh)) {
@@ -1414,7 +1527,7 @@ void sigma_clip_fused_masked_dispatch(py::array sum_mu,
             fresh_t,
             rej_high.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(),
             rej_low.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint32_t>>(fresh)) {
@@ -1427,7 +1540,7 @@ void sigma_clip_fused_masked_dispatch(py::array sum_mu,
             fresh_t,
             rej_high.cast<py::array_t<uint32_t, py::array::c_style | py::array::forcecast>>(),
             rej_low.cast<py::array_t<uint32_t, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<uint64_t>>(fresh)) {
@@ -1440,7 +1553,7 @@ void sigma_clip_fused_masked_dispatch(py::array sum_mu,
             fresh_t,
             rej_high.cast<py::array_t<uint64_t, py::array::c_style | py::array::forcecast>>(),
             rej_low.cast<py::array_t<uint64_t, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<float>>(fresh)) {
@@ -1453,7 +1566,7 @@ void sigma_clip_fused_masked_dispatch(py::array sum_mu,
             fresh_t,
             rej_high.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>(),
             rej_low.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     if (py::isinstance<py::array_t<double>>(fresh)) {
@@ -1466,7 +1579,7 @@ void sigma_clip_fused_masked_dispatch(py::array sum_mu,
             fresh_t,
             rej_high.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(),
             rej_low.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(),
-            mask_t);
+            mask_t, skip_zero_rgb);
         return;
     }
     throw std::invalid_argument("sigma_clip_fused_masked_merge: unsupported fresh dtype");
@@ -1569,6 +1682,7 @@ void bind_fgp_ops(py::module_& m) {
         py::arg("n"),
         py::arg("fresh"),
         py::arg("weight") = py::none(),
+        py::arg("skip_zero_rgb") = false,
         "Update FastGaussianParam buffers in-place with one more frame.");
     m.def(
         "fgp_add",
@@ -1599,6 +1713,7 @@ void bind_fgp_ops(py::module_& m) {
         py::arg("n"),
         py::arg("fresh"),
         py::arg("mask"),
+        py::arg("skip_zero_rgb") = false,
         "Update FastGaussianParam buffers in-place for spatial-mask mean merge.");
     m.def(
         "sigma_clip_fused_merge",
@@ -1609,6 +1724,7 @@ void bind_fgp_ops(py::module_& m) {
         py::arg("fresh"),
         py::arg("rej_high"),
         py::arg("rej_low"),
+        py::arg("skip_zero_rgb") = false,
         "Update rejected FastGaussianParam buffers in-place for sigma clip.");
     m.def(
         "sigma_clip_fused_masked_merge",
@@ -1620,5 +1736,6 @@ void bind_fgp_ops(py::module_& m) {
         py::arg("rej_high"),
         py::arg("rej_low"),
         py::arg("mask"),
+        py::arg("skip_zero_rgb") = false,
         "Update rejected FastGaussianParam buffers in-place for masked sigma clip.");
 }

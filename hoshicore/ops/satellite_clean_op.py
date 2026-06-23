@@ -33,6 +33,7 @@ class SatelliteCleanOp(BaseOp):
     """
 
     EXECUTOR = "cpu"
+    REPORTS_PROGRESS = True
     INPUTS: dict[str, Any] = {
         "data": {"type": "sequence", "required": True},
     }
@@ -45,7 +46,9 @@ class SatelliteCleanOp(BaseOp):
     }
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = dtype_bytes
         # deque 持有 W 帧 + _process_center 中 W 帧对齐副本用于 median
         # TODO: 对齐的资源开销未计入
         w = configs.get("window_size", 3)
@@ -67,7 +70,7 @@ class SatelliteCleanOp(BaseOp):
         half_W = (W - 1) // 2
         
         if tot_num is not None:
-            self.tracker.create_bar(self.name, tot_num)
+            self.tracker.create_bar(self.name, tot_num, desc=self.display_name)
 
         buffer: deque[_FrameSlot] = deque()
         output_count = 0
@@ -88,6 +91,16 @@ class SatelliteCleanOp(BaseOp):
                         f"{self.name}: star extraction failed, frame will not be aligned ({e})")
                     geo = None
 
+                
+                # DEBUG: save star positions overlay
+                #if geo is not None:
+                #    _dbg = (frame_arr[:, :, :3] * 255).astype(np.uint8) if frame_arr.dtype == np.float32 else frame_arr[:, :, :3].copy()
+                #    if _dbg.dtype != np.uint8:
+                #        _dbg = (_dbg / (_dbg.max() or 1) * 255).astype(np.uint8)
+                #    for pt in geo.positions:
+                #        cv2.circle(_dbg, (int(pt[0]), int(pt[1])), 15, (0, 255, 0), 2)
+                #    cv2.imwrite(f"debug_stars_frame_{i:03d}.jpg", _dbg)
+                
                 slot = _FrameSlot(original=frame_arr, geo=geo)
                 if buffer:
                     H = await self._run_cpu(

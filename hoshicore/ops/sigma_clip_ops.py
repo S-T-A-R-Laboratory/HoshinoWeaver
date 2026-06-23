@@ -61,6 +61,7 @@ class DiskBufferWriterOp(BaseOp):
 
     EXECUTOR = "cpu"
     IS_DISK_BUFFER = True  # 段检测标记：识别为磁盘缓冲终端
+    REPORTS_PROGRESS = True
     INPUTS: dict[str, dict[str, Any]] = {
         "data": {
             "type": "sequence",
@@ -94,7 +95,9 @@ class DiskBufferWriterOp(BaseOp):
     }
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = dtype_bytes
         if n_frames is None:
             n_frames = 0
         mode = configs.get("buffer_mode", "disk")
@@ -133,7 +136,7 @@ class DiskBufferWriterOp(BaseOp):
         if tot_num is not None:
             self.tracker.create_bar(self.name,
                                 tot_num,
-                                desc=f"{self.name} [{mode_label}]")
+                                desc=f"{self.display_name} [{mode_label}]")
         try:
             for i in self._input_range():
                 cur_filename = f"the {i + 1}-th frame"
@@ -214,6 +217,11 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
             "type": "image",
             "required": True,
         },
+        "chunk_rows": {
+            "type": "int",
+            "default": 256,
+            "global": True,
+        },
         "mask": {
             "type": "image",
             "required": False,
@@ -246,10 +254,23 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
     }
     
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames):
+    def estimate_resources(cls, configs, frame_bytes, n_frames,
+                           dtype_bytes=None):
+        _ = dtype_bytes
         # TODO: frame_bytes压缩太多信息，无法准确估计，此处是经验值。
         # 待 preflight 资源预分配完善后再调整。
         return (cls.CHUNK_ROWS * n_frames * 2000, 0)
+
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        float64_row = row_bytes // dtype_bytes * 8
+        # compiled 路径峰值包含 chunk 双缓冲、stack_2d、mask、total_* 与 acc_*。
+        stack = 2 * n_frames * row_bytes
+        active_stack = n_frames * row_bytes
+        mask = n_frames * row_bytes // dtype_bytes
+        totals = 3 * float64_row
+        acc = 3 * float64_row
+        return stack + active_stack + mask + totals + acc
 
     def _init_chunk_state(self, configs, row_start, row_end, w):
         fgp_total: FastGaussianParam = configs['fgp_total']
@@ -318,7 +339,7 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
             self._merge_chunk(state, chunk_data, chunk_weight, frame_idx)
 
     def _run_pass_cpp(self, state, chunk_stack):
-        """C++ path: stack all frames, compute mask, call kernel."""
+        """C++ path: stack all frames, call kernel with skip_zero_rgb."""
         n_frames = len(chunk_stack)
         first_data = chunk_stack[0][0]
         h, w = first_data.shape[:2]
@@ -331,36 +352,19 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
         for f, (chunk_data, _) in enumerate(chunk_stack):
             stack_2d[f] = chunk_data.reshape(-1)
 
-        # Build per-frame mask
+        # Build static mask only (empty pixel detection delegated to kernel)
         static_mask = state['static_mask']
         chunk_mask = None
-        if static_mask is not None or is_rgb:
-            chunk_mask = np.ones((n_frames, plane_size), dtype=np.uint8)
-            static_flat = None
-            if static_mask is not None:
-                if channels > 1:
-                    static_flat = np.broadcast_to(
-                        static_mask[..., np.newaxis],
-                        (h, w, channels)).reshape(-1).astype(np.uint8)
-                else:
-                    static_flat = static_mask.reshape(-1).astype(np.uint8)
-
-            for f, (chunk_data, _) in enumerate(chunk_stack):
-                if static_flat is not None:
-                    chunk_mask[f] &= static_flat
-                if is_rgb:
-                    empty = np.all(chunk_data[..., :3] == 0, axis=-1)
-                    if empty.any():
-                        if channels > 1:
-                            empty_flat = np.broadcast_to(
-                                empty[..., np.newaxis],
-                                (h, w, channels)).reshape(-1)
-                        else:
-                            empty_flat = empty.reshape(-1)
-                        chunk_mask[f] &= (~empty_flat).astype(np.uint8)
-
-            if chunk_mask.all():
-                chunk_mask = None
+        if static_mask is not None:
+            if channels > 1:
+                static_flat = np.broadcast_to(
+                    static_mask[..., np.newaxis],
+                    (h, w, channels)).reshape(-1).astype(np.uint8)
+            else:
+                static_flat = static_mask.reshape(-1).astype(np.uint8)
+            chunk_mask = np.broadcast_to(
+                static_flat[np.newaxis, :], (n_frames, plane_size)
+            ).copy()
 
         # Prepare FGP totals
         fgp_chunk = state['fgp_chunk']
@@ -372,7 +376,8 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
         acc_sum, acc_sq, acc_n = custom_sigma_clip_iterative_chunk(
             stack_2d, total_sum, total_sq, total_n,
             self._configs['rej_high'], self._configs['rej_low'],
-            self._configs['max_iter'], mask=chunk_mask)
+            self._configs['max_iter'], mask=chunk_mask,
+            skip_zero_rgb=is_rgb, channels=channels)
 
         # Build accepted FGP from results
         chunk_shape = first_data.shape
@@ -392,18 +397,11 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
         cache = state['_mask_cache']
         if frame_idx not in cache:
             static_mask = state['static_mask']
-            spatial_mask = None
-            if chunk_data.ndim == 3 and chunk_data.shape[2] >= 3:
-                empty_mask = np.all(chunk_data[..., :3] == 0, axis=-1)
-                if static_mask is not None:
-                    spatial_mask = static_mask & (~empty_mask)
-                elif empty_mask.any():
-                    spatial_mask = ~empty_mask
-            elif static_mask is not None:
-                spatial_mask = static_mask
-            cache[frame_idx] = spatial_mask
+            cache[frame_idx] = static_mask
+        is_rgb = chunk_data.ndim == 3 and chunk_data.shape[2] >= 3
         state['clip_merger'].merge(chunk_data, chunk_weight,
-                                   spatial_mask=cache[frame_idx])
+                                   spatial_mask=cache[frame_idx],
+                                   skip_zero_rgb=is_rgb)
 
     def _check_convergence(self, state, pass_idx):
         if state['_cpp_done']:
@@ -490,6 +488,11 @@ class SigmaClipFusedChunkOp(ChunkIteratorBaseOp):
             "type": "image",
             "required": True,
         },
+        "chunk_rows": {
+            "type": "int",
+            "default": 256,
+            "global": True,
+        },
         "rej_high": {
             "type": "float",
             "default": 3.0,
@@ -516,6 +519,15 @@ class SigmaClipFusedChunkOp(ChunkIteratorBaseOp):
             "type": "image",
         },
     }
+
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        float64_row = row_bytes // dtype_bytes * 8
+        stack = 2 * n_frames * row_bytes
+        active = n_frames * row_bytes
+        mask = n_frames * row_bytes // dtype_bytes
+        state = 3 * float64_row
+        return stack + active + mask + state
 
     def _init_chunk_state(self, configs, row_start, row_end, w):
         # 静态 mask 切片
@@ -554,41 +566,25 @@ class SigmaClipFusedChunkOp(ChunkIteratorBaseOp):
         for f, (chunk_data, _) in enumerate(chunk_stack):
             stack_2d[f] = chunk_data.reshape(-1)
 
-        # Build per-frame mask (static + RGB empty)
+        # Build static mask only (empty pixel detection delegated to kernel)
         static_mask = state['static_mask']
         chunk_mask = None
-        if static_mask is not None or is_rgb:
-            chunk_mask = np.ones((n_frames, plane_size), dtype=np.uint8)
-            static_flat = None
-            if static_mask is not None:
-                if channels > 1:
-                    static_flat = np.broadcast_to(
-                        static_mask[..., np.newaxis],
-                        (h, w, channels)).reshape(-1).astype(np.uint8)
-                else:
-                    static_flat = static_mask.reshape(-1).astype(np.uint8)
-
-            for f, (chunk_data, _) in enumerate(chunk_stack):
-                if static_flat is not None:
-                    chunk_mask[f] &= static_flat
-                if is_rgb:
-                    empty = np.all(chunk_data[..., :3] == 0, axis=-1)
-                    if empty.any():
-                        if channels > 1:
-                            empty_flat = np.broadcast_to(
-                                empty[..., np.newaxis],
-                                (h, w, channels)).reshape(-1)
-                        else:
-                            empty_flat = empty.reshape(-1)
-                        chunk_mask[f] &= (~empty_flat).astype(np.uint8)
-
-            if chunk_mask.all():
-                chunk_mask = None
+        if static_mask is not None:
+            if channels > 1:
+                static_flat = np.broadcast_to(
+                    static_mask[..., np.newaxis],
+                    (h, w, channels)).reshape(-1).astype(np.uint8)
+            else:
+                static_flat = static_mask.reshape(-1).astype(np.uint8)
+            chunk_mask = np.broadcast_to(
+                static_flat[np.newaxis, :], (n_frames, plane_size)
+            ).copy()
 
         # Call fused kernel (computes mean + iterative clip)
         acc_sum, acc_sq, acc_n = sigma_clip_fused_chunk(
             stack_2d, self._configs['rej_high'], self._configs['rej_low'],
-            self._configs['max_iter'], mask=chunk_mask)
+            self._configs['max_iter'], mask=chunk_mask,
+            skip_zero_rgb=is_rgb, channels=channels)
 
         chunk_shape = first_data.shape
         source_dtype = first_data.dtype
@@ -669,6 +665,11 @@ class HuberMeanIteratorOp(ChunkIteratorBaseOp):
             "type": "image",
             "required": True,
         },
+        "chunk_rows": {
+            "type": "int",
+            "default": 256,
+            "global": True,
+        },
         "huber_c": {
             "type": "float",
             "default": 1.345,
@@ -679,6 +680,13 @@ class HuberMeanIteratorOp(ChunkIteratorBaseOp):
             "type": "image",
         },
     }
+
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        float64_row = row_bytes // dtype_bytes * 8
+        stack = 2 * n_frames * row_bytes
+        merger_state = 4 * float64_row
+        return stack + merger_state
 
     def _init_chunk_state(self, configs, row_start, row_end, w):
         fgp_total: FastGaussianParam = configs['fgp_total']
@@ -713,11 +721,10 @@ class HuberMeanIteratorOp(ChunkIteratorBaseOp):
 
 
 @register_op()
-class MedianReduceOp(BaseOp):
+class MedianReduceOp(ChunkIteratorBaseOp):
     """中位数堆栈：从磁盘缓冲帧中计算逐像素中位数。
 
-    按空间分块（chunk_rows 行）处理以控制内存峰值。
-    对每个块加载所有帧的对应行范围，沿帧轴取 median。
+    使用 ChunkIteratorBaseOp 单 pass 模式。
 
     输入 buffer_handle 来自 DiskBufferWriterOp。
 
@@ -725,8 +732,8 @@ class MedianReduceOp(BaseOp):
     """
 
     EXECUTOR = "cpu"
-    BUFFER_ITERATOR = True     # 段检测标记：消费 buffer
-    ITERATOR_TYPE = "median"   # 不可分布式，Collector 需特殊处理
+    ITERATOR_TYPE = "median"
+    CHUNK_ROWS = 32
     CONFIGS: dict[str, dict[str, Any]] = {
         "buffer_handle": {
             "type": "image",
@@ -743,74 +750,39 @@ class MedianReduceOp(BaseOp):
         },
     }
 
-    @staticmethod
-    def _reduce_chunk(stack: np.ndarray) -> np.ndarray:
-        return custom_median_reduce_chunk(stack)
+    @classmethod
+    def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
+        _ = dtype_bytes
+        return (n_frames + 1) * row_bytes
 
-    async def _async_execute(self, configs: dict[str, Any]) -> None:
-        frame_buffer: DiskFrameBuffer = configs['buffer_handle']
-        chunk_rows: int = configs['chunk_rows']
-        n_frames = len(frame_buffer)
+    def _init_chunk_state(self, configs, row_start, row_end, w):
+        return {'result': None}
 
-        if n_frames == 0:
-            raise ValueError(f"{self.name}: buffer is empty, nothing to stack.")
+    def _max_passes(self, configs):
+        return 1
 
-        # 读取第一帧获取尺寸信息
+    def _run_pass(self, state, chunk_stack):
+        n_frames = len(chunk_stack)
+        first_data = chunk_stack[0][0]
+        stack = np.empty((n_frames, *first_data.shape), dtype=first_data.dtype)
+        for f, (chunk_data, _) in enumerate(chunk_stack):
+            stack[f] = chunk_data
+        state['result'] = custom_median_reduce_chunk(stack)
+
+    def _check_convergence(self, state, pass_idx):
+        return True
+
+    def _finalize_chunk(self, state):
+        return state['result']
+
+    def _wrap_output(self, result, configs):
+        frame_buffer = configs['buffer_handle']
         first_frame, _ = frame_buffer[0]
-        h, w = first_frame.shape[:2]
-        channels = first_frame.shape[2] if first_frame.ndim == 3 else 1
         source_dtype = first_frame.dtype
-
-        logger.info(
-            f"{self.name}: computing median of {n_frames} frames "
-            f"({h}x{w}x{channels}, dtype={source_dtype}), "
-            f"chunk_rows={chunk_rows}")
-
-        # 按行分块计算中位数
-        result_chunks = []
-        n_chunks = (h + chunk_rows - 1) // chunk_rows
-
-        self.tracker.create_bar(self.name, n_chunks,
-                                desc=f"{self.name} [Median]", unit="chunks")
-
-        try:
-            for chunk_idx in range(n_chunks):
-                row_start = chunk_idx * chunk_rows
-                row_end = min(row_start + chunk_rows, h)
-                actual_rows = row_end - row_start
-
-                # 加载所有帧的对应行范围
-                if first_frame.ndim == 3:
-                    stack = np.empty(
-                        (n_frames, actual_rows, w, channels),
-                        dtype=source_dtype)
-                else:
-                    stack = np.empty(
-                        (n_frames, actual_rows, w), dtype=source_dtype)
-
-                for frame_idx in range(n_frames):
-                    frame_data, _ = frame_buffer[frame_idx]
-                    stack[frame_idx] = frame_data[row_start:row_end]
-
-                # 沿帧轴取中位数
-                chunk_median = await self._run_cpu(self._reduce_chunk, stack)
-                result_chunks.append(chunk_median)
-                self.tracker.update(self.name)
-
-            # 拼接所有块
-            result_array = np.concatenate(result_chunks, axis=0)
-
-            result = FloatImage(data=result_array, dtype=source_dtype)
-            await self._broadcast_outputs({"result": result})
-
-            logger.info(f"{self.name}: median stacking complete.")
-
-        except Exception as e:
-            logger.error(f"{self.name} failed: {e}")
-            raise
-        finally:
-            self.tracker.close_bar(self.name)
-            frame_buffer.cleanup()
+        del first_frame
+        result_img = FloatImage(data=result, dtype=source_dtype)
+        logger.info(f"{self.name}: median stacking complete.")
+        return {"result": result_img}
 
 
 @register_op()
@@ -831,6 +803,7 @@ class ThresholdMaxIteratorOp(BaseOp):
 
     EXECUTOR = "cpu"
     BUFFER_ITERATOR = True
+    REPORTS_PROGRESS = True
     ITERATOR_TYPE = "threshold_max"
     CONFIGS: dict[str, dict[str, Any]] = {
         "fgp_total": {
@@ -883,7 +856,7 @@ class ThresholdMaxIteratorOp(BaseOp):
 
             self.tracker.create_bar(
                 self.name, n_frames,
-                desc=f"{self.name} [ThresholdMax]")
+                desc=f"{self.display_name} [ThresholdMax]")
 
             async for raw, weight in frame_buffer.iter_prefetch():
                 frame = raw.astype(np.float64)

@@ -8,9 +8,8 @@ import numpy as np
 from loguru import logger
 
 from ..component.progress import DummyTracker
-from ..component.queue import (BaseQueue, CancellationError, CancellationToken,
-                               FileCacheQueue, RichContextQueue,
-                               StreamExhausted)
+from ..component.queue import (BaseQueue, CancellationError, FileCacheQueue,
+                               RichContextQueue, StreamExhausted)
 from ..component.utils import time_cost_warpper
 
 
@@ -21,6 +20,8 @@ class BaseOp(object):
     OUTPUTS: dict[str, Any] = {}
     MAX_SIZE: int = 1
     VARIABLE_OUTPUT: bool = False  # True 时标记为变长输出（Filter 类）
+    REPORTS_PROGRESS: bool = False  # True 时该 Op 被视为限速节点，注入真实 tracker
+    CHUNK_PLANNED: bool = False  # True 时 chunk_rows 由 runtime planner 管理
 
     @classmethod
     def estimate_resources(
@@ -28,6 +29,7 @@ class BaseOp(object):
         configs: dict[str, Any],
         frame_bytes: int,
         n_frames: Optional[int],
+        dtype_bytes: Optional[int] = None,
     ) -> tuple[int, int]:
         """返回 (peak_memory_bytes, peak_disk_bytes) 的估计值。
 
@@ -35,6 +37,17 @@ class BaseOp(object):
         子类按需 override，默认返回 (0, 0)。
         """
         return (0, 0)
+
+    @classmethod
+    def chunk_cost_per_row(
+        cls,
+        n_frames: int,
+        row_bytes: int,
+        dtype_bytes: int,
+    ) -> int:
+        """返回 chunk_rows 每增加一行带来的内存成本。"""
+        _ = dtype_bytes
+        return 2 * n_frames * row_bytes
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -56,6 +69,7 @@ class BaseOp(object):
         }
         self.length: Optional[int] = None
         self.name = name
+        self.display_name = name  # 进度条展示名；wiring 从节点 spec 的 label 覆盖
         self.tracker = DummyTracker()
         self._cancel_event: Optional[
             Any] = None  # asyncio.Event 或 mp.Event，由 wiring 注入
@@ -155,30 +169,10 @@ class BaseOp(object):
         raise NotImplementedError("Subclass must implement this method")
 
     async def execute(self) -> None:
-        """执行入口：捕获异常并传播"""
-        try:
-            configs = await self.pre_execute()
-            await self._async_execute(configs)
-            # 正常结束：发送结束信号
-            await self._send_sentinel()
-        except CancellationError:
-            # 上游取消：直接传播
-            await self._propagate_cancellation_from_upstream()
-            raise
-        except asyncio.CancelledError:
-            # 外部取消（如 UI）→ 转化为内部取消语义
-            logger.info(f"{self.name}: cancelled by external request")
-            cancel_err = CancellationError("External cancellation")
-            await self._propagate_cancellation(cancel_err)
-            raise cancel_err
-        except Exception as e:
-            # 本节点异常：创建取消令牌并传播
-            import traceback
-            logger.error(
-                f"{self.name} failed: {e.__repr__()}\n{traceback.format_exc()}"
-            )
-            await self._propagate_cancellation(e)
-            raise
+        """执行入口。异常直接上抛，由 DAGExecutor 统一处理取消传播。"""
+        configs = await self.pre_execute()
+        await self._async_execute(configs)
+        await self._send_sentinel()
 
     def _async_convert_inputs(self):
         # NOTE: queue.get() returns an awaitable; subclasses may `await` each value.
@@ -196,39 +190,6 @@ class BaseOp(object):
             for queue in queue_list:
                 await queue.put(BaseQueue._SENTINEL)
 
-    async def _propagate_cancellation(self, error: Exception) -> None:
-        """传播取消令牌（本节点异常）"""
-        token = CancellationToken(error, self.name)
-        for queue_list in self.outputs.values():
-            for queue in queue_list:
-                await queue.put(token)
-
-    async def _propagate_cancellation_from_upstream(self) -> None:
-        """传播取消令牌（上游异常）。
-
-        从输入队列中提取 CancellationToken 并转发到所有输出队列。
-        """
-        token = None
-        for input_queue in self.inputs.values():
-            try:
-                if hasattr(input_queue, 'queue'):
-                    while not input_queue.queue.empty():
-                        item = input_queue.queue.get_nowait()
-                        if isinstance(item, CancellationToken):
-                            token = item
-                            break
-                if token is not None:
-                    break
-            except Exception:
-                pass
-
-        if token is None:
-            token = CancellationToken(
-                CancellationError("Upstream cancellation"), self.name)
-
-        for queue_list in self.outputs.values():
-            for queue in queue_list:
-                await queue.put(token)
 
     async def _broadcast_outputs(self, results: dict[str, Any]) -> None:
         """将结果广播到对应的输出队列。
@@ -293,7 +254,7 @@ class ParallelBaseOp(BaseOp):
     async def _execute_serial(self, configs: dict[str, Any]) -> None:
         """串行执行（支持定长和 sentinel 驱动两种模式）"""
         if self.length is not None:
-            self.tracker.create_bar(self.name, self.length)
+            self.tracker.create_bar(self.name, self.length, desc=self.display_name)
         for i in self._input_range():
             data = self._async_convert_inputs()
             try:
@@ -305,9 +266,9 @@ class ParallelBaseOp(BaseOp):
                     if hasattr(awaitable, 'close'):
                         awaitable.close()
                 break
+            await self._broadcast_outputs(result)
             if self.length is not None:
                 self.tracker.update(self.name)
-            await self._broadcast_outputs(result)
         if self.length is not None:
             self.tracker.close_bar(self.name)
 
@@ -321,7 +282,7 @@ class ParallelBaseOp(BaseOp):
         但所有主流 CPython 版本均如此。
         """
         if self.length is not None:
-            self.tracker.create_bar(self.name, self.length)
+            self.tracker.create_bar(self.name, self.length, desc=self.display_name)
 
         _STOP = object()
         pending: dict[int, Any] = {}
@@ -412,6 +373,8 @@ class ChunkIteratorBaseOp(BaseOp):
     （chunk 内所有 pass 复用 OS page cache）。
     """
     BUFFER_ITERATOR = True
+    REPORTS_PROGRESS = True  # Chunk 类为限速节点
+    CHUNK_PLANNED = True
     CHUNK_ROWS: int = 256
     CHUNK_OVERLAP: int = 0
 
@@ -425,9 +388,10 @@ class ChunkIteratorBaseOp(BaseOp):
         overlap = self.CHUNK_OVERLAP
 
         try:
-            first_frame, _ = frame_buffer[0]
+            first_frame, first_weight = frame_buffer[0]
             h, w = first_frame.shape[:2]
             del first_frame  # release mmap immediately — prevents Windows file-lock on cleanup
+            del first_weight
             n_chunks = (h + chunk_rows - 1) // chunk_rows
             result_chunks: list[np.ndarray] = []
             self._chunk_states = []
@@ -438,7 +402,8 @@ class ChunkIteratorBaseOp(BaseOp):
                 for cidx in range(n_chunks)
             ]
 
-            self.tracker.create_bar(self.name, n_chunks, unit="chunks")
+            self.tracker.create_bar(self.name, n_chunks, unit="chunks",
+                                    desc=self.display_name)
             chunk_idx = 0
             async for chunk_stack in frame_buffer.iter_chunk_prefetch(row_ranges):
                 row_start, row_end = row_ranges[chunk_idx]
@@ -502,7 +467,10 @@ class ChunkIteratorBaseOp(BaseOp):
 class FilterBaseOp(BaseOp):
     """Filter 类算子基类：输出序列长度不等于输入序列长度。
 
-    子类实现 _async_execute，在循环中选择性地调用 _broadcast_outputs。
+    子类实现 _async_filter，在循环中选择性地调用 _broadcast_outputs。
+    基类管理进度条生命周期（基于输入长度），子类每消费一帧后调用
+    self.tracker.update(self.name) 推进进度。
+
     输出自动标记为 sentinel 驱动（_infer_output_length → None）。
     wiring 层通过 VARIABLE_OUTPUT 做静态冲突检测。
 
@@ -513,7 +481,7 @@ class FilterBaseOp(BaseOp):
             INPUTS = {"data": {"type": "sequence", "required": True}}
             OUTPUTS = {"result": {"type": "sequence"}}
 
-            async def _async_execute(self, configs):
+            async def _async_filter(self, configs):
                 for i in self._input_range():
                     data = self._async_convert_inputs()
                     try:
@@ -522,8 +490,23 @@ class FilterBaseOp(BaseOp):
                         break
                     if predicate(item):
                         await self._broadcast_outputs({"result": item})
+                    self.tracker.update(self.name)
     """
     VARIABLE_OUTPUT = True
+    REPORTS_PROGRESS = True
 
     def _infer_output_length(self, input_lengths):
         return None
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        if self.length is not None:
+            self.tracker.create_bar(self.name, self.length,
+                                    desc=self.display_name)
+        try:
+            await self._async_filter(configs)
+        finally:
+            if self.length is not None:
+                self.tracker.close_bar(self.name)
+
+    async def _async_filter(self, configs: dict[str, Any]) -> None:
+        raise NotImplementedError("FilterBaseOp subclass must implement _async_filter")

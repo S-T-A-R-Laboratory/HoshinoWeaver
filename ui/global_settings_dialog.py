@@ -295,19 +295,21 @@ class GlobalSettingsDialog(uQDialog):
 
     def save(self):
         """Write current state back to default_settings.yaml."""
-        # Read existing file to preserve comments header (lines starting with #)
         header_lines: list[str] = []
+        existing: dict[str, Any] = {}
         if self._settings_path.exists():
             with open(self._settings_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("#") or line.strip() == "":
-                        header_lines.append(line)
-                    else:
-                        break
+                raw = f.read()
+            for line in raw.splitlines(keepends=True):
+                if line.startswith("#") or line.strip() == "":
+                    header_lines.append(line)
+                else:
+                    break
+            existing = yaml.safe_load(raw) or {}
         header = "".join(header_lines)
 
-        data = self.collect()
-        body = yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        existing.update(self.collect())
+        body = yaml.dump(existing, allow_unicode=True, default_flow_style=False, sort_keys=False)
         with open(self._settings_path, "w", encoding="utf-8") as f:
             f.write(header)
             f.write(body)

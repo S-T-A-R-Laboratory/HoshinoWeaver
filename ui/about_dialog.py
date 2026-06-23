@@ -87,7 +87,7 @@ class AboutDialog(uQDialog):
 
         # Description
         desc_lbl = QLabel(
-            "天文图像堆叠预处理工具，支持星轨、星点对齐等复杂工作流。", self)
+            "天文图像通用预处理工具，支持星轨、星点对齐等复杂工作流。", self)
         desc_lbl.setWordWrap(True)
         desc_lbl.setStyleSheet("font-size: 12px;")
         root.addWidget(desc_lbl)

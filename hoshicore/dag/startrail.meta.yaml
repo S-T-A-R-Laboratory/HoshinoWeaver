@@ -19,6 +19,7 @@ configs:
   fin:              { type: float, default: 0 }
   fout:             { type: float, default: 0 }
   enable_star_shrink:     { type: bool, default: false }
+  star_shrink_mode:       { type: str,  default: "moderate" }
   enable_satellite_clean: { type: bool, default: false }
   sat_window_size:        { type: int,  default: 3 }
   mask: { type: str, required: false, default: null }
@@ -85,6 +86,8 @@ nodes:
     bypass: data
     inputs:
       data: satellite_clean.result
+    configs:
+      mode: configs.star_shrink_mode
     outputs:
       result: { type: sequence }
 
@@ -100,6 +103,7 @@ nodes:
 
   core_algo:
     route_key: mode
+    label: "星轨叠加"
     inputs:
       data: star_shrink.result
       weight: weight_generator.result

@@ -11,11 +11,10 @@ import asyncio
 import ctypes
 import json
 import platform
-import time
 
 from loguru import logger as _logger
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QMouseEvent
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont, QIcon, QMouseEvent
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
                                QFrame, QHeaderView, QMainWindow, QScrollArea,
                                QTreeWidgetItem)
@@ -150,8 +149,7 @@ class HNW_window(QMainWindow, Ui_HNW):
 
         # 启动guide页面
         if self._CONFIG['guide_always_display']:
-            time.sleep(0.5)
-            self.slot_handler.show_guide_window()
+            QTimer.singleShot(500, self.slot_handler.show_guide_window)
 
     def hover_border_frame(self):
         '''
@@ -232,240 +230,67 @@ class HNW_window(QMainWindow, Ui_HNW):
     def mousePressEvent(self, event: QMouseEvent):
         '''
         识别鼠标事件类型
-        如果窗口未最大化 在鼠标按下时更新resize_x_y属性 
-        以避免缩放过程中持续更新resize_x_y导致通过缩放进行最大化之后再最小化无法恢复正常大小
-        拖拽事件仅在顶部生效
+        缩放事件仅在自定义边缘生效，拖拽事件仅在顶部生效
+        实际移动/缩放交由系统窗口管理器处理，以保留原生贴靠、跨屏和动画行为
         '''
-        self.resizing = False
-        self.dragging = False
-        if self.isMaximized():
-            pass
-        else:
-            self.resize_x_y = [self.width(), self.height()]
         if event.button() == Qt.LeftButton:
-            # 记录按下的位置，用于拖动或调整大小
-            self.drag_position = event.globalPosition().toPoint(
-            ) - self.frameGeometry().topLeft()
-            # 如果鼠标在边缘，则标记为正在调整大小
-            self.cursor_shape = {
-                'top':
-                True if self.top_border.cursor().shape() == Qt.SizeVerCursor
-                else False,
-                'top_right':
-                True if self.top_right_corner.cursor().shape()
-                == Qt.SizeBDiagCursor else False,
-                'right':
-                True if self.right_border.cursor().shape() == Qt.SizeHorCursor
-                else False,
-                'bottom_right':
-                True if self.bottom_right_corner.cursor().shape()
-                == Qt.SizeFDiagCursor else False,
-                'bottom':
-                True if self.bottom_border.cursor().shape() == Qt.SizeVerCursor
-                else False,
-                'bottom_left':
-                True if self.bottom_left_corner.cursor().shape()
-                == Qt.SizeBDiagCursor else False,
-                'left':
-                True if self.left_border.cursor().shape() == Qt.SizeHorCursor
-                else False,
-                'top_left':
-                True if self.top_left_corner.cursor().shape()
-                == Qt.SizeFDiagCursor else False
-            }
-            if any(self.cursor_shape.values()):
-                self.resizing = True
-            else:
-                # 只在顶部生效
-                if event.position().y() <= 40:
-                    self.dragging = True
-                else:
-                    pass
-
-    def mouseMoveEvent(self, event: QMouseEvent):
-        '''
-        响应鼠标移动事件
-        包括拖拽 大小调整
-        '''
-        # 调整窗口大小
-        if self.resizing:
-            self.resize_window(event)
-        # 拖动窗口
-        elif self.dragging:
-            # 如果是最大化 则进入窗口化
-            if self.isMaximized():
-                pos = event.globalPosition().toPoint()
-                x_p = pos.x()
-                y_p = pos.y()
-                x_n = x_p - x_p / self.screen_width * self.resize_x_y[0]
-                y_n = y_p - y_p / self.screen_height * self.resize_x_y[1]
-                self.setGeometry(x_n, y_n, self.resize_x_y[0],
-                                 self.resize_x_y[1])
-                self.slot_handler.ui_max(target_type='window')
-                # 这里移动了窗口 需要更新drag_position
-                self.drag_position = event.globalPosition().toPoint(
-                ) - self.frameGeometry().topLeft()
-            # 如果移动到窗口顶部、侧部 则最大化
-            elif event.globalPosition().toPoint().x(
-            ) <= 0 or event.globalPosition().toPoint().x(
-            ) >= self.screen_width - 0 or event.globalPosition().toPoint().y(
-            ) <= 0:
-                self.max_flag = True
-            # 如果移动到窗口下侧 则最小化
-            # 不支持这个选项了 会出发一些bug（移动上边框到最底部最小化后 无法恢复窗口）
-            # elif event.globalPosition().toPoint().y() >= self.screen_height - 0:
-            # self.min_flag = True
-            else:
-                self.move(event.globalPosition().toPoint() -
-                          self.drag_position)
-                self.max_flag = False
-        else:
-            pass
-
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        '''
-        鼠标释放后重置resizing dragging状态
-        响应特殊最大化最小化事件并重置状态
-        '''
-        self.resizing = False
-        self.dragging = False
-        # 更新窗口大小信息
-        if self.min_flag:
-            self.slot_handler.ui_min()
-            self.min_flag = False
-        if self.max_flag:
-            self.slot_handler.ui_max(target_type='max')
-            self.max_flag = False
+            resize_edges = self._resize_edges_at(event.position().toPoint())
+            if resize_edges is not None:
+                if self._start_system_resize(resize_edges):
+                    event.accept()
+                    return
+            elif event.position().y() <= 40 and self._start_system_move():
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
-        ''' 
+        '''
         双击切换最大化/窗口化
         '''
         if event.position().y() <= 40:
             if self.isMaximized():
-                pos = event.globalPosition().toPoint()
-                x_p = pos.x()
-                y_p = pos.y()
-                x_n = x_p - x_p / self.screen_width * self.resize_x_y[0]
-                y_n = y_p - y_p / self.screen_height * self.resize_x_y[1]
-                self.setGeometry(x_n, y_n, self.resize_x_y[0],
-                                 self.resize_x_y[1])
                 self.slot_handler.ui_max(target_type='window')
             else:
                 self.slot_handler.ui_max(target_type='max')
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
-    def resize_window(self, event: QMouseEvent):
-        '''
-        窗口缩放事件
-        '''
-        # 获取窗口当前的几何信息
-        rect = self.frameGeometry()
-        x = rect.x()
-        y = rect.y()
-        w = rect.width()
-        h = rect.height()
+    def _native_window_handle(self):
+        """Return the native QWindow, creating it if necessary."""
+        window = self.windowHandle()
+        if window is None:
+            self.winId()
+            window = self.windowHandle()
+        return window
 
-        pos = event.globalPosition().toPoint()
-        x_p = pos.x()
-        y_p = pos.y()
+    def _start_system_move(self) -> bool:
+        """Ask the platform window manager to handle interactive moving."""
+        window = self._native_window_handle()
+        return bool(window and window.startSystemMove())
 
-        # 如果鼠标移动到屏幕边缘 最大化
-        _detect_width = 2
-        if x_p >= self.screen_width - _detect_width or y_p >= self.screen_height - _detect_width or x_p <= _detect_width or y_p <= _detect_width:
-            self.slot_handler.ui_max(target_type='max')
-        # 如果从最大化移动 执行窗口化
-        elif self.isMaximized():
-            self.slot_handler.ui_max(target_type='window')
-        else:
-            for pressed_part, is_pressed in self.cursor_shape.items():
-                if is_pressed:
-                    break
+    def _start_system_resize(self, edges) -> bool:
+        """Ask the platform window manager to handle interactive resizing."""
+        window = self._native_window_handle()
+        return bool(window and window.startSystemResize(edges))
 
-            if pressed_part == 'top':
-                h_n = h - (y_p - y)
-                # 移动后高度超出最大最小范围 不更改高度和位置信息 其它同理
-                if h_n < self.minimumHeight() or h_n > self.maximumHeight():
-                    pass
-                else:
-                    h = h_n
-                    y = y_p
-            elif pressed_part == 'bottom':
-                h_n = y_p - y
-                if h_n < self.minimumHeight() or h_n > self.maximumHeight():
-                    pass
-                else:
-                    h = h_n
-            elif pressed_part == 'left':
-                w_n = w - (x_p - x)
-                if w_n < self.minimumWidth() or w_n > self.maximumWidth():
-                    pass
-                else:
-                    w = w_n
-                    x = x_p
-            elif pressed_part == 'right':
-                w_n = x_p - x
-                if w_n < self.minimumWidth() or w_n > self.maximumWidth():
-                    pass
-                else:
-                    w = w_n
-            elif pressed_part == 'top_left':
-                h_n = h - (y_p - y)
-                if h_n < self.minimumHeight() or h_n > self.maximumHeight():
-                    pass
-                else:
-                    h = h_n
-                    y = y_p
-
-                w_n = w - (x_p - x)
-                if w_n < self.minimumWidth() or w_n > self.maximumWidth():
-                    pass
-                else:
-                    w = w_n
-                    x = x_p
-            elif pressed_part == 'bottom_right':
-                h_n = y_p - y
-                if h_n < self.minimumHeight() or h_n > self.maximumHeight():
-                    pass
-                else:
-                    h = h_n
-
-                w_n = x_p - x
-                if w_n < self.minimumWidth() or w_n > self.maximumWidth():
-                    pass
-                else:
-                    w = w_n
-            elif pressed_part == 'top_right':
-                h_n = h - (y_p - y)
-                if h_n < self.minimumHeight() or h_n > self.maximumHeight():
-                    pass
-                else:
-                    h = h_n
-                    y = y_p
-
-                w_n = x_p - x
-                if w_n < self.minimumWidth() or w_n > self.maximumWidth():
-                    pass
-                else:
-                    w = w_n
-            elif pressed_part == 'bottom_left':
-                h_n = y_p - y
-                if h_n < self.minimumHeight() or h_n > self.maximumHeight():
-                    pass
-                else:
-                    h = h_n
-
-                w_n = w - (x_p - x)
-                if w_n < self.minimumWidth() or w_n > self.maximumWidth():
-                    pass
-                else:
-                    w = w_n
-                    x = x_p
-
-            # 更新窗口大小
-            # 图标更新 避免在最大化时缩放窗口导致的图标未切换
-            self.ui_max.setIcon(QIcon(u":/icons/resource/icon/max.png"))
-            rect.setRect(x, y, w, h)
-            self.setGeometry(rect)
+    def _resize_edges_at(self, pos):
+        """Return Qt resize edges for a point on the custom border."""
+        edge_map = (
+            (self.top_left_corner, Qt.TopEdge | Qt.LeftEdge),
+            (self.top_right_corner, Qt.TopEdge | Qt.RightEdge),
+            (self.bottom_left_corner, Qt.BottomEdge | Qt.LeftEdge),
+            (self.bottom_right_corner, Qt.BottomEdge | Qt.RightEdge),
+            (self.top_border, Qt.TopEdge),
+            (self.right_border, Qt.RightEdge),
+            (self.bottom_border, Qt.BottomEdge),
+            (self.left_border, Qt.LeftEdge),
+        )
+        for border, edges in edge_map:
+            if border.geometry().contains(pos):
+                return edges
+        return None
 
     def init_window(self):
         '''
@@ -506,32 +331,6 @@ class HNW_window(QMainWindow, Ui_HNW):
         
         # 启用鼠标跟踪
         self.setMouseTracking(True)
-
-        # 控件基础属性
-        # 标记是否正在调整窗口大小
-        self.resizing = False
-        # 标记是否正在拖动窗口
-        self.dragging = False
-        self.drag_position = QPoint()
-        # 标记边缘缩放事件触发情况
-        self.cursor_shape = {
-            'top': False,
-            'top_right': False,
-            'right': False,
-            'bottom_right': False,
-            'bottom': False,
-            'bottom_left': False,
-            'left': False,
-            'top_left': False,
-        }
-        # 记录最大化前的状态 不直接使用内置的normalGeometry
-        self.resize_x_y = [self.width(), self.height()]
-        # 屏幕大小
-        self.screen_height = QApplication.primaryScreen().geometry().bottom()
-        self.screen_width = QApplication.primaryScreen().geometry().right()
-        # 最小化标记 最大化标记 用于在缩放、拖动操作中控制特殊行为
-        self.min_flag = False
-        self.max_flag = False
 
         # 0 激活SlotHandler
         self.slot_handler = SlotHandler(self)
@@ -757,29 +556,24 @@ class HNW_window(QMainWindow, Ui_HNW):
                 try:
                     data = json.loads(f.read())
                     self._CONFIG['guide_always_display'] = data['guide_always_display']
-                except:
-                    self.update_config()
+                except (json.JSONDecodeError, KeyError):
+                    self.update_config_file()
         else:
-            try:
-                os.makedirs(config_path)
-            except FileExistsError:
-                pass
-            with open(os.path.join(config_path, config_file),'w',encoding='utf-8') as f:
-                f.write(json.dumps(self._CONFIG))
+            self.update_config_file()
 
     def update_config(self,key,val):
         self._CONFIG[key] = val
         self.update_config_file()
 
-    def update_config_file(self): 
+    _PERSIST_KEYS = ('guide_always_display',)
+
+    def update_config_file(self):
         config_path = self._CONFIG['config_path']
         config_file = self._CONFIG['config_file']
-        try:
-            os.makedirs(config_path)
-        except FileExistsError:
-            pass
+        os.makedirs(config_path, exist_ok=True)
+        data = {k: self._CONFIG[k] for k in self._PERSIST_KEYS if k in self._CONFIG}
         with open(os.path.join(config_path, config_file),'w',encoding='utf-8') as f:
-            f.write(json.dumps(self._CONFIG))
+            f.write(json.dumps(data))
 
 
 if __name__ == '__main__':
@@ -789,7 +583,7 @@ if __name__ == '__main__':
 
     _init_logger(_logger, debug_mode=False, trace_mode=False, log_path=None, task="gui")
 
-    app = QApplication()
+    app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))
 
     loop = QEventLoop(app)

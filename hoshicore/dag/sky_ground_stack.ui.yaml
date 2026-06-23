@@ -2,7 +2,7 @@ inputs:
   fnames:
     label: "图像文件"
     widget: file_picker
-    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+    accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
 
 routes:
   sky_stacker:
@@ -60,7 +60,7 @@ configs:
     hidden: true
   align_method:
     label: "对齐方式"
-    description: "星点对齐算法。homography适合已经经过镜头畸变矫正的图像，distortion适合未矫正的图像，但计算速度较慢。"
+    description: "星点对齐算法。透视变换适合移动范围小且已经经过镜头畸变矫正的图像，畸变优化适合未矫正的图像，但计算速度较慢。"
     widget: select
     options:
       - { value: "auto",       label: "自动" }
@@ -79,7 +79,7 @@ configs:
     label: "对齐基准帧"
     description: "天空对齐的参考图像。留空则使用第一张"
     widget: file_picker
-    accept: ".tif,.tiff,.fits,.png,.jpg,.cr2,.nef,.arw"
+    accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
   enable_exif:
     label: "写入 EXIF"
     description: "在输出文件中保留拍摄参数。关闭后输出不含 EXIF 信息"

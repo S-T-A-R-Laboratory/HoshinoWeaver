@@ -35,6 +35,7 @@ Operator的设计是异步的。图开始执行时，所有节点被启动，但
 - `CONFIGS`: 配置定义字典，格式为 `{name: {type, description, default, ...}}`
 - `OUTPUTS`: 输出定义字典，格式为 `{name: {type, description}}`
 - `MAX_SIZE`: 队列最大容量（默认为1）
+- `CHUNK_PLANNED`: 是否由 runtime planner 管理 `chunk_rows`（默认 `False`）
 
 **实例属性：**
 - `config`: 配置队列字典 `{name: BaseQueue}`
@@ -57,6 +58,51 @@ async def _async_execute(configs: dict[str, Any]) -> None
 async def execute() -> None
     # 执行入口：先pre_execute获取配置，再调用_async_execute
 ```
+
+### 资源估算与 runtime planner
+
+引擎在执行 DAG 前会运行 preflight，Op 可通过 `estimate_resources()` 声明自身的
+常驻内存或磁盘开销：
+
+```python
+@classmethod
+def estimate_resources(
+    cls,
+    configs: dict[str, Any],
+    frame_bytes: int,
+    n_frames: int | None,
+    dtype_bytes: int | None = None,
+) -> tuple[int, int]:
+    # 返回 (peak_memory_bytes, peak_disk_bytes)
+```
+
+默认实现返回 `(0, 0)`。需要整图中间状态、磁盘缓存或其它常驻资源的 Op 应覆写该方法。
+按空间分块处理且希望由 runtime planner 自动设置 `chunk_rows` 的 Op，需要设置：
+
+```python
+CHUNK_PLANNED = True
+```
+
+并按需覆写每增加一行 chunk 的内存成本：
+
+```python
+@classmethod
+def chunk_cost_per_row(
+    cls,
+    n_frames: int,
+    row_bytes: int,
+    dtype_bytes: int,
+) -> int:
+    # 返回 chunk_rows 每增加一行带来的内存成本
+```
+
+注意 `BUFFER_ITERATOR` 和 `CHUNK_PLANNED` 是不同语义：
+
+- `BUFFER_ITERATOR` 表示 Op 消费 `buffer_handle`，会重放缓存帧。
+- `CHUNK_PLANNED` 表示 Op 的 `chunk_rows` 由 runtime planner 管理。
+
+有效配置中存在固定 `chunk_rows` 时，planner 不会覆盖；`chunk_rows: auto`
+表示允许 planner 接管。
 
 ### ParallelBaseOp
 
@@ -156,30 +202,6 @@ class BaseQueue:
 - get时自动删除缓存文件
 - 适用于大数据对象的传递
 
-### IPCQueue
-跨进程异步队列，继承 `BaseQueue`。用于多进程模式下不同进程的 Op 之间通信。
-
-**传输策略（分层）：**
-
-| 数据类型 | 传输方式 |
-|---------|---------|
-| `np.ndarray`（大于阈值） | `multiprocessing.shared_memory` 零拷贝 |
-| `ShmTransportable` 对象（如 `FloatImage`） | 主数组走 shm + 元数据走 pickle |
-| 其他对象（float、FGP 等） | `pickle` via `Pipe` |
-| 控制帧（sentinel / cancel） | 标记帧 via `Pipe` |
-
-**背压机制：** 双信号量（`mp.Semaphore`），与 `RichContextQueue(maxsize=N)` 语义一致。
-
-**SharedMemory 生命周期：** producer 创建 → 发送描述符 → consumer 读取 + unlink → `cleanup()` 安全网兜底。
-
-**ShmTransportable 基类：** 轻量包装类继承此 ABC 即可获得 SharedMemory 传输优化：
-```python
-class ShmTransportable(ABC):
-    def shm_nbytes(self) -> int: ...
-    def shm_pack_into(self, buf) -> bytes: ...
-    @classmethod
-    def shm_unpack_from(cls, buf, meta: bytes) -> Self: ...
-```
 
 ## 实现示例
 
@@ -252,7 +274,7 @@ class CancellationToken:
 ```
 
 ### 队列自动信号处理
-`BaseQueue.get()`（RichContextQueue 和 IPCQueue 均实现）会自动检测并处理信号：
+`BaseQueue.get()` 会自动检测并处理信号：
 - 遇到`_SENTINEL`：回填后抛出`StreamExhausted`（替代 PEP 479 禁止的 `StopIteration`）
 - 遇到`CancellationToken`：回填后抛出`CancellationError`
 
@@ -314,7 +336,6 @@ Main 进程:  TrackerEventConsumer.run()  →  tracker.update(name, 1)  →  tqd
 ### 跨进程取消
 
 - `cancel_event` 使用 `multiprocessing.Event`（跨平台），替代 `asyncio.Event`
-- `CancellationToken` 通过 IPCQueue 的控制帧传播（`("cancel", error_str, source_node)` 标记帧）
 - `_run_cpu` 的取消检查 `mp.Event.is_set()` 是线程安全的，直接兼容
 
 ## Meta YAML 路由预处理

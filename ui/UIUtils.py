@@ -3,7 +3,9 @@
 '''
 
 import asyncio
+import os
 import re
+from pathlib import Path
 
 from typing import Any
 
@@ -17,7 +19,8 @@ from qasync import asyncSlot
 
 from hoshicore.component.image_io import scan_all_exif
 # 导入Core接口
-from hoshicore.engine.preflight import PreflightAction, PreflightReport
+from hoshicore.engine.executor import DAGExecutionError
+from hoshicore.engine.preflight import PreflightAction, CheckResult
 from hoshicore.engine.wiring import run_from_yaml
 # 导入图标资源
 from ui import resource
@@ -36,32 +39,33 @@ def _format_exception_chain(exc: BaseException) -> str:
     return "\n← ".join(lines)
 
 
-def _gui_preflight_callback(report: PreflightReport) -> PreflightAction:
+def _gui_preflight_callback(result: CheckResult) -> PreflightAction:
     """GUI 预检回调：弹出对话框让用户选择。"""
     text_lines: list[str] = []
-    for w in report.warnings:
-        text_lines.append(w)
+    for issue in result.issues:
+        text_lines.append(issue.message)
 
-    has_fallback = bool(report.proposed_fallbacks)
-    if has_fallback:
+    has_fix = result.has_fix
+    if has_fix:
         text_lines.append("")
-        text_lines.append("建议降级方案：")
-        for fb in report.proposed_fallbacks:
-            text_lines.append(
-                f"  {fb.config_key}: {fb.current_value} → {fb.proposed_value}"
-                f"（{fb.reason}）")
+        text_lines.append("建议修复方案：")
+        for issue in result.issues:
+            if issue.fix is not None:
+                text_lines.append(
+                    f"  {issue.fix.config_key}: {issue.fix.current_value} → {issue.fix.proposed_value}"
+                    f"（{issue.fix.reason}）")
     else:
-        text_lines.append("\n无可用的自动降级方案。")
+        text_lines.append("\n无可用的自动修复方案。")
 
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
-    msg.setWindowTitle("资源预检警告")
+    msg.setWindowTitle(f"{result.check_name}警告")
     msg.setText("\n".join(text_lines))
 
     btn_apply = None
-    if has_fallback:
-        label = ("应用降级并继续（资源仍可能不足）"
-                 if report.budget_exceeded_after_fallback else "应用建议")
+    if has_fix:
+        label = ("应用修复并继续（问题仍可能存在）"
+                 if result.still_problematic_after_fix else "应用建议")
         btn_apply = msg.addButton(label, QMessageBox.AcceptRole)
     btn_ignore = msg.addButton("忽略并继续", QMessageBox.RejectRole)
     msg.addButton("中止", QMessageBox.DestructiveRole)
@@ -162,9 +166,6 @@ class SlotHandler(QMainWindow):
             }}
         """)
 
-        self.window.dragging = False
-        self.window.resizing = False
-
     @Slot()
     def show_setting_menu(self):
         self.menu = QMenu(self)
@@ -251,7 +252,7 @@ class SlotHandler(QMainWindow):
         def open_dialog(self, category):
             folder_dialog = QFileDialog(
                 self,
-                caption='添加%s' % '星空图像' if category == '亮场' else category)
+                caption=f'添加{"星空图像" if category == "亮场" else category}')
             folder_dialog.setFileMode(QFileDialog.Directory)
             if folder_dialog.exec_() == QDialog.Accepted:
                 folder_path = folder_dialog.selectedUrls()[0].toLocalFile()
@@ -282,14 +283,14 @@ class SlotHandler(QMainWindow):
 
     def open_add_file_dialog(self, category):
         file_dialog = QFileDialog(self,
-                                  caption='添加%s' %
-                                  '星空图像' if category == '亮场' else category)
+                                  caption=f'添加{"星空图像" if category == "亮场" else category}')
         file_dialog.setFileMode(QFileDialog.ExistingFiles)
         file_dialog.setNameFilters([
-            '全部支持文件(*.cr2 *.cr3 *.arw *.nef *.dng *.tiff *.tif *.jpeg *.jpg *.png *.bmp *.gif *.fits)',
-            'RAW文件(*.cr2 *.cr3 *.arw *.nef *.dng)', 'tif文件(*.tiff *.tif)',
+            '全部支持文件(*.cr2 *.cr3 *.arw *.nef *.dng *.rw2 *.orf *.raf *.tiff *.tif *.jpeg *.jpg *.png *.bmp *.gif *.fits)',
+            'RAW文件(*.cr2 *.cr3 *.arw *.nef *.dng *.rw2 *.orf *.raf)', 'tif文件(*.tiff *.tif)',
             'jpg文件(*.jpeg *.jpg)', 'png文件(*.png)', '其它图片文件(*.bmp *.gif *.fits)'
         ])
+        
         if file_dialog.exec_() == QDialog.Accepted:
             file_paths = [
                 url.toLocalFile() for url in file_dialog.selectedUrls()
@@ -336,7 +337,7 @@ class SlotHandler(QMainWindow):
 
         category_item = self.window.star_trail_file_tree_categore[category]
         # 将文件添加至树
-        file_name = file_path.split('/')[-1]
+        file_name = Path(file_path).name
 
         widget = QWidget()
         layout = QHBoxLayout()
@@ -372,11 +373,11 @@ class SlotHandler(QMainWindow):
         widget.setLayout(layout)
 
         file_item = QTreeWidgetItem(category_item)
-        file_item.__file_path = file_path
-        file_item.__category = category
-        file_item.__remove_bnt = remove_button
-        file_item.__view_bnt = view_button
-        file_item.__file_label = file_label
+        file_item._file_path = file_path
+        file_item._category = category
+        file_item._remove_btn = remove_button
+        file_item._view_btn = view_button
+        file_item._file_label = file_label
         self.window.star_trail_file_tree.setItemWidget(file_item, 0, widget)
 
         # 点击时将该条选中，取消其他已选中
@@ -392,12 +393,11 @@ class SlotHandler(QMainWindow):
     @Slot()
     def add_file_to_tree_from_floder(self, folder_path, category):
         # 从文件夹添加所有符合格式的文件
-        import os
         for root, _, files in os.walk(folder_path):
             for file in files:
                 # 按支持的文件类型进行过滤
                 if re.search(
-                        '\.((cr2)|(cr3)|(arw)|(nef)|(dng)|(tiff)|(tif)|(jpeg)|(jpg)|(png)|(bmp)|(gif)|(fits))$',
+                        r'\.((cr2)|(cr3)|(arw)|(nef)|(dng)|(rw2)|(orf)|(raf)|(tiff)|(tif)|(jpeg)|(jpg)|(png)|(bmp)|(gif)|(fits))$',
                         file.lower()):
                     file_path = '%s/%s' % (root, file)
                     file_path = file_path.replace('\\', '/')
@@ -411,8 +411,8 @@ class SlotHandler(QMainWindow):
 
     @Slot()
     def remove_file_from_tree(self, file_item, mode='SingleImg'):
-        category = file_item.__category
-        file_path = file_item.__file_path
+        category = file_item._category
+        file_path = file_item._file_path
         # 从列表删除文件
         tree = file_item.parent()
         index = self.window.star_trail_file_tree.indexOfTopLevelItem(file_item)
@@ -512,7 +512,7 @@ class SlotHandler(QMainWindow):
         # 更新文件树的文件数量
         categore = category_item.text(0)
         file_cnt = category_item.childCount()
-        new_categore = re.sub('\d+', str(file_cnt), categore)
+        new_categore = re.sub(r'\d+', str(file_cnt), categore)
         category_item.setText(0, new_categore)
 
     @Slot()
@@ -548,7 +548,7 @@ class SlotHandler(QMainWindow):
                 self.window.star_trail_process_bar.setStyleSheet(
                     "#star_trail_process_bar {background-color: rgba(2, 53, 57,50);}"
                 )
-                self.window._task = asyncio.ensure_future(self.start_task())
+                self.window._task = asyncio.create_task(self.start_task())
 
     @asyncSlot()
     async def start_task(self):
@@ -580,10 +580,21 @@ class SlotHandler(QMainWindow):
         self.window._last_output_path = global_configs.get("output_filename", "")
 
         try:
-            logger.info(f"Starting YAML: {yaml_path};\n"
-                        f"Collected route choices: {route_choices};\n"
-                        f"global_inputs: {global_inputs};\n"
-                        f"global_configs: {global_configs}")
+            cli_parts = ["python launcher.py", f'"{yaml_path}"']
+            for k, v in route_choices.items():
+                cli_parts.append(f"--route {k}={v}")
+            for k, v in global_inputs.items():
+                if isinstance(v, list) and v:
+                    parent = os.path.dirname(v[0])
+                    if all(os.path.dirname(f) == parent for f in v):
+                        cli_parts.append(f'--input {k}="{parent}"')
+                    else:
+                        cli_parts.append(f"--input {k}=<{len(v)} files>")
+                else:
+                    cli_parts.append(f'--input {k}="{v}"')
+            for k, v in global_configs.items():
+                cli_parts.append(f"--config {k}={v}")
+            logger.info("Equivalent command line:\n  " + " \\\n    ".join(cli_parts))
             await run_from_yaml(yaml_path,
                                 global_inputs,
                                 global_configs,
@@ -606,8 +617,44 @@ class SlotHandler(QMainWindow):
             self.window._status_n['status'] = '任务取消'
             self.window._status_n['tips'] = '已停止叠加'
             self.window._status_n['tips_2'] = ''
+        except DAGExecutionError as e:
+            logger.error(
+                f"任务执行失败: 节点 '{e.root_node}': {e.root_cause}")
+            self.window.status_text.setStyleSheet(
+                "#status_text {color:rgba(200,0,0,200)}")
+            self.window.star_trial_tips.setStyleSheet(
+                "#star_trial_tips {color:rgba(200,0,0,200)}")
+            self.view_file(file_path='')
+            self.window._status = 'failed'
+            self.window._status_n['tips_2'] = ''
+            self.window._status_n['status'] = '任务失败'
+            msg_box = QMessageBox(self.window)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setWindowTitle("任务失败")
+            msg_box.setText(
+                f"节点 '{e.root_node}' 执行失败:\n"
+                f"{type(e.root_cause).__name__}: {e.root_cause}")
+            detail_lines = [f"根因节点: {e.root_node}"]
+            detail_lines.append(
+                f"  {type(e.root_cause).__name__}: {e.root_cause}")
+            if len(e.failed_nodes) > 1:
+                detail_lines.append(
+                    f"\n其他失败节点 ({len(e.failed_nodes) - 1}):")
+                for name, exc in e.failed_nodes[1:]:
+                    detail_lines.append(
+                        f"  {name}: {type(exc).__name__}: {exc}")
+            if e.cancelled_nodes:
+                detail_lines.append(
+                    f"\n因此取消的节点 ({len(e.cancelled_nodes)}):")
+                for name in e.cancelled_nodes:
+                    detail_lines.append(f"  {name}")
+            msg_box.setDetailedText("\n".join(detail_lines))
+            msg_box.exec()
         except Exception as e:
             logger.error(f"任务执行失败: {e}")
+            import traceback
+            logger.error("异常链:\n" + _format_exception_chain(e))
+            logger.error("异常栈:\n" + traceback.format_exc())
             self.window.status_text.setStyleSheet(
                 "#status_text {color:rgba(200,0,0,200)}")
             self.window.star_trial_tips.setStyleSheet(
@@ -622,7 +669,8 @@ class SlotHandler(QMainWindow):
             msg_box.setWindowTitle("任务失败")
             msg_box.setText(f"{type(root).__name__}: {root}")
             msg_box.setDetailedText(
-                f"完整异常链:\n{_format_exception_chain(e)}")
+                f"异常链:\n{_format_exception_chain(e)}\n\n异常栈:\n{traceback.format_exc()}"
+            )
             msg_box.exec()
         finally:
             self._set_start_btn_stop_mode(False)
@@ -677,7 +725,7 @@ class SlotHandler(QMainWindow):
         elif menu_text == '添加文件夹':
             self.add_folder(category=categore)
         elif menu_text == '预览':
-            self.view_file(menu_item.__file_path)
+            self.view_file(menu_item._file_path)
         elif menu_text == '从列表删除':
             selected_img_items = self.window.star_trail_file_tree.selectedItems(
             )
@@ -694,16 +742,16 @@ class SlotHandler(QMainWindow):
             ):
                 for i in range(file_tree.childCount()):
                     file_item = file_tree.child(i)
-                    file_item.__remove_bnt.setEnabled(True)
-                    file_item.__view_bnt.setEnabled(True)
+                    file_item._remove_btn.setEnabled(True)
+                    file_item._view_btn.setEnabled(True)
         else:
             self.window._preview_useable = False
             for category, file_tree in self.window.star_trail_file_tree_categore.items(
             ):
                 for i in range(file_tree.childCount()):
                     file_item = file_tree.child(i)
-                    file_item.__remove_bnt.setEnabled(False)
-                    file_item.__view_bnt.setEnabled(False)
+                    file_item._remove_btn.setEnabled(False)
+                    file_item._view_btn.setEnabled(False)
 
     @Slot()
     def set_widget_handleable(self,

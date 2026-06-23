@@ -27,15 +27,17 @@ import yaml
 from loguru import logger
 
 from ..component.progress import DummyTracker, ProgressTracker
-from ..component.queue import BaseQueue, RichContextQueue
+from ..component.queue import BaseQueue, CancellationError, RichContextQueue
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
-from .executor import DAGExecutor
+from .executor import DAGExecutionError, DAGExecutor
 from .flatten import INACTIVE_MARKER
-from .preflight import (PreflightAbortError, PreflightAction,
-                            apply_fallbacks, preflight_check)
+from .preflight import (PreflightAbortError, PreflightAction, CheckResult,
+                        RESOURCE_CHECK_NAME, apply_check_fixes,
+                        config_validity_check, run_preflight_checks)
 from .registry import REGISTERED_OP
+from .runtime_plan import apply_runtime_plan, plan_runtime
 
 # ────────────────────────────────────────────────────────────────
 # 包级路径常量
@@ -50,7 +52,9 @@ _DEFAULT_SETTINGS_PATH = _HOSHICORE_ROOT / "default_settings.yaml"
 
 # 默认搜索路径列表：op 字段以 .yaml 结尾时，按序搜索。
 # 用户可通过 set_dag_search_paths() 追加自定义目录。
-DEFAULT_DAG_SEARCH_PATHS: list[Path] = [Path(x[0]) for x in os.walk(_BUILTIN_DAG_DIR)]
+DEFAULT_DAG_SEARCH_PATHS: list[Path] = [
+    Path(x[0]) for x in os.walk(_BUILTIN_DAG_DIR)
+]
 
 
 def set_dag_search_paths(paths: list[Path]) -> None:
@@ -83,8 +87,8 @@ def _load_default_settings(path: Optional[Path] = None) -> dict[str, Any]:
     _FRONTEND_ONLY = {"output_format"}
     return {
         key: entry.get("value")
-        for key, entry in raw.items()
-        if isinstance(entry, dict) and entry.get("enabled") and key not in _FRONTEND_ONLY
+        for key, entry in raw.items() if isinstance(entry, dict)
+        and entry.get("enabled") and key not in _FRONTEND_ONLY
     }
 
 
@@ -94,12 +98,14 @@ def load_output_defaults(path: Optional[Path] = None) -> dict[str, Any]:
     返回 flat dict，键包括：output_format, output_dtype, jpg_quality, png_compressing。
     供 OutputPanel.apply_defaults() 使用，不传给后端管线。
     """
-    _OUTPUT_KEYS = {"output_format", "output_dtype", "jpg_quality", "png_compressing"}
+    _OUTPUT_KEYS = {
+        "output_format", "output_dtype", "jpg_quality", "png_compressing"
+    }
     raw = _read_raw_settings(path)
     return {
         key: entry.get("value")
-        for key, entry in raw.items()
-        if key in _OUTPUT_KEYS and isinstance(entry, dict) and entry.get("enabled")
+        for key, entry in raw.items() if key in _OUTPUT_KEYS
+        and isinstance(entry, dict) and entry.get("enabled")
     }
 
 
@@ -181,7 +187,7 @@ def instantiate_and_wire(
     global_inputs: dict[str, Any],
     global_configs: dict[str, Any],
     op_registry: Optional[dict[str, type[BaseOp]]] = None,
-) -> tuple[list[BaseOp], list[Awaitable[None]], dict[str, RichContextQueue]]:
+) -> tuple[list[BaseOp], list[Awaitable[None]], dict[str, RichContextQueue], set[str]]:
     """
     根据 ValidatedDag 实例化 Op、连接队列、生成 feeder 协程。
 
@@ -219,6 +225,9 @@ def instantiate_and_wire(
                 f"Op '{op_name}' (node '{node_name}') not found in registry. "
                 f"Available: {sorted(registry.keys())}")
         instances[node_name] = registry[op_name](name=node_name)
+        label = nodes_spec[node_name].get("label")
+        if label:
+            instances[node_name].display_name = label
         logger.debug(
             f"Instantiated '{node_name}' → {registry[op_name].__name__}")
 
@@ -282,8 +291,8 @@ def instantiate_and_wire(
         cfg_section = node_spec.get("configs")
         if isinstance(cfg_section, dict):
             yaml_cfg_keys = {
-                k for k, v in cfg_section.items()
-                if v != INACTIVE_MARKER
+                k
+                for k, v in cfg_section.items() if v != INACTIVE_MARKER
             }
 
         yaml_inp_keys: set[str] = set()
@@ -375,11 +384,11 @@ def instantiate_and_wire(
                 f"Output '{out_name}' ← {provider_node}.{output_name}")
 
     # ══════ 6) 静态检测变长源冲突 ══════
-    _check_variable_source_conflicts(dag, instances)
+    variable_input_nodes = _check_variable_source_conflicts(dag, instances)
 
     logger.info(f"DAG wired: {len(instances)} node(s), "
                 f"{len(feeders)} feeder(s), {len(output_queues)} output(s)")
-    return list(instances.values()), feeders, output_queues
+    return list(instances.values()), feeders, output_queues, variable_input_nodes
 
 
 # ────────────────────────────────────────────────────────────────
@@ -409,26 +418,31 @@ async def run_dag(
         dag_search_paths: 子图 YAML 搜索路径。None 使用 DEFAULT_DAG_SEARCH_PATHS。
                           传入后会覆盖模块级默认值（影响本次执行及嵌套子图）。
         tracker:          外部注入的进度追踪器。传入时优先使用，忽略 progress 参数。
-        cancel_event:     外部取消事件。set() 后 Op 在下一个 _run_cpu 检查点退出。
+        cancel_event:     外部取消事件。set() 后触发 cancel_all + task.cancel。
 
     Returns:
         dict: 全局输出 name → value 的映射。
+
+    Raises:
+        DAGExecutionError: 节点真实异常（携带根因节点和完整失败记录）。
+        asyncio.CancelledError: 外部取消。
     """
     if dag_search_paths is not None:
         set_dag_search_paths(dag_search_paths)
 
-    ops, feeders, output_queues = instantiate_and_wire(dag, global_inputs,
-                                                       global_configs,
-                                                       op_registry)
+    ops, feeders, output_queues, variable_input_nodes = instantiate_and_wire(
+        dag, global_inputs, global_configs, op_registry)
 
-    # 注入进度追踪器：外部 tracker 优先，否则按 progress 参数创建 tqdm tracker
-    if tracker is not None:
+    # 注入进度追踪器：仅限速节点获得真实 tracker，其余保留 DummyTracker
+    real_tracker = tracker if tracker is not None else (
+        ProgressTracker() if progress else None)
+    if real_tracker is not None:
+        selected = _select_reporting_nodes(dag, ops, variable_input_nodes)
         for op in ops:
-            op.tracker = tracker
-    elif progress:
-        tracker = ProgressTracker()
-        for op in ops:
-            op.tracker = tracker
+            if op.name in selected:
+                op.tracker = real_tracker
+                real_tracker.pre_register(op.name)
+        tracker = real_tracker  # 供 finally 调用 close_all
 
     executor = DAGExecutor(ops)
 
@@ -440,29 +454,52 @@ async def run_dag(
 
     logger.info(f"DAG execution starting ({len(ops)} nodes)...")
 
-    # 结果收集协程 —— 必须与 executor 并发运行。
-    # 原因：上游节点 _send_sentinel() 需要向 output_collector 队列
-    # push SENTINEL，但该队列 maxsize=1 且已有实际结果占位。
-    # 只有在结果被消费后 SENTINEL 才能入队，节点才能正常结束。
-    # 如果把收集放在 gather 之后，就会形成死锁：
-    #   gather 等待节点结束 → 节点等待 SENTINEL 入队 → 入队等待消费 → 消费在 gather 之后
     results: dict[str, Any] = {}
+    watcher_task: asyncio.Task | None = None
+
+    async def _watch_external_cancel():
+        """监听外部取消 → cancel_all + task.cancel 全部节点。"""
+        await executor.cancel_event.wait()
+        executor.cancel_all()
+        for task in executor._node_tasks.values():
+            if not task.done():
+                task.cancel()
 
     async def _collect_outputs():
+        """结果收集，容忍取消（队列被 force_cancel 时静默退出）。"""
 
         async def _get_one(name, queue):
-            results[name] = await queue.get()
+            try:
+                results[name] = await queue.get()
+            except (CancellationError, asyncio.CancelledError):
+                pass
 
         await asyncio.gather(
             *[_get_one(n, q) for n, q in output_queues.items()])
 
+    async def _run_feeders():
+        """Feeder 包装，容忍取消。"""
+        try:
+            await asyncio.gather(*feeders)
+        except (CancellationError, asyncio.CancelledError):
+            pass
+
     try:
-        # Feeders、Executor、结果收集 三者并发运行
-        await asyncio.gather(*feeders, executor.execute(), _collect_outputs())
-    except asyncio.CancelledError:
-        logger.info("DAG cancelled by external request")
+        watcher_task = asyncio.create_task(_watch_external_cancel())
+        await asyncio.gather(_run_feeders(), executor.execute(),
+                             _collect_outputs())
+    except DAGExecutionError:
         raise
+    except (CancellationError, asyncio.CancelledError):
+        logger.info("DAG cancelled by external request")
+        raise asyncio.CancelledError("DAG cancelled by external request")
     finally:
+        if watcher_task is not None and not watcher_task.done():
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
         if tracker is not None:
             tracker.close_all()
 
@@ -514,6 +551,7 @@ async def run_from_yaml(
     """
     from .build import _load_yaml, validate_and_build_order
     from .flatten import flatten_sub_dags
+    explicit_config_keys = set(global_configs)
     spec = _load_yaml(yaml_path)
 
     # 合并全局默认设置（优先级：用户显式 > 全局默认 > YAML default > Op default）
@@ -529,38 +567,54 @@ async def run_from_yaml(
     spec = flatten_sub_dags(spec, dag_search_paths=dag_search_paths)
     dag = validate_and_build_order(spec)
 
-    # ── 资源预检 ──
-    report = preflight_check(dag, global_configs, global_inputs, op_registry)
-    if report.proposed_fallbacks:
+    # ── 预检 ──
+    preflight_report, check_results = run_preflight_checks(
+        dag,
+        global_configs,
+        global_inputs,
+        checks=[config_validity_check],
+        op_registry=op_registry)
+
+    resource_fix_applied = False
+    for result in check_results:
+        if not result.issues:
+            continue
         if preflight_callback is not None:
-            action: PreflightAction = preflight_callback(report)
-            if action == "apply":
-                apply_fallbacks(report, global_configs)
-                for fb in report.applied_fallbacks:
-                    logger.info(fb)
+            action: PreflightAction = preflight_callback(result)
+            if action == "apply" and result.has_fix:
+                msgs = apply_check_fixes(result, global_configs)
+                for msg in msgs:
+                    logger.info(msg)
+                if result.check_name == RESOURCE_CHECK_NAME:
+                    resource_fix_applied = True
             elif action == "ignore":
-                for w in report.warnings:
-                    logger.info(f"[Preflight] 用户忽略建议: {w}")
+                for issue in result.issues:
+                    logger.info(f"[Preflight] 用户忽略: {issue.message}")
             else:  # "abort"
-                raise PreflightAbortError(
-                    "用户拒绝资源预检建议，执行已中止。")
-        elif global_configs.get("auto_fallback", True):
-            apply_fallbacks(report, global_configs)
-            for fb in report.applied_fallbacks:
-                logger.info(fb)
+                raise PreflightAbortError("用户中止预检，执行已取消。")
         else:
-            for w in report.warnings:
-                logger.warning(w)
-    elif report.warnings:
-        # 有警告但无可用 fallback（如内存超限但 buffer_mode 已经是 disk）
-        if preflight_callback is not None:
-            action = preflight_callback(report)
-            if action == "abort":
-                raise PreflightAbortError(
-                    "资源不足且无可用降级方案，用户中止执行。")
-        else:
-            for w in report.warnings:
-                logger.warning(w)
+            if result.has_fix and global_configs.get("auto_fallback", True):
+                msgs = apply_check_fixes(result, global_configs)
+                for msg in msgs:
+                    logger.info(msg)
+                if result.check_name == RESOURCE_CHECK_NAME:
+                    resource_fix_applied = True
+            else:
+                for issue in result.issues:
+                    logger.warning(issue.message)
+
+    if resource_fix_applied and preflight_report.post_fallback_non_chunk_mem is not None:
+        preflight_report.non_chunk_mem = preflight_report.post_fallback_non_chunk_mem
+
+    runtime_plan = plan_runtime(
+        dag,
+        global_configs,
+        global_inputs,
+        op_registry=op_registry,
+        preflight_report=preflight_report,
+        explicit_config_keys=explicit_config_keys,
+    )
+    apply_runtime_plan(runtime_plan, global_configs)
 
     return await run_dag(dag,
                          global_inputs,
@@ -587,6 +641,30 @@ def _spec_needs_meta_resolve(spec: dict[str, Any]) -> bool:
             if isinstance(ns, dict) and ("route_key" in ns or "enable" in ns):
                 return True
     return False
+
+
+def _select_reporting_nodes(
+    dag: ValidatedDag,
+    ops: list[BaseOp],
+    variable_input_nodes: set[str] = frozenset(),
+) -> set[str]:
+    """计算应上报进度的节点集合（限速节点）。
+
+    1. 优先取所有 REPORTS_PROGRESS=True 的节点，排除序列输入来自变长源的节点
+       （运行时收到 length=None，无法创建有意义的进度条）。
+    2. 若无带标志节点（纯 map 管线），回退为 output_links 引用的 provider 节点。
+    """
+    by_flag = {op.name for op in ops if getattr(op, "REPORTS_PROGRESS", False)}
+    by_flag -= variable_input_nodes
+    if by_flag:
+        return by_flag
+
+    sinks: set[str] = set()
+    for link in dag.output_links.values():
+        parsed = _parse_link(link)
+        if parsed[0] == "node":
+            sinks.add(parsed[1])
+    return sinks
 
 
 def _resolve_configs(
@@ -624,7 +702,8 @@ def _flatten_config_specs(
     """
     for name, spec in specs.items():
         full_key = f"{prefix}{name}" if prefix else name
-        if isinstance(spec, dict) and "type" not in spec and "default" not in spec:
+        if isinstance(spec,
+                      dict) and "type" not in spec and "default" not in spec:
             _flatten_config_specs(spec, user_configs, f"{full_key}.", resolved)
         else:
             if full_key in user_configs:
@@ -643,8 +722,8 @@ def _flatten_config_specs(
 def _check_variable_source_conflicts(
     dag: ValidatedDag,
     instances: dict[str, BaseOp],
-) -> None:
-    """静态检测变长源冲突：不同 VARIABLE_OUTPUT 源的序列输出汇入同一节点时报错。
+) -> set[str]:
+    """静态检测变长源冲突，并返回序列输入来自变长源的节点集合。
 
     沿拓扑序为每个 (node, output_port) 标记其变长源：
         - None: 固定长度
@@ -655,10 +734,14 @@ def _check_variable_source_conflicts(
         - 普通节点：继承上游唯一变长源（若有）
         - 多个不同变长源汇入 → ValueError
         - 固定长度 + 变长源混合 → ValueError
+
+    Returns:
+        节点名集合：其序列输入来自 VARIABLE_OUTPUT 源（运行时将收到 length=None）。
     """
     nodes_spec = dag.nodes
     # (provider_node, output_port) → 变长源节点名 or None
     port_var_source: dict[tuple[str, str], Optional[str]] = {}
+    variable_input_nodes: set[str] = set()
 
     for node_name in dag.exec_order:
         op_inst = instances[node_name]
@@ -706,6 +789,9 @@ def _check_variable_source_conflicts(
                 f"(variable source: {next(iter(input_var_sources))}). "
                 f"Use FilterGate pattern to align sequences before merging.")
 
+        if input_var_sources:
+            variable_input_nodes.add(node_name)
+
         # ── 确定本节点序列输出的变长源 ──
         if op_inst.VARIABLE_OUTPUT:
             var_source = node_name
@@ -717,3 +803,5 @@ def _check_variable_source_conflicts(
         for output_name, output_spec in op_inst.OUTPUTS.items():
             if output_spec.get("type") == "sequence":
                 port_var_source[(node_name, output_name)] = var_source
+
+    return variable_input_nodes

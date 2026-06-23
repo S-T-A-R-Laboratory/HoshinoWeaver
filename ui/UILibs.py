@@ -23,6 +23,8 @@ class imgDisplayQFrame(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.pixmap = None
+        self._scaled_pixmap = None
+        self._cached_scale = None
         self.scale_factor = 1.0
         self.max_scale = 10.0
         self.min_scale = 1.0
@@ -46,9 +48,10 @@ class imgDisplayQFrame(QFrame):
             self.img_path = path
             suffix = self.img_path.rsplit(".", 1)[-1].lower()
 
-            if suffix in ('cr2', 'cr3', 'arw', 'nef', 'dng'):
+            if suffix in ('cr2', 'cr3', 'arw', 'nef', 'dng', 'rw2', 'orf', 'raf'):
                 with rawpy.imread(self.img_path) as raw:
-                    rgb = raw.postprocess()
+                    rgb = raw.postprocess(output_color=rawpy.ColorSpace(4),
+                    use_camera_wb=True, no_auto_bright=True)
             else:
                 rgb = np.array(PIL.Image.open(self.img_path).convert("RGB"), dtype=np.uint8)
 
@@ -58,9 +61,11 @@ class imgDisplayQFrame(QFrame):
 
             if not pixmap.isNull():
                 self.pixmap = pixmap
+                self._invalidate_scaled_cache()
                 self.setImage()
         else:
             self.pixmap = None
+            self._invalidate_scaled_cache()
             self.setImage()
 
     def setImage(self, scale_factor = None):
@@ -85,16 +90,23 @@ class imgDisplayQFrame(QFrame):
             self.min_scale = min(self.width() / self.pixmap.width(), 
                                  self.height() / self.pixmap.height())
 
+    def _invalidate_scaled_cache(self):
+        self._scaled_pixmap = None
+        self._cached_scale = None
+
     def paintEvent(self, event):
         if self.pixmap:
+            if self._cached_scale != self.scale_factor:
+                self._scaled_pixmap = self.pixmap.scaled(
+                    self.pixmap.size() * self.scale_factor,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation)
+                self._cached_scale = self.scale_factor
+
             painter = QPainter(self)
-            scaled_pixmap = self.pixmap.scaled(self.pixmap.size() * self.scale_factor, 
-                                               Qt.KeepAspectRatio, 
-                                               Qt.SmoothTransformation)
-            
-            x = (self.width() - scaled_pixmap.width()) / 2 + self.offset.x()
-            y = (self.height() - scaled_pixmap.height()) / 2 + self.offset.y()
-            painter.drawPixmap(x, y, scaled_pixmap)
+            x = (self.width() - self._scaled_pixmap.width()) / 2 + self.offset.x()
+            y = (self.height() - self._scaled_pixmap.height()) / 2 + self.offset.y()
+            painter.drawPixmap(x, y, self._scaled_pixmap)
         else:
             super().paintEvent(event)
 
@@ -291,41 +303,47 @@ class QtSignalTracker(DummyTracker, QObject):
     def __init__(self):
         QObject.__init__(self)
         DummyTracker.__init__(self)
+        self._slots: set[str] = set()
         self._bars: dict[str, dict] = {}
-        self._total_items: int = 0
-        self._completed_items: int = 0
+
+    def pre_register(self, name: str) -> None:
+        self._slots.add(name)
+        self._emit()
 
     def create_bar(self, name, total, desc=None, unit="imgs"):
-        if name in self._bars:
-            old = self._bars[name]
-            self._total_items -= old['total']
-            self._completed_items -= old['progress']
+        self._slots.add(name)
         self._bars[name] = {'total': total, 'progress': 0, 'desc': desc or name}
-        self._total_items += total
         self._emit()
 
     def update(self, name, n=1):
         bar = self._bars.get(name)
         if bar:
-            bar['progress'] += n
-            self._completed_items += n
+            bar['progress'] = min(bar['progress'] + n, bar['total'])
             self._emit()
 
     def close_bar(self, name):
-        pass  # 保留已完成的贡献，不减进度
+        pass
 
     def close_all(self):
+        self._slots.clear()
         self._bars.clear()
-        self._total_items = 0
-        self._completed_items = 0
         self.finished.emit()
 
     def reset_bar(self, name, total, desc=None):
         self.create_bar(name, total, desc)
 
     def _emit(self):
-        pct = min(int(self._completed_items / self._total_items * 100), 99) if self._total_items > 0 else 0
-        active = next((b['desc'] for b in self._bars.values() if b['progress'] < b['total']), "")
+        n = len(self._slots) or 1
+        done = sum(
+            b['progress'] / b['total'] if b['total'] > 0 else 0.0
+            for b in self._bars.values()
+        )
+        pct = min(int(done / n * 100), 99)
+        active = next(
+            (f"正在执行：{b['desc']}({int(b['progress'] / b['total'] * 100)}%) | 总进度 {pct}%"
+             for b in self._bars.values() if b['progress'] < b['total']),
+            ""
+        )
         self.progress_updated.emit(pct, active)
 
 class uQDialog(QDialog):

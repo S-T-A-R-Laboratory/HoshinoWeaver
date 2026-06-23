@@ -22,6 +22,9 @@ buffer_mode:
 auto_fallback:
   enabled: true
   value: false
+runtime_planner:
+  enabled: true
+  value: true
 temp_path:
   enabled: false
   value: null

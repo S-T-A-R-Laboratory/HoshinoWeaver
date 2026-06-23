@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
-from functools import partial
+from functools import lru_cache, partial
 from typing import Any, Callable
 
 import numpy as np
 
 from hoshicore._custom_op import thread_tuning as _thread_tuning
-from hoshicore._custom_op._dispatch import apply_compiled_threads as _apply_compiled_threads
-from hoshicore._custom_op._dispatch import compiled_build_info as _compiled_build_info
+from hoshicore._custom_op._dispatch import \
+    apply_compiled_threads as _apply_compiled_threads
+from hoshicore._custom_op._dispatch import \
+    compiled_build_info as _compiled_build_info
 from hoshicore._custom_op._dispatch import debug_enabled as _debug_enabled
 from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
+from hoshicore._custom_op.backend_registry import native_backend_available as _native_backend_available
 
 
 _debug_log = partial(debug_log, "max")
@@ -156,8 +158,12 @@ def threshold_max_merge_compiled(
 
 @lru_cache(maxsize=2)
 def _select_max_backend(preference: str) -> tuple[str, Callable[[np.ndarray, np.ndarray], np.ndarray]]:
-    module, compiled_error = _load_compiled_module_result()
-    if module is not None:
+    available, compiled_error = _native_backend_available(
+        "max_combine",
+        preference,
+        load_module=_load_compiled_module_result,
+    )
+    if available:
         return "compiled", max_combine_compiled
 
     if compiled_error:
@@ -170,8 +176,12 @@ def _select_max_backend(preference: str) -> tuple[str, Callable[[np.ndarray, np.
 def _select_threshold_max_backend(
     preference: str,
 ) -> tuple[str, Callable[[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, Any], np.ndarray]]:
-    module, compiled_error = _load_compiled_module_result()
-    if module is not None and hasattr(module, "threshold_max_merge"):
+    available, compiled_error = _native_backend_available(
+        "threshold_max_merge",
+        preference,
+        load_module=_load_compiled_module_result,
+    )
+    if available:
         return "compiled", threshold_max_merge_compiled
 
     if compiled_error:
@@ -248,4 +258,3 @@ def threshold_max_merge(
         _apply_compiled_threads("threshold_max_merge", frame_arr)
         return backend(frame_arr, mean_arr, std_arr, result_arr, n_sigma, scalar_weight)
     return backend(frame, mean_img, std_img, result, n_sigma, scalar_weight)
-

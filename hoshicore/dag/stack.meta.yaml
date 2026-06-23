@@ -56,6 +56,7 @@ nodes:
   stacker:
     op: stacker.meta.yaml      # fixed-op；route_key 透传算法选择到子图
     route_key: stacker
+    label: "叠加"
     routes:
       stacker: routes.stacker  # 透传父图选择到子图 stacker route
     inputs:

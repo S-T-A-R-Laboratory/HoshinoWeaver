@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 
 #include "common/backend_info.h"
+#include "ops/filter/filter_ops.h"
 #include "ops/fgp/fgp_ops.h"
 #include "ops/max/max_ops.h"
 #include "ops/median/median_ops.h"
@@ -16,6 +17,7 @@ PYBIND11_MODULE(_C, m) {
     m.doc() = "Optional C++ ops for HoshinoWeaver";
 
     bind_backend_info(m);
+    bind_filter_ops(m);
     bind_fgp_ops(m);
     bind_max_ops(m);
     bind_median_ops(m);
