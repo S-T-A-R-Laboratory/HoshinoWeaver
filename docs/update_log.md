@@ -66,6 +66,46 @@
 
 - [ ] 接入Skill，允许agent阅读需求和可用算子，生成可执行计算图
 
+## v1.0.0-rc (Jun 23rd, 2026)
+
+### ✅ New Features
+
+- **缩星多模式支持**：星轨叠加的缩星功能现在支持多种缩星模式，可通过 GUI 配置，适应不同画面条件。
+- **RW2 / RAF RAW 格式支持**：新增对 Panasonic RW2 和 Fujifilm RAF 格式的读取支持。
+- **中位数滤波 Custom Op**：新增 C++ 中位数滤波加速内核，用于星点检测前的预处理降噪。
+- **运行时内存规划器（Runtime Planner）**：ChunkIterator 类算子现在支持根据系统可用内存动态计算分块行数，默认启用，避免手动调参导致的 OOM 或浪费。
+- **语义化进度标签**：叠加进度显示支持按节点语义标签选择性报告，GUI 进度信息更清晰。
+
+### ✅ Improvements
+
+- **零像素跳过融合至 C++ 内核**：将 Python 侧逐帧零像素检测（`np.all(...==0)`）下沉至 OpenMP 并行 C++ 内核内部完成，消除事件循环阻塞和临时数组分配开销。影响内核：fgp_accumulate、sigma_clip_fused_merge、sigma_clip_iterative_chunk 等。
+- **Sigma-Clip 分块内核并行化**：sigma-clip chunk 内核内部 OpenMP 并行，修复 MSVC OpenMP reduction 兼容问题。
+- **中位数叠加改为 Chunk 架构**：MedianReduceOp 切换为 Chunk 版本，支持预取（prefetch），降低峰值内存并提升大批量叠加性能。
+- **磁盘并行加载策略**：FrameBuffer 新增 disk parallel load 策略，提升 I/O 吞吐。
+- **GUI 窗口管理重构**：移除手动实现的窗口拖拽/缩放/贴靠逻辑，替换为系统原生 API，修复十余项 UI 问题（控件布局、窗口尺寸、全局设置面板等）。
+- **DAG 终止协议统一**：取消逻辑集中至 DAGExecutor，BaseOp 不再承担取消传播职责；新增结构化错误报告（`DAGExecutionError`），CLI 和 GUI 均可追溯 root cause。
+- **Preflight 配置校验增强**：启动前预检新增对配置参数的合法性校验，提前拦截错误配置。
+- **进度显示优化**：GUI 进度条刷新逻辑优化，减少不必要的重绘。
+
+### ✅ Bug Fixed
+
+- 修复 RAW 格式 `auto_bright` 参数未正确传递导致曝光偏差的问题。
+- 修复卫星消除算子 `_process_center` 蒙版参数传递错误。
+- 修复星轨渐入渐出权重长度不匹配导致的异常。
+- 修复 EXIF 写入时 `SubImage` 标签导致部分软件无法读取输出文件的问题。
+- 修复 FileCacheQueue 在多线程场景下的 I/O 竞争问题。
+- 修复均值叠加算子累加器内存未计入 preflight 估算的问题。
+- 修复 FilterOp 进度追踪器在特定条件下的报告异常。
+
+### ✅ Base
+
+- CMake 构建修复：修正 Python 路径探测和 `OpenMP_CXX_LIB_NAMES` 在部分平台的配置问题。
+- 统一仓库换行符为 LF。
+- 新增运行时规划器单元测试和 preflight 配置校验测试。
+- 新增 DAG Executor 终止协议集成测试。
+
+---
+
 ## v1.0.0-beta.1 (May 28th, 2026)
 
 ### ✅ New Features
