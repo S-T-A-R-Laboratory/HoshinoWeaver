@@ -1,0 +1,101 @@
+description: "星轨延时序列输出（滑窗最大值 / 未来扩展）"
+version: "1"
+
+# ── 全局输入 ──
+inputs:
+  fnames: { type: sequence, required: true }
+
+# ── 路由定义 ──
+routes:
+  mode:
+    options:
+      sliding_max: SlidingWindowMaxOp
+      # weighted_max: WeightedSlidingWindowMaxOp
+      # ema_max: EmaMaxOp
+    default: sliding_max
+
+# ── 全局配置 ──
+configs:
+  enable_star_shrink:     { type: bool, default: false }
+  star_shrink_mode:       { type: str,  default: "moderate" }
+  enable_satellite_clean: { type: bool, default: false }
+  sat_window_size:        { type: int,  default: 3 }
+  mask:                   { type: str,  required: false, default: null }
+  loader_type:            { type: str,  default: "img_file_list" }
+  loader_configs:         { type: dict, default: {} }
+  output_dir:             { type: str,  required: true }
+  output_template:        { type: str,  default: "frame_{index:05d}.png" }
+  output_dtype:           { type: str,  default: "uint8" }
+
+# ── 路由专属配置 ──
+route_configs:
+  mode:
+    sliding_max:
+      window_size:  { type: int, default: 30 }
+      buffer_mode:  { type: str, default: "memory" }
+
+# ── 节点 ──
+#
+#  inputs.fnames ──► data_loader ──► satellite_clean ──► star_shrink ──► core_algo ──► batch_saver
+#
+
+nodes:
+  data_loader:
+    op: ImgDataLoaderOp
+    inputs:
+      src: inputs.fnames
+    configs:
+      loader_type: configs.loader_type
+      configs: configs.loader_configs
+    outputs:
+      result: { type: sequence }
+
+  satellite_clean:
+    op: satellite_clean.yaml
+    enable: configs.enable_satellite_clean
+    bypass: data
+    inputs:
+      data: data_loader.result
+    configs:
+      window_size: configs.sat_window_size
+      mask: configs.mask
+    outputs:
+      result: { type: sequence }
+
+  star_shrink:
+    op: StarShrinkOp
+    enable: configs.enable_star_shrink
+    bypass: data
+    inputs:
+      data: satellite_clean.result
+    configs:
+      mode: configs.star_shrink_mode
+    outputs:
+      result: { type: sequence }
+
+  core_algo:
+    route_key: mode
+    label: "延时星轨核心"
+    inputs:
+      data: star_shrink.result
+    route_configs:
+      sliding_max:
+        window_size: configs.window_size
+        buffer_mode: configs.buffer_mode
+    outputs:
+      result: { type: sequence }
+
+  batch_saver:
+    op: BatchImageSaveOp
+    inputs:
+      data: core_algo.result
+    configs:
+      output_dir: configs.output_dir
+      output_template: configs.output_template
+      output_dtype: configs.output_dtype
+    outputs:
+      result: { type: sequence }
+
+# ── 全局输出 ──
+outputs:
+  result: batch_saver.result

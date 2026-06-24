@@ -37,6 +37,8 @@ MODE_MAP = {
              _BASE_DIR / "hoshicore/dag/stack.ui.yaml"),
     "星点对齐叠加": (_BASE_DIR / "hoshicore/dag/sky_ground_stack.meta.yaml",
              _BASE_DIR / "hoshicore/dag/sky_ground_stack.ui.yaml"),
+    "星轨延时": (_BASE_DIR / "hoshicore/dag/timelapse_startrail.meta.yaml",
+             _BASE_DIR / "hoshicore/dag/timelapse_startrail.ui.yaml"),
 }
 
 class HNW_guide(QDialog, Ui_guide):
@@ -126,6 +128,7 @@ def _build_mode_menu(callback):
         ("星轨叠加", "将多张照片合成星轨效果，支持多种叠加算法"),
         ("堆栈降噪", "对多张照片进行堆栈平均/中值降噪处理"),
         ("星点对齐叠加", "分离天地后对齐星点进行叠加，减少噪点并保持地景清晰"),
+        ("星轨延时", "生成星轨延时序列帧，每帧为滑窗内累积星轨效果"),
     ]
     for mode_name, tooltip in actions:
         action = menu.addAction(mode_name)

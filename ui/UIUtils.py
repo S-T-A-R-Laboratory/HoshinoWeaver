@@ -153,6 +153,7 @@ class SlotHandler(QMainWindow):
         # 设置背景图
         bg_map = {
             '星轨叠加': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
+            '星轨延时': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
             '堆栈降噪': 'url(:/img/resource/img/back02.jpg)',
             '星点对齐叠加': 'url(:/img/resource/img/皿仓山星轨-s.jpg)',
         }
