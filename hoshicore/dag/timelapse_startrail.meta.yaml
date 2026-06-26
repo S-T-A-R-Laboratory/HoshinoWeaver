@@ -79,9 +79,7 @@ nodes:
     inputs:
       data: star_shrink.result
     route_configs:
-      sliding_max:
-        window_size: configs.window_size
-        buffer_mode: configs.buffer_mode
+      sliding_max: {}
     outputs:
       result: { type: sequence }
 

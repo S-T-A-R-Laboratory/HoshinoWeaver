@@ -27,7 +27,7 @@ import yaml
 from loguru import logger
 
 from ..component.progress import DummyTracker, ProgressTracker
-from ..component.queue import BaseQueue, CancellationError, RichContextQueue
+from ..component.queue import BaseQueue, CancellationError, RichContextQueue, StreamExhausted
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
@@ -469,8 +469,13 @@ async def run_dag(
         """结果收集，容忍取消（队列被 force_cancel 时静默退出）。"""
 
         async def _get_one(name, queue):
+            items = []
             try:
-                results[name] = await queue.get()
+                while True:
+                    items.append(await queue.get())
+            except StreamExhausted:
+                if items:
+                    results[name] = items[0] if len(items) == 1 else items
             except (CancellationError, asyncio.CancelledError):
                 pass
 
