@@ -12,6 +12,9 @@ routes:
       sliding_max:
         label: "滑窗最大值"
         description: "固定窗口内逐像素取最大值。无渐入渐出，帧进入窗口时全亮，离开时消失。"
+      ema_decay:
+        label: "指数衰减"
+        description: "旧帧按指数衰减消失，产生平滑渐隐的彗星尾效果。无硬窗口边界，内存开销恒定。"
 
 configs:
   enable_star_shrink:
@@ -68,6 +71,14 @@ route_configs:
       step: 1
     buffer_mode:
       hidden: true
+  ema_decay:
+    half_life:
+      label: "半衰期"
+      description: "亮度衰减到一半所需的帧数。值越大轨迹越长。"
+      widget: slider
+      min: 1
+      max: 300
+      step: 1
 
 layout:
   groups:

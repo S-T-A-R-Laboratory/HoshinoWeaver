@@ -155,3 +155,87 @@ class SlidingWindowMaxOp(BaseOp):
         logger.info(
             f"{self.name}: completed {global_offset} frames, window_size={n}"
         )
+
+
+@register_op()
+class EmaDecayMaxOp(BaseOp):
+    """指数衰减最大值算子：序列 → 序列，每帧输出为 max(当前帧, γ·前一输出)。
+
+    递推公式：S_t = max(x_t, γ · S_{t-1})
+    等效衰减函数：d(k) = γ^k（纯指数衰减）
+
+    用户通过 half_life（半衰期帧数）控制衰减速度：
+        γ = 2^{-1/half_life}
+
+    内存开销恒定：仅维护一张状态图，与序列长度无关。
+    """
+
+    INPUTS: dict[str, dict[str, Any]] = {
+        "data": {"type": "sequence", "required": True},
+    }
+    CONFIGS: dict[str, dict[str, Any]] = {
+        "half_life": {"type": "float", "default": 30.0},
+    }
+    OUTPUTS: dict[str, dict[str, Any]] = {
+        "result": {"type": "sequence"},
+    }
+    REPORTS_PROGRESS = True
+
+    @classmethod
+    def estimate_resources(
+        cls,
+        configs: dict[str, Any],
+        frame_bytes: int,
+        n_frames: Optional[int],
+        dtype_bytes: Optional[int] = None,
+    ) -> tuple[int, int]:
+        return (frame_bytes, 0)
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        half_life: float = configs["half_life"]
+        if half_life <= 0:
+            raise ValueError(
+                f"{self.name}: half_life must be > 0, got {half_life}"
+            )
+        gamma = 2.0 ** (-1.0 / half_life)
+
+        total = self.length
+        if total is not None:
+            self.tracker.create_bar(self.name, total, desc=self.display_name)
+
+        state: Optional[np.ndarray] = None
+
+        try:
+            for _ in self._input_range():
+                try:
+                    upper = self._async_convert_inputs()
+                    frame = await upper["data"]
+                except StreamExhausted:
+                    break
+
+                if state is None:
+                    state = frame.copy()
+                else:
+                    state = await self._run_cpu(
+                        self._ema_step, state, frame, gamma
+                    )
+
+                await self._broadcast_outputs({"result": state.copy()})
+
+                if total is not None:
+                    self.tracker.update(self.name)
+        finally:
+            if total is not None:
+                self.tracker.close_bar(self.name)
+
+        logger.info(
+            f"{self.name}: completed, half_life={half_life:.1f}, gamma={gamma:.6f}"
+        )
+
+    @staticmethod
+    def _ema_step(
+        state: np.ndarray, frame: np.ndarray, gamma: float
+    ) -> np.ndarray:
+        np.multiply(state, gamma, out=state)
+        np.maximum(state, frame, out=state)
+        return state
