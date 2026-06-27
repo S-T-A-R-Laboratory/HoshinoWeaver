@@ -1,11 +1,16 @@
-"""Tests for timelapse ops: SlidingWindowMaxOp, EmaDecayMaxOp."""
+"""Tests for timelapse ops: SlidingWindowMaxOp, EmaDecayMaxOp, WeightedSlidingWindowMaxOp."""
 import asyncio
 
 import numpy as np
 import pytest
 
 from hoshicore.component.queue import RichContextQueue
-from hoshicore.ops.timelapse_ops import EmaDecayMaxOp, SlidingWindowMaxOp
+from hoshicore.ops.timelapse_ops import (
+    EmaDecayMaxOp,
+    SlidingWindowMaxOp,
+    WeightedSlidingWindowMaxOp,
+)
+from hoshicore.ops.weight_generator import generate_weight
 
 pytestmark = pytest.mark.asyncio
 
@@ -322,3 +327,158 @@ class TestEmaDecayMaxEdgeCases:
         for t in range(5):
             np.testing.assert_allclose(
                 results[t][0, 0], frames[t][0, 0], rtol=0.01)
+
+
+# ── WeightedSlidingWindowMaxOp helpers ──
+
+async def _run_weighted_op(
+    frames: list[np.ndarray],
+    window_size: int,
+    fade_in: float = 0.3,
+    fade_out: float = 0.3,
+) -> list[np.ndarray]:
+    """Wire and execute WeightedSlidingWindowMaxOp, return collected outputs."""
+    from hoshicore.component.queue import BaseQueue
+
+    op = WeightedSlidingWindowMaxOp("test_weighted_max")
+
+    input_queue = op.inputs["data"]
+    output_queue = RichContextQueue(maxsize=1)
+    op.outputs["result"].append(output_queue)
+
+    await op.config["window_size"].put(window_size)
+    await op.config["fade_in"].put(fade_in)
+    await op.config["fade_out"].put(fade_out)
+    await op.config["buffer_mode"].put("memory")
+
+    async def feed():
+        await input_queue.set_length(len(frames))
+        for frame in frames:
+            await input_queue.put(frame)
+        await input_queue.put(BaseQueue._SENTINEL)
+
+    collected = []
+
+    async def collect():
+        length = await output_queue.get_length()
+        for _ in range(length):
+            item = await output_queue.get()
+            collected.append(item)
+
+    await asyncio.gather(feed(), op.execute(), collect())
+    return collected
+
+
+def _naive_weighted_max(
+    frames: list[np.ndarray],
+    window_size: int,
+    fade_in: float,
+    fade_out: float,
+) -> list[np.ndarray]:
+    """Brute-force reference for weighted sliding window max."""
+    weights = generate_weight(window_size, fin=fade_in, fout=fade_out)
+    n = window_size
+    results = []
+    for t in range(len(frames)):
+        # Window: frames[max(0, t-n+1) : t+1]
+        l = max(0, t - n + 1)
+        buf = frames[l:t + 1]
+        k = len(buf)
+        # Align to tail of weight vector
+        w = weights[n - k:]
+        result = buf[0].astype(np.float32) * w[0]
+        for i in range(1, k):
+            weighted = buf[i].astype(np.float32) * w[i]
+            np.maximum(result, weighted, out=result)
+        results.append(result)
+    return results
+
+
+# ── WeightedSlidingWindowMaxOp Tests ──
+
+class TestWeightedSlidingWindowMaxBasic:
+    async def test_no_fade(self):
+        """fade_in=0, fade_out=0 → uniform weight=1, equivalent to plain sliding max."""
+        rng = np.random.default_rng(123)
+        frames = [rng.integers(0, 255, (4, 4), dtype=np.uint16) for _ in range(10)]
+        results = await _run_weighted_op(frames, window_size=4, fade_in=0, fade_out=0)
+        expected = _naive_sliding_max(frames, 4)
+        for t in range(len(frames)):
+            np.testing.assert_allclose(
+                results[t], expected[t].astype(np.float32), atol=0.01,
+                err_msg=f"Mismatch at t={t}")
+
+    async def test_fade_in_only(self):
+        """Oldest frames in window should be attenuated by fade-in."""
+        frames = [
+            np.full((2, 2), 100.0, dtype=np.float32),
+            np.full((2, 2), 100.0, dtype=np.float32),
+            np.full((2, 2), 100.0, dtype=np.float32),
+            np.full((2, 2), 100.0, dtype=np.float32),
+        ]
+        results = await _run_weighted_op(frames, window_size=4, fade_in=0.5, fade_out=0)
+        expected = _naive_weighted_max(frames, 4, fade_in=0.5, fade_out=0)
+        for t in range(len(frames)):
+            np.testing.assert_allclose(results[t], expected[t], rtol=1e-5)
+
+    async def test_fade_out_only(self):
+        """Newest frames in window should be attenuated by fade-out."""
+        frames = [
+            np.full((2, 2), 100.0, dtype=np.float32),
+            np.full((2, 2), 100.0, dtype=np.float32),
+            np.full((2, 2), 100.0, dtype=np.float32),
+            np.full((2, 2), 100.0, dtype=np.float32),
+        ]
+        results = await _run_weighted_op(frames, window_size=4, fade_in=0, fade_out=0.5)
+        expected = _naive_weighted_max(frames, 4, fade_in=0, fade_out=0.5)
+        for t in range(len(frames)):
+            np.testing.assert_allclose(results[t], expected[t], rtol=1e-5)
+
+    async def test_symmetric_fade(self):
+        """fade_in=0.5, fade_out=0.5 → triangular window."""
+        rng = np.random.default_rng(99)
+        frames = [rng.integers(50, 200, (3, 3)).astype(np.float32) for _ in range(8)]
+        results = await _run_weighted_op(frames, window_size=5, fade_in=0.5, fade_out=0.5)
+        expected = _naive_weighted_max(frames, 5, fade_in=0.5, fade_out=0.5)
+        for t in range(len(frames)):
+            np.testing.assert_allclose(
+                results[t], expected[t], rtol=1e-5,
+                err_msg=f"Mismatch at t={t}")
+
+    async def test_warmup_period(self):
+        """First n-1 frames (partial buffer) should produce correct weighted output."""
+        rng = np.random.default_rng(77)
+        frames = [rng.integers(0, 255, (4, 4)).astype(np.float32) for _ in range(6)]
+        results = await _run_weighted_op(frames, window_size=4, fade_in=0.3, fade_out=0.3)
+        expected = _naive_weighted_max(frames, 4, fade_in=0.3, fade_out=0.3)
+        # Verify warmup frames specifically
+        for t in range(3):
+            np.testing.assert_allclose(
+                results[t], expected[t], rtol=1e-5,
+                err_msg=f"Warmup mismatch at t={t}")
+
+    async def test_multichannel(self):
+        """Works with RGB (H,W,3) images."""
+        rng = np.random.default_rng(42)
+        frames = [rng.integers(0, 255, (5, 5, 3)).astype(np.float32) for _ in range(8)]
+        results = await _run_weighted_op(frames, window_size=3, fade_in=0.3, fade_out=0.3)
+        expected = _naive_weighted_max(frames, 3, fade_in=0.3, fade_out=0.3)
+        for t in range(len(frames)):
+            np.testing.assert_allclose(
+                results[t], expected[t], rtol=1e-5,
+                err_msg=f"Mismatch at t={t}")
+
+
+class TestWeightedSlidingWindowMaxEdgeCases:
+    async def test_window_size_1(self):
+        """Window of 1: output should equal input (scaled by weight=1)."""
+        frames = [np.full((2, 2), float(i * 10), dtype=np.float32) for i in range(5)]
+        results = await _run_weighted_op(frames, window_size=1, fade_in=0, fade_out=0)
+        for t in range(5):
+            np.testing.assert_allclose(results[t], frames[t], rtol=1e-5)
+
+    async def test_invalid_fade_sum(self):
+        """fade_in + fade_out > 1 should raise ValueError."""
+        frame = np.zeros((2, 2), dtype=np.float32)
+        with pytest.raises(ValueError, match="fade_in .* fade_out must be <= 1.0"):
+            await _run_weighted_op([frame], window_size=5, fade_in=0.6, fade_out=0.6)

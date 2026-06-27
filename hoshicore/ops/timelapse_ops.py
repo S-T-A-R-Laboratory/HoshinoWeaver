@@ -1,3 +1,4 @@
+from collections import deque
 from typing import Any, Optional
 
 import numpy as np
@@ -8,6 +9,7 @@ from ..component.queue import StreamExhausted
 from .._custom_op import max_combine as custom_max_combine
 from ..engine.registry import register_op
 from .base import BaseOp
+from .weight_generator import generate_weight
 
 
 def _create_buffer(mode: str):
@@ -239,3 +241,106 @@ class EmaDecayMaxOp(BaseOp):
         np.multiply(state, gamma, out=state)
         np.maximum(state, frame, out=state)
         return state
+
+
+@register_op()
+class WeightedSlidingWindowMaxOp(BaseOp):
+    """加权滑窗最大值算子：序列 → 序列，每帧输出为窗口内加权逐像素最大值。
+
+    权重曲线为梯形（渐入渐出），由 fade_in / fade_out 比例控制。
+    复杂度 O(m·n·HW)：每帧需扫描整个窗口计算加权最大值。
+    """
+
+    INPUTS: dict[str, dict[str, Any]] = {
+        "data": {"type": "sequence", "required": True},
+    }
+    CONFIGS: dict[str, dict[str, Any]] = {
+        "window_size": {"type": "int", "default": 30},
+        "fade_in": {"type": "float", "default": 0.3},
+        "fade_out": {"type": "float", "default": 0.3},
+        "buffer_mode": {"type": "str", "default": "memory"},
+    }
+    OUTPUTS: dict[str, dict[str, Any]] = {
+        "result": {"type": "sequence"},
+    }
+    REPORTS_PROGRESS = True
+
+    @classmethod
+    def estimate_resources(
+        cls,
+        configs: dict[str, Any],
+        frame_bytes: int,
+        n_frames: Optional[int],
+        dtype_bytes: Optional[int] = None,
+    ) -> tuple[int, int]:
+        n = configs.get("window_size", 30)
+        mode = configs.get("buffer_mode", "memory")
+        if mode == "memory":
+            return ((n + 1) * frame_bytes, 0)
+        else:
+            return (frame_bytes, n * frame_bytes)
+
+    async def _async_execute(self, configs: dict[str, Any]) -> None:
+        window_size: int = configs["window_size"]
+        fade_in: float = configs["fade_in"]
+        fade_out: float = configs["fade_out"]
+
+        if window_size < 1:
+            raise ValueError(
+                f"{self.name}: window_size must be >= 1, got {window_size}"
+            )
+        if fade_in + fade_out > 1.0:
+            raise ValueError(
+                f"{self.name}: fade_in + fade_out must be <= 1.0, "
+                f"got {fade_in} + {fade_out} = {fade_in + fade_out}"
+            )
+
+        weights = generate_weight(window_size, fin=fade_in, fout=fade_out)
+
+        total = self.length
+        if total is not None:
+            self.tracker.create_bar(self.name, total, desc=self.display_name)
+
+        buffer: deque[np.ndarray] = deque(maxlen=window_size)
+
+        try:
+            for _ in self._input_range():
+                try:
+                    upper = self._async_convert_inputs()
+                    frame = await upper["data"]
+                except StreamExhausted:
+                    break
+
+                buffer.append(frame)
+                output = await self._run_cpu(
+                    self._weighted_max, list(buffer), weights
+                )
+                await self._broadcast_outputs({"result": output})
+
+                if total is not None:
+                    self.tracker.update(self.name)
+        finally:
+            if total is not None:
+                self.tracker.close_bar(self.name)
+
+        logger.info(
+            f"{self.name}: completed, window_size={window_size}, "
+            f"fade_in={fade_in}, fade_out={fade_out}"
+        )
+
+    @staticmethod
+    def _weighted_max(
+        frames: list[np.ndarray], weights: np.ndarray
+    ) -> np.ndarray:
+        n = len(weights)
+        k = len(frames)
+        # During warmup (k < n), align to tail of weight vector
+        # so newest frame always gets weights[n-1]
+        w = weights[n - k:]
+
+        result = (frames[0].astype(np.float32) * w[0])
+        for i in range(1, k):
+            weighted = frames[i].astype(np.float32) * w[i]
+            np.maximum(result, weighted, out=result)
+
+        return result

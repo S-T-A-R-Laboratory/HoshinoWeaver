@@ -9,8 +9,9 @@ inputs:
 routes:
   mode:
     options:
-      sliding_max: SlidingWindowMaxOp
-      ema_decay:   EmaDecayMaxOp
+      sliding_max:  SlidingWindowMaxOp
+      ema_decay:    EmaDecayMaxOp
+      weighted_max: WeightedSlidingWindowMaxOp
     default: sliding_max
 
 # ── 全局配置 ──
@@ -31,6 +32,11 @@ route_configs:
   mode:
     sliding_max:
       window_size:  { type: int, default: 30 }
+      buffer_mode:  { type: str, default: "memory" }
+    weighted_max:
+      window_size:  { type: int, default: 30 }
+      fade_in:      { type: float, default: 0.3 }
+      fade_out:     { type: float, default: 0.3 }
       buffer_mode:  { type: str, default: "memory" }
     ema_decay:
       half_life:    { type: float, default: 30.0 }
@@ -81,6 +87,7 @@ nodes:
       data: star_shrink.result
     route_configs:
       sliding_max: {}
+      weighted_max: {}
       ema_decay: {}
     outputs:
       result: { type: sequence }
