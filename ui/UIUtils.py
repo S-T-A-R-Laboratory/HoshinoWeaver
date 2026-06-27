@@ -607,6 +607,16 @@ class SlotHandler(QMainWindow):
 
             # 执行成功
             output_path = global_configs.get("output_filename", "")
+            if not output_path:
+                output_dir = global_configs.get("output_dir", "")
+                if output_dir and os.path.isdir(output_dir):
+                    _IMG_EXTS = {'.png', '.jpg', '.jpeg', '.tif', '.tiff'}
+                    frames = sorted(
+                        p for p in Path(output_dir).iterdir()
+                        if p.suffix.lower() in _IMG_EXTS
+                    )
+                    if frames:
+                        output_path = str(frames[-1])
             self.window._preview_useable = True
             self.view_file(output_path)
             self.window._status = 'successed'

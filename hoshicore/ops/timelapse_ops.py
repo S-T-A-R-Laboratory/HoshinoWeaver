@@ -206,6 +206,7 @@ class EmaDecayMaxOp(BaseOp):
             self.tracker.create_bar(self.name, total, desc=self.display_name)
 
         state: Optional[np.ndarray] = None
+        src_dtype: Optional[np.dtype] = None
 
         try:
             for _ in self._input_range():
@@ -216,13 +217,15 @@ class EmaDecayMaxOp(BaseOp):
                     break
 
                 if state is None:
-                    state = frame.copy()
+                    src_dtype = frame.dtype
+                    state = frame.astype(np.float32)
                 else:
                     state = await self._run_cpu(
                         self._ema_step, state, frame, gamma
                     )
 
-                await self._broadcast_outputs({"result": state.copy()})
+                assert state is not None and src_dtype is not None
+                await self._broadcast_outputs({"result": state.astype(src_dtype)})
 
                 if total is not None:
                     self.tracker.update(self.name)
@@ -238,7 +241,7 @@ class EmaDecayMaxOp(BaseOp):
     def _ema_step(
         state: np.ndarray, frame: np.ndarray, gamma: float
     ) -> np.ndarray:
-        np.multiply(state, gamma, out=state)
+        state *= gamma
         np.maximum(state, frame, out=state)
         return state
 
