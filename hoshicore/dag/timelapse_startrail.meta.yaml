@@ -39,7 +39,7 @@ route_configs:
       fade_out:     { type: float, default: 0.3 }
       buffer_mode:  { type: str, default: "memory" }
     ema_decay:
-      half_life:    { type: float, default: 30.0 }
+      half_life:    { type: int, default: 30 }
 
 # ── 节点 ──
 #

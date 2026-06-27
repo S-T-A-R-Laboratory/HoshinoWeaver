@@ -298,7 +298,7 @@ class WeightedSlidingWindowMaxOp(BaseOp):
                 f"got {fade_in} + {fade_out} = {fade_in + fade_out}"
             )
 
-        weights = generate_weight(window_size, fin=fade_in, fout=fade_out)
+        weights = np.array([],dtype=np.float32)
 
         total = self.length
         if total is not None:
@@ -313,8 +313,11 @@ class WeightedSlidingWindowMaxOp(BaseOp):
                     frame = await upper["data"]
                 except StreamExhausted:
                     break
-
                 buffer.append(frame)
+                if len(buffer) != len(weights):
+                    weights = generate_weight(
+                        len(buffer), fade_in, fade_out
+                    )
                 output = await self._run_cpu(
                     self._weighted_max, list(buffer), weights
                 )
