@@ -551,7 +551,6 @@ class SlotHandler(QMainWindow):
                 )
                 self.window._task = asyncio.create_task(self.start_task())
 
-    @asyncSlot()
     async def start_task(self):
         # 清空预览
         self.view_file()

@@ -326,27 +326,31 @@ class ParallelBaseOp(BaseOp):
         emit_task = asyncio.create_task(emit_loop())
         tasks: list[asyncio.Task] = []
 
-        for idx in self._input_range():
-            if sentinel_event.is_set() or emit_task.done():
-                break
-            await slots.acquire()
-            if sentinel_event.is_set() or emit_task.done():
-                slots.release()
-                break
-            task = asyncio.create_task(process_item(idx))
-            tasks.append(task)
+        try:
+            for idx in self._input_range():
+                if sentinel_event.is_set() or emit_task.done():
+                    break
+                await slots.acquire()
+                if sentinel_event.is_set() or emit_task.done():
+                    slots.release()
+                    break
+                task = asyncio.create_task(process_item(idx))
+                tasks.append(task)
+        finally:
+            # 无论正常或取消，确保所有子任务被清理
+            for t in tasks:
+                if not t.done():
+                    try:
+                        await asyncio.wait_for(t, timeout=5.0)
+                    except (asyncio.TimeoutError, Exception):
+                        t.cancel()
 
-        # 等待 in-flight tasks 完成（sentinel 回填保证不会永久阻塞）
-        for t in tasks:
-            if not t.done():
+            emit_event.set()
+            if not emit_task.done():
                 try:
-                    await asyncio.wait_for(t, timeout=5.0)
+                    await asyncio.wait_for(emit_task, timeout=5.0)
                 except (asyncio.TimeoutError, Exception):
-                    t.cancel()
-
-        emit_event.set()
-        if not emit_task.done():
-            await emit_task
+                    emit_task.cancel()
 
         if self.length is not None:
             self.tracker.close_bar(self.name)
