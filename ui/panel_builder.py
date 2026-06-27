@@ -30,6 +30,7 @@ class OutputSpec:
     dtype_options: list[str] | None = None  # workflow-allowed dtypes
     format_params: dict[str, str] = field(
         default_factory=dict)  # preset_param → config_key
+    template_key: str | None = None  # sequence output: config key for filename template
 
 
 @dataclass
@@ -97,6 +98,7 @@ class PanelSchema:
                 formats=entry.get("formats"),
                 dtype_options=entry.get("dtype_options"),
                 format_params=entry.get("format_params", {}) or {},
+                template_key=entry.get("template_key"),
             )
             # Validate format_params keys exist in presets
             for preset_param in spec.format_params:

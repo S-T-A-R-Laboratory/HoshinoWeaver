@@ -1,0 +1,135 @@
+inputs:
+  fnames:
+    label: "图像文件"
+    widget: file_picker
+    accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
+
+routes:
+  mode:
+    label: "延时模式"
+    widget: tabs
+    options:
+      sliding_max:
+        label: "滑窗最大值"
+        description: "固定窗口内逐像素取最大值。无渐入渐出，渲染速度较快。"
+      ema_decay:
+        label: "指数衰减"
+        description: "旧帧按指数衰减消失，产生平滑渐隐的彗星尾效果。无硬窗口边界，渲染速度快。"
+      weighted_max:
+        label: "渐入渐出"
+        description: "滑窗内按渐入渐出取最大值，轨迹自然淡入淡出。可控性高，计算速度较慢"
+
+configs:
+  enable_star_shrink:
+    label: "缩星"
+    description: "缩小星点，使轨迹更稀疏。"
+    widget: switch
+  star_shrink_mode:
+    label: "缩星力度"
+    widget: select
+    visible_when: { key: "enable_star_shrink", eq: true }
+    options:
+      - { value: "light",      label: "轻度" }
+      - { value: "moderate",   label: "适中" }
+      - { value: "strong",     label: "较强" }
+      - { value: "aggressive", label: "强力" }
+      - { value: "removal",    label: "去星" }
+  enable_satellite_clean:
+    label: "去卫星线"
+    description: "去除卫星/飞机轨迹。"
+    widget: switch
+  sat_window_size:
+    label: "去卫星窗口大小"
+    description: "检测窗口帧数。推荐 3。"
+    widget: slider
+    visible_when: { key: "enable_satellite_clean", eq: true }
+    min: 3
+    max: 9
+    step: 2
+  mask:
+    label: "天空区域遮罩"
+    description: "白色=天空，黑色=地面。限定星点检测区域。"
+    widget: file_picker
+    accept: ".tif,.tiff,.png,.jpg"
+    visible_when: { key: "enable_satellite_clean", eq: true }
+  loader_type:
+    hidden: true
+  loader_configs:
+    hidden: true
+  output_dir:
+    hidden: true
+  output_template:
+    hidden: true
+  output_dtype:
+    hidden: true
+
+route_configs:
+  sliding_max:
+    window_size:
+      label: "窗口大小"
+      description: "滑窗帧数。值越大轨迹越长。"
+      widget: slider
+      min: 1
+      max: 300
+      step: 1
+    buffer_mode:
+      hidden: true
+  weighted_max:
+    window_size:
+      label: "窗口大小"
+      description: "滑窗帧数。值越大轨迹越长。"
+      widget: slider
+      min: 1
+      max: 300
+      step: 1
+    fade_in:
+      label: "渐入/渐出"
+      description: "左端=轨迹起始淡入比例，右端=轨迹末尾淡出比例。"
+      widget: range_slider
+      bind: fade_out
+      min: 0
+      max: 1.0
+      step: 0.05
+      transform: { right: complement }
+    fade_out:
+      hidden: true
+    buffer_mode:
+      hidden: true
+  ema_decay:
+    half_life:
+      label: "半衰期"
+      description: "亮度衰减到一半所需的帧数。值越大轨迹越长。"
+      widget: slider
+      min: 1
+      max: 300
+      step: 1
+
+layout:
+  groups:
+    - name: "预处理"
+      keys:
+        [
+          enable_star_shrink,
+          star_shrink_mode,
+          enable_satellite_clean,
+          sat_window_size,
+          mask,
+        ]
+  order:
+    [
+      mode,
+      enable_star_shrink,
+      star_shrink_mode,
+      enable_satellite_clean,
+      sat_window_size,
+      mask,
+    ]
+
+outputs:
+  - filename_key: output_dir
+    label: "输出序列"
+    type: sequence
+    dtype_key: output_dtype
+    formats: ["PNG", "TIFF", "JPG"]
+    dtype_options: ["uint8", "uint16"]
+    template_key: output_template

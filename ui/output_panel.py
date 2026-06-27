@@ -330,11 +330,199 @@ class _OutputRegion(QFrame):
                 setter(defaults[preset_param])
 
 
+# ─── Sequence output region ──────────────────────────────────────────────────
+
+
+class _SequenceOutputRegion(QFrame):
+    """Renders sequence output: directory picker + format + dtype + template."""
+
+    changed = Signal()
+
+    def __init__(self, spec: OutputSpec, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.spec = spec
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(4)
+
+        if spec.label:
+            header = QLabel(spec.label, self)
+            header.setStyleSheet(GROUP_HEADER_STYLE)
+            outer.addWidget(header)
+
+        # Row 1: format selector
+        allowed_formats = spec.formats or list(IMAGE_FORMAT_PRESETS.keys())
+        self._allowed_formats = [
+            f for f in allowed_formats if f in IMAGE_FORMAT_PRESETS
+        ]
+
+        row_fmt = QFrame(self)
+        row_fmt_l = QHBoxLayout(row_fmt)
+        row_fmt_l.setContentsMargins(5, 0, 5, 0)
+        row_fmt_l.setSpacing(6)
+        fmt_label = QLabel("文件格式", row_fmt)
+        fmt_label.setMinimumWidth(60)
+        fmt_label.setMaximumWidth(80)
+        fmt_label.setStyleSheet(LABEL_STYLE)
+        row_fmt_l.addWidget(fmt_label)
+        self._format_combo = QComboBox(row_fmt)
+        self._format_combo.setStyleSheet(COMBOBOX_STYLE)
+        for fmt in self._allowed_formats:
+            self._format_combo.addItem(fmt)
+        self._format_combo.currentTextChanged.connect(self._on_format_changed)
+        row_fmt_l.addWidget(self._format_combo, 1)
+        outer.addWidget(row_fmt)
+
+        # Row 2: output directory + browse
+        row_dir = QFrame(self)
+        row_dir_l = QHBoxLayout(row_dir)
+        row_dir_l.setContentsMargins(5, 0, 5, 0)
+        row_dir_l.setSpacing(6)
+        dir_label = QLabel("输出目录", row_dir)
+        dir_label.setMinimumWidth(60)
+        dir_label.setMaximumWidth(80)
+        dir_label.setStyleSheet(LABEL_STYLE)
+        row_dir_l.addWidget(dir_label)
+        self._dir_edit = QLineEdit(row_dir)
+        self._dir_edit.setReadOnly(True)
+        self._dir_edit.setStyleSheet(LINEEDIT_STYLE)
+        row_dir_l.addWidget(self._dir_edit, 1)
+        browse_btn = QPushButton("...", row_dir)
+        browse_btn.setMaximumWidth(28)
+        browse_btn.clicked.connect(self._on_browse_dir)
+        row_dir_l.addWidget(browse_btn)
+        outer.addWidget(row_dir)
+
+        # Row 3: template name (editable)
+        self._template_edit: QLineEdit | None = None
+        if spec.template_key:
+            row_tpl = QFrame(self)
+            row_tpl_l = QHBoxLayout(row_tpl)
+            row_tpl_l.setContentsMargins(5, 0, 5, 0)
+            row_tpl_l.setSpacing(6)
+            tpl_label = QLabel("文件名模板", row_tpl)
+            tpl_label.setMinimumWidth(60)
+            tpl_label.setMaximumWidth(80)
+            tpl_label.setStyleSheet(LABEL_STYLE)
+            row_tpl_l.addWidget(tpl_label)
+            self._template_edit = QLineEdit(row_tpl)
+            self._template_edit.setStyleSheet(LINEEDIT_STYLE)
+            self._template_edit.setPlaceholderText("frame_{index:05d}.png")
+            self._template_edit.textChanged.connect(lambda _: self.changed.emit())
+            row_tpl_l.addWidget(self._template_edit, 1)
+            outer.addWidget(row_tpl)
+
+        # Row 4: dtype selector
+        self._dtype_combo: QComboBox | None = None
+        if spec.dtype_key:
+            row_dtype = QFrame(self)
+            row_dtype_l = QHBoxLayout(row_dtype)
+            row_dtype_l.setContentsMargins(5, 0, 5, 0)
+            row_dtype_l.setSpacing(6)
+            dtype_label = QLabel("输出位深", row_dtype)
+            dtype_label.setMinimumWidth(60)
+            dtype_label.setMaximumWidth(80)
+            dtype_label.setStyleSheet(LABEL_STYLE)
+            row_dtype_l.addWidget(dtype_label)
+            self._dtype_combo = QComboBox(row_dtype)
+            self._dtype_combo.setStyleSheet(COMBOBOX_STYLE)
+            self._dtype_combo.currentTextChanged.connect(lambda _: self.changed.emit())
+            row_dtype_l.addWidget(self._dtype_combo, 1)
+            outer.addWidget(row_dtype)
+
+        # Initialize format (also sets default template text)
+        if self._allowed_formats:
+            self._format_combo.setCurrentIndex(0)
+            self._on_format_changed(self._format_combo.currentText())
+
+    def _effective_dtypes(self, fmt: str) -> list[str]:
+        preset_dtypes = IMAGE_FORMAT_PRESETS.get(fmt, {}).get("allowed_dtypes", [])
+        if self.spec.dtype_options is None:
+            return list(preset_dtypes)
+        return [d for d in preset_dtypes if d in self.spec.dtype_options]
+
+    def _on_format_changed(self, fmt: str):
+        # Update template extension if user hasn't manually edited
+        if self._template_edit is not None:
+            old_text = self._template_edit.text()
+            default = self._default_template(fmt)
+            # Auto-update only if empty or still matches a default pattern
+            if not old_text or self._is_default_template(old_text):
+                self._template_edit.blockSignals(True)
+                self._template_edit.setText(default)
+                self._template_edit.blockSignals(False)
+
+        if self._dtype_combo is not None:
+            current_dtype = self._dtype_combo.currentText()
+            self._dtype_combo.blockSignals(True)
+            self._dtype_combo.clear()
+            effective = self._effective_dtypes(fmt)
+            for d in effective:
+                self._dtype_combo.addItem(d)
+            if current_dtype in effective:
+                self._dtype_combo.setCurrentText(current_dtype)
+            elif effective:
+                self._dtype_combo.setCurrentIndex(0)
+            self._dtype_combo.setEnabled(len(effective) > 1)
+            self._dtype_combo.blockSignals(False)
+        self.changed.emit()
+
+    def _on_browse_dir(self):
+        path = QFileDialog.getExistingDirectory(self, f"选择{self.spec.label}目录")
+        if path:
+            self._dir_edit.setText(path)
+            self.changed.emit()
+
+    def _default_template(self, fmt: str) -> str:
+        ext = IMAGE_FORMAT_PRESETS.get(fmt, {}).get("default_ext", ".png")
+        return "frame_{index:05d}" + ext
+
+    def _is_default_template(self, text: str) -> bool:
+        for fmt in self._allowed_formats:
+            if text == self._default_template(fmt):
+                return True
+        return False
+
+    def collect(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        result[self.spec.filename_key] = self._dir_edit.text()
+        if self.spec.template_key:
+            if self._template_edit and self._template_edit.text():
+                result[self.spec.template_key] = self._template_edit.text()
+            else:
+                result[self.spec.template_key] = self._default_template(
+                    self._format_combo.currentText())
+        if self._dtype_combo is not None and self.spec.dtype_key:
+            dtype = self._dtype_combo.currentText()
+            if dtype:
+                result[self.spec.dtype_key] = dtype
+        return result
+
+    def is_ready(self) -> bool:
+        return bool(self._dir_edit.text())
+
+    def missing_reason(self) -> str | None:
+        if not self._dir_edit.text():
+            return f"请选择{self.spec.label}目录"
+        return None
+
+    def apply_defaults(self, defaults: dict[str, Any]):
+        fmt = defaults.get("output_format")
+        if fmt and fmt in self._allowed_formats:
+            self._format_combo.setCurrentText(fmt)
+        dtype = defaults.get("output_dtype")
+        if dtype and self._dtype_combo is not None:
+            effective = self._effective_dtypes(self._format_combo.currentText())
+            if dtype in effective:
+                self._dtype_combo.setCurrentText(dtype)
+
+
 # ─── OutputPanel (container) ─────────────────────────────────────────────────
 
 
 class OutputPanel(QWidget):
-    """Container rendering one _OutputRegion per OutputSpec."""
+    """Container rendering one _OutputRegion or _SequenceOutputRegion per OutputSpec."""
 
     values_changed = Signal()
 
@@ -359,8 +547,11 @@ class OutputPanel(QWidget):
         self._regions.clear()
 
         for spec in specs:
-            region = _OutputRegion(spec, parent=self,
-                                   path_cache=self._path_cache.setdefault(spec.filename_key, {}))
+            if spec.type == "sequence":
+                region = _SequenceOutputRegion(spec, parent=self)
+            else:
+                region = _OutputRegion(spec, parent=self,
+                                       path_cache=self._path_cache.setdefault(spec.filename_key, {}))
             region.changed.connect(self.values_changed.emit)
             self._main_layout.addWidget(region)
             self._regions.append(region)

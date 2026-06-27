@@ -164,9 +164,11 @@ class BatchImageSaveOp(ParallelBaseOp):
         },
     }
     OUTPUTS: dict[str, Any] = {
-        "result": {"type": "sequence"},
+        "result": {"type": "sequence", "item_type": "str",
+                   "description": "已保存的文件路径"},
     }
-
+    CONCURRENCY: int = 4
+    
     _frame_counter: int = 0
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
@@ -208,4 +210,4 @@ class BatchImageSaveOp(ParallelBaseOp):
         except Exception as e:
             logger.error(f"Failed to save frame {idx} to {filepath}: {e}")
 
-        return {"result": frame}
+        return {"result": filepath}
