@@ -42,6 +42,8 @@ class BackendSelection:
 
 
 _CANDIDATES: tuple[BackendCandidate, ...] = (
+    BackendCandidate("extract_point_features", "openmp_cpu", "extract_point_features"),
+    BackendCandidate("find_initial_match", "openmp_cpu", "find_initial_match"),
     BackendCandidate("fgp_accumulate", "openmp_cpu", "fgp_accumulate"),
     BackendCandidate("fgp_add", "openmp_cpu", "fgp_add"),
     BackendCandidate("fgp_masked_mean_merge", "openmp_cpu", "fgp_masked_mean_merge"),

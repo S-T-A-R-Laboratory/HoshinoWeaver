@@ -1,5 +1,9 @@
 """Public facade for custom-op APIs."""
 
+from hoshicore._custom_op.ops.alignment import (
+    extract_point_features,
+    find_initial_match,
+)
 from hoshicore._custom_op.ops.fgp import (
     fgp_add,
     fgp_accumulate,
@@ -28,6 +32,7 @@ __all__ = [
     "camera_model_remap",
     "custom_ops_available",
     "equalize_noise_correct",
+    "extract_point_features",
     "fgp_add",
     "fgp_accumulate",
     "fgp_masked_mean_merge",
@@ -35,6 +40,7 @@ __all__ = [
     "max_combine",
     "median_filter_2d",
     "median_reduce_chunk",
+    "find_initial_match",
     "sigma_clip_fused_chunk",
     "sigma_clip_fused_masked_merge",
     "sigma_clip_fused_merge",

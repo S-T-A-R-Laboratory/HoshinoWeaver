@@ -10,9 +10,11 @@ from hoshicore._custom_op import (
     camera_model_remap,
     custom_ops_available,
     equalize_noise_correct,
+    extract_point_features,
     fgp_add,
     fgp_accumulate,
     fgp_masked_mean_merge,
+    find_initial_match,
     huber_weighted_accumulate,
     max_combine,
     median_filter_2d,
@@ -22,6 +24,7 @@ from hoshicore._custom_op import (
     threshold_max_merge as custom_threshold_max_merge,
 )
 import hoshicore._custom_op.backend_registry as backend_registry
+import hoshicore._custom_op.ops.alignment as alignment_ops
 import hoshicore._custom_op.ops.fgp as fgp_ops
 import hoshicore._custom_op.ops.filter as filter_ops
 import hoshicore._custom_op.ops.max as max_ops
@@ -32,6 +35,7 @@ from hoshicore.component.data_container import FastGaussianParam, HuberMeanParam
 from hoshicore.component.frame_buffer import MemoryFrameBuffer
 import hoshicore.component.noise_equalization as noise_equalization
 import hoshicore.component.norma.frame_align as frame_align
+import hoshicore.component.norma.matching as norma_matching
 import hoshicore.component.norma.types as norma_types
 import hoshicore.component.star_detect as star_detect
 from hoshicore.component.merger import HuberWeightedMerger
@@ -70,6 +74,19 @@ def _naive_median_filter_2d(image: np.ndarray, ksize: int) -> np.ndarray:
     return out
 
 
+def _make_alignment_match_inputs(seed: int = 0, n_points: int = 96):
+    rng = np.random.default_rng(seed)
+    vec = rng.normal(size=(n_points, 3))
+    vec = vec / np.linalg.norm(vec, axis=1, keepdims=True)
+    vec2 = vec + rng.normal(scale=1e-4, size=vec.shape)
+    vec2 = vec2 / np.linalg.norm(vec2, axis=1, keepdims=True)
+    vol = rng.random(n_points) * 10 + 1
+    vol2 = vol * (1.0 + rng.normal(scale=1e-3, size=n_points))
+    pts = rng.random((n_points, 2)) * 1000
+    pts2 = pts + rng.normal(scale=1.0, size=pts.shape)
+    return vec, vec2, vol, vol2, pts, pts2
+
+
 class TestCustomOpsFallback(unittest.TestCase):
     def tearDown(self) -> None:
         filter_ops._load_compiled_module_result.cache_clear()
@@ -95,6 +112,9 @@ class TestCustomOpsFallback(unittest.TestCase):
         median_ops._LAST_APPLIED_COMPILED_THREADS = None
         remap_ops._load_compiled_module_result.cache_clear()
         remap_ops._select_camera_model_remap_backend.cache_clear()
+        alignment_ops._load_compiled_module_result.cache_clear()
+        alignment_ops._select_extract_point_features_backend.cache_clear()
+        alignment_ops._select_find_initial_match_backend.cache_clear()
 
     def test_max_combine_matches_numpy(self) -> None:
         base = np.array([[1, 5], [3, 4]], dtype=np.uint16)
@@ -548,6 +568,110 @@ class TestCustomOpsFallback(unittest.TestCase):
         expected = _naive_median_filter_2d(image, 7)
         np.testing.assert_array_equal(got, expected)
 
+    def test_extract_point_features_compiled_matches_numpy(self) -> None:
+        vec, _, vol, _, _, _ = _make_alignment_match_inputs(seed=1)
+
+        got = alignment_ops.extract_point_features_compiled(vec, vol, k=8)
+        expected = alignment_ops.extract_point_features_numpy(vec, vol, k=8)
+
+        np.testing.assert_allclose(got, expected, rtol=1e-10, atol=1e-12)
+
+    def test_find_initial_match_compiled_matches_numpy(self) -> None:
+        vec, vec2, vol, vol2, pts, pts2 = _make_alignment_match_inputs(seed=2)
+        features1 = alignment_ops.extract_point_features_numpy(vec, vol, k=8)
+        features2 = alignment_ops.extract_point_features_numpy(vec2, vol2, k=8)
+
+        got = alignment_ops.find_initial_match_compiled(
+            features1,
+            features2,
+            pts,
+            pts2,
+            vec,
+            vec2,
+        )
+        expected = alignment_ops.find_initial_match_numpy(
+            features1,
+            features2,
+            pts,
+            pts2,
+            vec,
+            vec2,
+        )
+
+        self.assertGreater(len(expected), 0)
+        np.testing.assert_array_equal(got, expected)
+
+    def test_alignment_matching_can_force_numpy_fallback(self) -> None:
+        vec, vec2, vol, vol2, pts, pts2 = _make_alignment_match_inputs(seed=3)
+
+        with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "numpy"}, clear=False):
+            with mock.patch.object(alignment_ops, "_load_compiled_module_result", return_value=(None, "mock error")):
+                alignment_ops._select_extract_point_features_backend.cache_clear()
+                alignment_ops._select_find_initial_match_backend.cache_clear()
+                features1 = extract_point_features(vec, vol, k=8)
+                features2 = extract_point_features(vec2, vol2, k=8)
+                got = find_initial_match(features1, features2, pts, pts2, vec, vec2)
+
+        expected_features1 = alignment_ops.extract_point_features_numpy(vec, vol, k=8)
+        expected_features2 = alignment_ops.extract_point_features_numpy(vec2, vol2, k=8)
+        expected = alignment_ops.find_initial_match_numpy(
+            expected_features1,
+            expected_features2,
+            pts,
+            pts2,
+            vec,
+            vec2,
+        )
+        np.testing.assert_allclose(features1, expected_features1, rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(features2, expected_features2, rtol=1e-10, atol=1e-12)
+        np.testing.assert_array_equal(got, expected)
+
+    def test_alignment_public_dispatch_uses_compiled_backend(self) -> None:
+        vec, vec2, vol, vol2, pts, pts2 = _make_alignment_match_inputs(seed=4)
+        alignment_ops._select_extract_point_features_backend.cache_clear()
+        alignment_ops._select_find_initial_match_backend.cache_clear()
+
+        with mock.patch.object(
+            alignment_ops,
+            "extract_point_features_compiled",
+            wraps=alignment_ops.extract_point_features_compiled,
+        ) as patched_extract:
+            with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "auto"}, clear=False):
+                features1 = extract_point_features(vec, vol, k=8)
+                features2 = extract_point_features(vec2, vol2, k=8)
+
+        with mock.patch.object(
+            alignment_ops,
+            "find_initial_match_compiled",
+            wraps=alignment_ops.find_initial_match_compiled,
+        ) as patched_match:
+            with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "auto"}, clear=False):
+                _ = find_initial_match(features1, features2, pts, pts2, vec, vec2)
+
+        self.assertGreaterEqual(patched_extract.call_count, 2)
+        patched_match.assert_called_once()
+
+    def test_norma_matching_routes_through_alignment_custom_op(self) -> None:
+        vec, vec2, vol, vol2, pts, pts2 = _make_alignment_match_inputs(seed=5)
+
+        features1 = norma_matching.extract_point_features(vec, vol, k=8)
+        features2 = norma_matching.extract_point_features(vec2, vol2, k=8)
+        got = norma_matching.find_initial_match(features1, features2, pts, pts2, vec, vec2)
+
+        expected_features1 = alignment_ops.extract_point_features_numpy(vec, vol, k=8)
+        expected_features2 = alignment_ops.extract_point_features_numpy(vec2, vol2, k=8)
+        expected = alignment_ops.find_initial_match_numpy(
+            expected_features1,
+            expected_features2,
+            pts,
+            pts2,
+            vec,
+            vec2,
+        )
+        np.testing.assert_allclose(features1, expected_features1, rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(features2, expected_features2, rtol=1e-10, atol=1e-12)
+        np.testing.assert_array_equal(got, expected)
+
     def test_star_detect_uint16_large_median_uses_custom_filter(self) -> None:
         image = np.zeros((9, 11), dtype=np.uint16)
         image[4, 5] = 50000
@@ -972,6 +1096,16 @@ class TestCustomOpsFallback(unittest.TestCase):
         self.assertEqual(len(filter_candidates), 1)
         self.assertEqual(filter_candidates[0].backend, "openmp_cpu")
         self.assertEqual(filter_candidates[0].kernel_name, "median_filter_2d")
+
+        feature_candidates = backend_registry.registered_backend_candidates("extract_point_features")
+        self.assertEqual(len(feature_candidates), 1)
+        self.assertEqual(feature_candidates[0].backend, "openmp_cpu")
+        self.assertEqual(feature_candidates[0].kernel_name, "extract_point_features")
+
+        match_candidates = backend_registry.registered_backend_candidates("find_initial_match")
+        self.assertEqual(len(match_candidates), 1)
+        self.assertEqual(match_candidates[0].backend, "openmp_cpu")
+        self.assertEqual(match_candidates[0].kernel_name, "find_initial_match")
 
     def test_backend_registry_reports_missing_compiled_module(self) -> None:
         selection = backend_registry.select_backend(

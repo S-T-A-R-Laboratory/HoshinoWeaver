@@ -18,6 +18,7 @@
 - HuberWeightedMerger 单轮 pass
 - 中位数块计算
 - 二维空间中值滤波
+- 对齐星点特征提取与粗匹配
 
 运行方式：
 ```bash
@@ -41,6 +42,7 @@ from bench.common import (
     run_benchmark,
 )
 from hoshicore._custom_op import build_info as custom_ops_build_info
+import hoshicore._custom_op.ops.alignment as alignment_ops
 import hoshicore._custom_op.ops.fgp as fgp_ops
 import hoshicore._custom_op.ops.filter as filter_ops
 import hoshicore._custom_op.ops.max as max_ops
@@ -486,6 +488,55 @@ def bench_median_filter_2d_backend(
     _ = median_filter(image, ksize)
 
 
+def build_alignment_match_inputs(
+    n_points: int,
+    *,
+    k: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    rng = np.random.default_rng(seed)
+    vec = rng.normal(size=(n_points, 3))
+    vec = vec / np.linalg.norm(vec, axis=1, keepdims=True)
+    vec2 = vec + rng.normal(scale=1e-4, size=vec.shape)
+    vec2 = vec2 / np.linalg.norm(vec2, axis=1, keepdims=True)
+    vol = rng.random(n_points) * 10.0 + 1.0
+    vol2 = vol * (1.0 + rng.normal(scale=1e-3, size=n_points))
+    pts = rng.random((n_points, 2)) * 4000.0
+    pts2 = pts + rng.normal(scale=1.0, size=pts.shape)
+    return vec, vec2, vol, vol2, pts, pts2, k
+
+
+def bench_extract_point_features_backend(
+    vec: np.ndarray,
+    vol: np.ndarray,
+    k: int,
+    *,
+    backend: str,
+) -> None:
+    extract = {
+        "numpy": alignment_ops.extract_point_features_numpy,
+        "compiled": alignment_ops.extract_point_features_compiled,
+    }[backend]
+    _ = extract(vec, vol, k)
+
+
+def bench_find_initial_match_backend(
+    features1: np.ndarray,
+    features2: np.ndarray,
+    pts1: np.ndarray,
+    pts2: np.ndarray,
+    vectors1: np.ndarray,
+    vectors2: np.ndarray,
+    *,
+    backend: str,
+) -> None:
+    find_match = {
+        "numpy": alignment_ops.find_initial_match_numpy,
+        "compiled": alignment_ops.find_initial_match_compiled,
+    }[backend]
+    _ = find_match(features1, features2, pts1, pts2, vectors1, vectors2)
+
+
 def build_sigma_clip_chunk_stack(
     frames: list[np.ndarray], chunk_rows: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -567,6 +618,8 @@ def main() -> None:
     parser.add_argument("--input-mode", choices=["auto", "cache", "images", "synthetic"], default="auto")
     parser.add_argument("--chunk-rows", type=int, default=32)
     parser.add_argument("--filter-ksize", type=int, default=25)
+    parser.add_argument("--alignment-points", type=int, default=1000)
+    parser.add_argument("--alignment-k", type=int, default=15)
     parser.add_argument("--mask-density", type=float, default=0.75)
     parser.add_argument("--sigma-rej-high", type=float, default=3.0)
     parser.add_argument("--sigma-rej-low", type=float, default=3.0)
@@ -594,6 +647,46 @@ def main() -> None:
     fgp_partials = build_fgp_partials(frames)
     threshold_frames, threshold_mean_img, threshold_std_img = build_threshold_max_stats(frames)
     median_chunk_stacks = build_median_chunk_stacks(frames, args.chunk_rows)
+    alignment_inputs = None
+    alignment_features = None
+
+    def get_alignment_inputs():
+        nonlocal alignment_inputs
+        if alignment_inputs is None:
+            alignment_inputs = build_alignment_match_inputs(
+                args.alignment_points,
+                k=args.alignment_k,
+                seed=args.seed,
+            )
+        return alignment_inputs
+
+    def get_alignment_features():
+        nonlocal alignment_features
+        if alignment_features is None:
+            vec, vec2, vol, vol2, _, _, k = get_alignment_inputs()
+            alignment_features = (
+                alignment_ops.extract_point_features_numpy(vec, vol, k),
+                alignment_ops.extract_point_features_numpy(vec2, vol2, k),
+            )
+        return alignment_features
+
+    def bench_alignment_extract(backend: str) -> None:
+        vec, _, vol, _, _, _, k = get_alignment_inputs()
+        bench_extract_point_features_backend(vec, vol, k, backend=backend)
+
+    def bench_alignment_match(backend: str) -> None:
+        vec, vec2, _, _, pts, pts2, _ = get_alignment_inputs()
+        features1, features2 = get_alignment_features()
+        bench_find_initial_match_backend(
+            features1,
+            features2,
+            pts,
+            pts2,
+            vec,
+            vec2,
+            backend=backend,
+        )
+
     sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n = build_sigma_clip_chunk_stack(
         frames, args.chunk_rows)
     equalize_noise_payloads = build_equalize_noise_inputs(frames)
@@ -712,6 +805,10 @@ def main() -> None:
             ksize=args.filter_ksize,
             backend="compiled",
         ),
+        "extract_point_features_numpy": lambda: bench_alignment_extract("numpy"),
+        "extract_point_features_compiled": lambda: bench_alignment_extract("compiled"),
+        "find_initial_match_numpy": lambda: bench_alignment_match("numpy"),
+        "find_initial_match_compiled": lambda: bench_alignment_match("compiled"),
         "sigma_clip_chunk_numpy": lambda: bench_sigma_clip_chunk_backend(
             sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n,
             backend="numpy",
@@ -772,6 +869,8 @@ def main() -> None:
             "input_mode": args.input_mode,
             "chunk_rows": args.chunk_rows,
             "filter_ksize": args.filter_ksize,
+            "alignment_points": args.alignment_points,
+            "alignment_k": args.alignment_k,
             "mask_density": args.mask_density,
             "sigma_rej_high": args.sigma_rej_high,
             "sigma_rej_low": args.sigma_rej_low,

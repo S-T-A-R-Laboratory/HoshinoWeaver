@@ -21,6 +21,10 @@ add_library(hnw_ops_common STATIC
     common/backend_info.cpp
 )
 
+add_library(hnw_ops_cpu_alignment STATIC
+    ops/alignment/alignment_ops.cpp
+)
+
 add_library(hnw_ops_cpu_fgp STATIC
     ops/fgp/fgp_ops.cpp
 )
@@ -47,6 +51,7 @@ add_library(hnw_ops_cpu_sigma_clip STATIC
 
 set(hnw_cpu_targets
     hnw_ops_common
+    hnw_ops_cpu_alignment
     hnw_ops_cpu_fgp
     hnw_ops_cpu_filter
     hnw_ops_cpu_max
@@ -88,6 +93,7 @@ target_include_directories(
 )
 target_link_libraries(_C PRIVATE
     hnw_ops_common
+    hnw_ops_cpu_alignment
     hnw_ops_cpu_fgp
     hnw_ops_cpu_filter
     hnw_ops_cpu_max
