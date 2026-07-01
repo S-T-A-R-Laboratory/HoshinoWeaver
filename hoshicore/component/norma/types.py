@@ -123,26 +123,22 @@ class CameraModel(BaseCameraModel):
         return self.with_intrinsics(
             self.intrinsics.with_focal_length(focal_length_mm))
 
-    def _zero_distortion_rotation_dst_to_src(
-            self, camera: "CameraModel") -> NDArray[np.float32] | None:
-        if not self.distortion.is_zero or not camera.distortion.is_zero:
-            return None
-
+    def _rotation_dst_to_src(
+            self, camera: "CameraModel") -> NDArray[np.float32]:
         src_rotation = np.eye(3, dtype=np.float32) if camera.R is None else np.asarray(
             camera.R, dtype=np.float32)
         dst_rotation = np.eye(3, dtype=np.float32) if self.R is None else np.asarray(
             self.R, dtype=np.float32)
         return src_rotation @ dst_rotation.T
 
-    def _project_image_from_camera_zero_distortion_fused(
+    def _project_image_from_camera_custom_fused(
             self,
             camera: "CameraModel",
             img: NDArray[np.uint8],
             output_size: tuple[int, int],
             roi=None,
             interpolation=cv2.INTER_LINEAR) -> NDArray[np.uint8] | None:
-        rotation_dst_to_src = self._zero_distortion_rotation_dst_to_src(camera)
-        if rotation_dst_to_src is None or roi is not None or interpolation != cv2.INTER_LINEAR:
+        if roi is not None or interpolation != cv2.INTER_LINEAR:
             return None
 
         target_width, target_height = output_size
@@ -158,7 +154,9 @@ class CameraModel(BaseCameraModel):
             fy_dst=float(self.K[1, 1]),
             cx_dst=float(self.K[0, 2]),
             cy_dst=float(self.K[1, 2]),
-            rotation_dst_to_src=rotation_dst_to_src,
+            rotation_dst_to_src=self._rotation_dst_to_src(camera),
+            src_dist_coeffs=camera.dist_coeffs,
+            dst_dist_coeffs=self.dist_coeffs,
         )
 
     @classmethod
@@ -200,7 +198,7 @@ class CameraModel(BaseCameraModel):
                                   interpolation=cv2.INTER_LINEAR):
         """Projects an image from `camera` into this camera's frame via remap."""
         target_width, target_height = output_size
-        fused = self._project_image_from_camera_zero_distortion_fused(
+        fused = self._project_image_from_camera_custom_fused(
             camera,
             img,
             output_size,

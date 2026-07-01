@@ -7,7 +7,6 @@ import numpy as np
 
 from hoshicore._custom_op import (
     build_info,
-    camera_model_remap,
     custom_ops_available,
     equalize_noise_correct,
     extract_point_features,
@@ -30,18 +29,15 @@ import hoshicore._custom_op.ops.filter as filter_ops
 import hoshicore._custom_op.ops.max as max_ops
 import hoshicore._custom_op.ops.median as median_ops
 import hoshicore._custom_op.ops.noise as noise_ops
-import hoshicore._custom_op.ops.remap as remap_ops
 from hoshicore.component.data_container import FastGaussianParam, HuberMeanParam
 from hoshicore.component.frame_buffer import MemoryFrameBuffer
 import hoshicore.component.noise_equalization as noise_equalization
 import hoshicore.component.norma.frame_align as frame_align
 import hoshicore.component.norma.matching as norma_matching
-import hoshicore.component.norma.types as norma_types
 import hoshicore.component.star_detect as star_detect
 from hoshicore.component.merger import HuberWeightedMerger
 from hoshicore.component.merger import MaxMerger
 from hoshicore.component.merger import MeanMerger
-from hoshicore.component.norma.types import CameraModel, Intrinsics
 import hoshicore.ops.sigma_clip_ops as sigma_clip_ops
 from hoshicore.ops.sigma_clip_ops import MedianReduceOp
 from hoshicore.ops.sigma_clip_ops import ThresholdMaxIteratorOp
@@ -110,8 +106,6 @@ class TestCustomOpsFallback(unittest.TestCase):
         median_ops._compiled_build_info.cache_clear()
         median_ops._select_median_backend.cache_clear()
         median_ops._LAST_APPLIED_COMPILED_THREADS = None
-        remap_ops._load_compiled_module_result.cache_clear()
-        remap_ops._select_camera_model_remap_backend.cache_clear()
         alignment_ops._load_compiled_module_result.cache_clear()
         alignment_ops._select_extract_point_features_backend.cache_clear()
         alignment_ops._select_find_initial_match_backend.cache_clear()
@@ -291,160 +285,6 @@ class TestCustomOpsFallback(unittest.TestCase):
 
         patched_custom.assert_called_once()
         np.testing.assert_allclose(got, expected, rtol=1e-7, atol=1e-7)
-
-    def test_camera_model_remap_matches_numpy(self) -> None:
-        image = np.linspace(0.0, 1.0, num=4 * 5 * 3, dtype=np.float32).reshape(4, 5, 3)
-        pitch = np.deg2rad(1.5)
-        rotation = np.array([
-            [np.cos(pitch), 0.0, np.sin(pitch)],
-            [0.0, 1.0, 0.0],
-            [-np.sin(pitch), 0.0, np.cos(pitch)],
-        ], dtype=np.float32)
-
-        got = camera_model_remap(
-            image=image,
-            out_height=3,
-            out_width=4,
-            fx_src=9.0,
-            fy_src=8.5,
-            cx_src=2.0,
-            cy_src=1.5,
-            fx_dst=8.0,
-            fy_dst=7.5,
-            cx_dst=1.5,
-            cy_dst=1.0,
-            rotation_dst_to_src=rotation,
-        )
-        expected = remap_ops.camera_model_remap_numpy(
-            image=image,
-            out_height=3,
-            out_width=4,
-            fx_src=9.0,
-            fy_src=8.5,
-            cx_src=2.0,
-            cy_src=1.5,
-            fx_dst=8.0,
-            fy_dst=7.5,
-            cx_dst=1.5,
-            cy_dst=1.0,
-            rotation_dst_to_src=rotation,
-        )
-
-        np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-5)
-
-    def test_camera_model_remap_can_force_numpy_fallback(self) -> None:
-        image = np.arange(18, dtype=np.uint8).reshape(3, 3, 2)
-        rotation = np.eye(3, dtype=np.float32)
-        with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "numpy"}, clear=False):
-            with mock.patch.object(remap_ops, "_load_compiled_module_result", return_value=(None, "mock error")):
-                remap_ops._select_camera_model_remap_backend.cache_clear()
-                got = camera_model_remap(
-                    image=image,
-                    out_height=2,
-                    out_width=2,
-                    fx_src=6.0,
-                    fy_src=6.0,
-                    cx_src=1.0,
-                    cy_src=1.0,
-                    fx_dst=5.0,
-                    fy_dst=5.0,
-                    cx_dst=1.0,
-                    cy_dst=1.0,
-                    rotation_dst_to_src=rotation,
-                )
-
-        expected = remap_ops.camera_model_remap_numpy(
-            image=image,
-            out_height=2,
-            out_width=2,
-            fx_src=6.0,
-            fy_src=6.0,
-            cx_src=1.0,
-            cy_src=1.0,
-            fx_dst=5.0,
-            fy_dst=5.0,
-            cx_dst=1.0,
-            cy_dst=1.0,
-            rotation_dst_to_src=rotation,
-        )
-        np.testing.assert_array_equal(got, expected)
-
-    def test_camera_model_remap_falls_back_when_cuda_runtime_is_unavailable(self) -> None:
-        image = np.arange(18, dtype=np.uint8).reshape(3, 3, 2)
-        rotation = np.eye(3, dtype=np.float32)
-        expected = remap_ops.camera_model_remap_numpy(
-            image=image,
-            out_height=2,
-            out_width=2,
-            fx_src=6.0,
-            fy_src=6.0,
-            cx_src=1.0,
-            cy_src=1.0,
-            fx_dst=5.0,
-            fy_dst=5.0,
-            cx_dst=1.0,
-            cy_dst=1.0,
-            rotation_dst_to_src=rotation,
-        )
-
-        with mock.patch.object(
-                remap_ops,
-                "_select_camera_model_remap_backend",
-                return_value=("compiled", mock.Mock(side_effect=RuntimeError(
-                    "camera_model_remap cudaMalloc(image): no CUDA-capable device is detected")))):
-            got = camera_model_remap(
-                image=image,
-                out_height=2,
-                out_width=2,
-                fx_src=6.0,
-                fy_src=6.0,
-                cx_src=1.0,
-                cy_src=1.0,
-                fx_dst=5.0,
-                fy_dst=5.0,
-                cx_dst=1.0,
-                cy_dst=1.0,
-                rotation_dst_to_src=rotation,
-            )
-
-        np.testing.assert_array_equal(got, expected)
-
-    def test_project_image_from_camera_routes_zero_distortion_through_custom_fused(self) -> None:
-        img = np.arange(16, dtype=np.uint8).reshape(4, 4)
-        intrinsics = Intrinsics(
-            focal_length_mm=8.0,
-            sensor_width_mm=8.0,
-            sensor_height_mm=8.0,
-            image_width_px=4,
-            image_height_px=4,
-        )
-        src_camera = CameraModel(intrinsics=intrinsics)
-        dst_camera = CameraModel(intrinsics=intrinsics)
-
-        expected = remap_ops.camera_model_remap_numpy(
-            image=img,
-            out_height=4,
-            out_width=4,
-            fx_src=float(src_camera.K[0, 0]),
-            fy_src=float(src_camera.K[1, 1]),
-            cx_src=float(src_camera.K[0, 2]),
-            cy_src=float(src_camera.K[1, 2]),
-            fx_dst=float(dst_camera.K[0, 0]),
-            fy_dst=float(dst_camera.K[1, 1]),
-            cx_dst=float(dst_camera.K[0, 2]),
-            cy_dst=float(dst_camera.K[1, 2]),
-            rotation_dst_to_src=np.eye(3, dtype=np.float32),
-        )
-
-        with mock.patch.object(
-                norma_types,
-                "custom_camera_model_remap",
-                wraps=norma_types.custom_camera_model_remap) as patched_custom:
-            got = dst_camera.project_image_from_camera(src_camera, img, (4, 4))
-
-        patched_custom.assert_called_once()
-        np.testing.assert_array_equal(got, expected)
-
 
     def test_median_reduce_chunk_matches_numpy(self) -> None:
         stack = np.array(
