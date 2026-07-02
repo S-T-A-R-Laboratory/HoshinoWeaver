@@ -19,6 +19,7 @@
 - 中位数块计算
 - 二维空间中值滤波
 - 对齐星点特征提取与粗匹配
+- 对齐小波 bandpass 重建 core
 
 运行方式：
 ```bash
@@ -30,6 +31,7 @@ python -m bench.cpu.kernels --frames 64 --height 2160 --width 3840 --dtype uint8
 from __future__ import annotations
 
 import argparse
+import cv2
 from typing import Any
 
 import numpy as np
@@ -49,6 +51,7 @@ import hoshicore._custom_op.ops.max as max_ops
 import hoshicore._custom_op.ops.median as median_ops
 import hoshicore._custom_op.ops.noise as noise_ops
 import hoshicore._custom_op.ops.sigma_clip as sigma_clip_chunk_ops
+import hoshicore._custom_op.ops.wavelet as wavelet_ops
 from hoshicore.component.data_container import DTYPE_MAX_VALUE
 
 
@@ -537,6 +540,44 @@ def bench_find_initial_match_backend(
     _ = find_match(features1, features2, pts1, pts2, vectors1, vectors2)
 
 
+def build_wavelet_input(frame: np.ndarray) -> np.ndarray:
+    image = frame[..., 0] if frame.ndim == 3 else frame
+    image = image.astype(np.float64, copy=False)
+    if np.issubdtype(frame.dtype, np.integer):
+        image = image / np.iinfo(frame.dtype).max
+    return np.ascontiguousarray(image)
+
+
+def bench_wavelet_dec_rec_core_backend(
+    image: np.ndarray,
+    level: int,
+    *,
+    backend: str,
+) -> None:
+    fn = {
+        "numpy": wavelet_ops.wavelet_dec_rec_core_numpy,
+        "compiled": wavelet_ops.wavelet_dec_rec_core_compiled,
+    }[backend]
+    _ = fn(image, level)
+
+
+def bench_wavelet_dec_rec_backend(
+    image: np.ndarray,
+    resize_factor: float,
+    *,
+    backend: str,
+) -> None:
+    if backend == "auto":
+        _ = wavelet_ops.wavelet_dec_rec(image, resize_factor)
+        return
+    if backend != "numpy":
+        raise ValueError(f"Unknown wavelet backend: {backend}")
+    level = wavelet_ops._wavelet_level(resize_factor)
+    small = cv2.resize(image, None, fx=resize_factor, fy=resize_factor)
+    rec = wavelet_ops.wavelet_dec_rec_core_numpy(small, level)
+    _ = cv2.resize(rec, (image.shape[1], image.shape[0]))
+
+
 def build_sigma_clip_chunk_stack(
     frames: list[np.ndarray], chunk_rows: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -620,6 +661,8 @@ def main() -> None:
     parser.add_argument("--filter-ksize", type=int, default=25)
     parser.add_argument("--alignment-points", type=int, default=1000)
     parser.add_argument("--alignment-k", type=int, default=15)
+    parser.add_argument("--wavelet-level", type=int, default=4)
+    parser.add_argument("--wavelet-resize-factor", type=float, default=1.0)
     parser.add_argument("--mask-density", type=float, default=0.75)
     parser.add_argument("--sigma-rej-high", type=float, default=3.0)
     parser.add_argument("--sigma-rej-low", type=float, default=3.0)
@@ -632,8 +675,19 @@ def main() -> None:
 
     requested_cases = parse_cases(args.cases)
     dtype = np.dtype(args.dtype)
+    wavelet_registry_names = {
+        "wavelet_dec_rec_core_numpy",
+        "wavelet_dec_rec_core_compiled",
+        "wavelet_dec_rec_numpy",
+        "wavelet_dec_rec_auto",
+    }
+    wavelet_only = (
+        requested_cases is not None
+        and set(requested_cases).issubset(wavelet_registry_names)
+    )
+    frame_count = 1 if wavelet_only else args.frames
     frames, input_source = prepare_frames(
-        frames=args.frames,
+        frames=frame_count,
         height=args.height,
         width=args.width,
         dtype=dtype,
@@ -642,7 +696,65 @@ def main() -> None:
         input_dir=args.input_dir,
         input_mode=args.input_mode,
     )
-    weights = make_weights(args.frames)
+
+    if wavelet_only:
+        wavelet_input = build_wavelet_input(frames[0])
+        registry: dict[str, Any] = {
+            "wavelet_dec_rec_core_numpy": lambda: bench_wavelet_dec_rec_core_backend(
+                wavelet_input,
+                args.wavelet_level,
+                backend="numpy",
+            ),
+            "wavelet_dec_rec_core_compiled": lambda: bench_wavelet_dec_rec_core_backend(
+                wavelet_input,
+                args.wavelet_level,
+                backend="compiled",
+            ),
+            "wavelet_dec_rec_numpy": lambda: bench_wavelet_dec_rec_backend(
+                wavelet_input,
+                args.wavelet_resize_factor,
+                backend="numpy",
+            ),
+            "wavelet_dec_rec_auto": lambda: bench_wavelet_dec_rec_backend(
+                wavelet_input,
+                args.wavelet_resize_factor,
+                backend="auto",
+            ),
+        }
+        cases = {
+            case_name: run_benchmark(
+                registry[case_name],
+                warmup=args.warmup,
+                repeat=args.repeat,
+            )
+            for case_name in requested_cases
+        }
+        report = {
+            "suite": "kernels",
+            "env": collect_env_info(),
+            "custom_ops": custom_ops_build_info(),
+            "config": {
+                "frames": frame_count,
+                "height": args.height,
+                "width": args.width,
+                "dtype": args.dtype,
+                "channels": args.channels,
+                "input_dir": args.input_dir,
+                "input_mode": args.input_mode,
+                "wavelet_level": args.wavelet_level,
+                "wavelet_resize_factor": args.wavelet_resize_factor,
+                "seed": args.seed,
+                "warmup": args.warmup,
+                "repeat": args.repeat,
+                "cases": requested_cases,
+            },
+            "input_source": input_source,
+            "results": cases,
+        }
+        print_or_save_report(report, args.output_json)
+        return
+
+    weights = make_weights(frame_count)
     spatial_mask = build_spatial_mask(frames[0], args.mask_density)
     fgp_partials = build_fgp_partials(frames)
     threshold_frames, threshold_mean_img, threshold_std_img = build_threshold_max_stats(frames)
@@ -687,6 +799,7 @@ def main() -> None:
             backend=backend,
         )
 
+    wavelet_input = build_wavelet_input(frames[0])
     sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n = build_sigma_clip_chunk_stack(
         frames, args.chunk_rows)
     equalize_noise_payloads = build_equalize_noise_inputs(frames)
@@ -809,6 +922,26 @@ def main() -> None:
         "extract_point_features_compiled": lambda: bench_alignment_extract("compiled"),
         "find_initial_match_numpy": lambda: bench_alignment_match("numpy"),
         "find_initial_match_compiled": lambda: bench_alignment_match("compiled"),
+        "wavelet_dec_rec_core_numpy": lambda: bench_wavelet_dec_rec_core_backend(
+            wavelet_input,
+            args.wavelet_level,
+            backend="numpy",
+        ),
+        "wavelet_dec_rec_core_compiled": lambda: bench_wavelet_dec_rec_core_backend(
+            wavelet_input,
+            args.wavelet_level,
+            backend="compiled",
+        ),
+        "wavelet_dec_rec_numpy": lambda: bench_wavelet_dec_rec_backend(
+            wavelet_input,
+            args.wavelet_resize_factor,
+            backend="numpy",
+        ),
+        "wavelet_dec_rec_auto": lambda: bench_wavelet_dec_rec_backend(
+            wavelet_input,
+            args.wavelet_resize_factor,
+            backend="auto",
+        ),
         "sigma_clip_chunk_numpy": lambda: bench_sigma_clip_chunk_backend(
             sc_chunk_stack, sc_chunk_sum, sc_chunk_sq, sc_chunk_n,
             backend="numpy",
@@ -871,6 +1004,8 @@ def main() -> None:
             "filter_ksize": args.filter_ksize,
             "alignment_points": args.alignment_points,
             "alignment_k": args.alignment_k,
+            "wavelet_level": args.wavelet_level,
+            "wavelet_resize_factor": args.wavelet_resize_factor,
             "mask_density": args.mask_density,
             "sigma_rej_high": args.sigma_rej_high,
             "sigma_rej_low": args.sigma_rej_low,

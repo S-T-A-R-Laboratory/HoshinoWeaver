@@ -1,12 +1,12 @@
 """Star point detection from images."""
 import dataclasses
-from math import log
 
 import cv2
 import numpy as np
-import pywt
 from loguru import logger
 from numpy.typing import NDArray
+
+from hoshicore._custom_op.ops.wavelet import wavelet_dec_rec
 
 
 @dataclasses.dataclass
@@ -16,34 +16,7 @@ class DetectedStars:
 
 
 def _wavelet_dec_rec(img_blr, resize_factor=0.25):
-    img_shape = img_blr.shape
-    level = int(6 - log(1 / resize_factor, 2))
-
-    img_blr_resize = cv2.resize(img_blr, None, fx=resize_factor,
-                                fy=resize_factor)
-    coeffs = pywt.wavedec2(img_blr_resize, "db8", level=level)
-    coeffs[0].fill(0)
-    coeffs[-1][0].fill(0)
-    coeffs[-1][1].fill(0)
-    coeffs[-1][2].fill(0)
-
-    img_rec_resize = pywt.waverec2(coeffs, "db8")
-    img_rec = cv2.resize(img_rec_resize, (img_shape[1], img_shape[0]))
-    return img_rec
-
-def _bandpass_dog(img_blr: np.ndarray, resize_factor: float = 0.25) -> np.ndarray:
-    h, w = img_blr.shape
-    small = cv2.resize(img_blr, None, fx=resize_factor, fy=resize_factor,
-                       interpolation=cv2.INTER_AREA)
-    diag_len = (h**2+w**2)**(1/2)
-    # 假设原图最大星点 20px in 7000px
-    fine_width = diag_len * 0.0001
-    coarse_width = diag_len * 0.001
-    # 粗尺度去背景，细尺度去噪，差值保留星点
-    coarse = cv2.GaussianBlur(small, (0, 0), sigmaX=coarse_width)
-    fine   = cv2.GaussianBlur(small, (0, 0), sigmaX=fine_width)
-    dog = coarse - fine
-    return cv2.resize(dog, (w, h), interpolation=cv2.INTER_LINEAR)
+    return wavelet_dec_rec(img_blr, resize_factor=resize_factor)
 
 
 def detect_star_points(

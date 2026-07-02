@@ -26,6 +26,7 @@ from hoshicore._custom_op.ops.sigma_clip import (
     sigma_clip_iterative_chunk,
     sigma_clip_fused_chunk,
 )
+from hoshicore._custom_op.ops.wavelet import wavelet_dec_rec
 
 __all__ = [
     "build_info",
@@ -46,4 +47,5 @@ __all__ = [
     "sigma_clip_fused_merge",
     "sigma_clip_iterative_chunk",
     "threshold_max_merge",
+    "wavelet_dec_rec",
 ]

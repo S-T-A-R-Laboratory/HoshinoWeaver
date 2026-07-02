@@ -49,6 +49,10 @@ add_library(hnw_ops_cpu_sigma_clip STATIC
     ops/sigma_clip/sigma_clip_chunk_ops.cpp
 )
 
+add_library(hnw_ops_cpu_wavelet STATIC
+    ops/wavelet/wavelet_ops.cpp
+)
+
 set(hnw_cpu_targets
     hnw_ops_common
     hnw_ops_cpu_alignment
@@ -58,6 +62,7 @@ set(hnw_cpu_targets
     hnw_ops_cpu_median
     hnw_ops_cpu_noise
     hnw_ops_cpu_sigma_clip
+    hnw_ops_cpu_wavelet
 )
 
 foreach(target IN LISTS hnw_cpu_targets)
@@ -100,6 +105,7 @@ target_link_libraries(_C PRIVATE
     hnw_ops_cpu_median
     hnw_ops_cpu_noise
     hnw_ops_cpu_sigma_clip
+    hnw_ops_cpu_wavelet
 )
 hnw_apply_common_compile_options(_C)
 hnw_link_openmp(_C)

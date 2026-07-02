@@ -28,6 +28,7 @@ from hoshicore._custom_op.api import (
     sigma_clip_fused_merge,
     sigma_clip_iterative_chunk,
     threshold_max_merge,
+    wavelet_dec_rec,
 )
 
 __all__ = [
@@ -49,4 +50,5 @@ __all__ = [
     "sigma_clip_fused_merge",
     "sigma_clip_iterative_chunk",
     "threshold_max_merge",
+    "wavelet_dec_rec",
 ]
