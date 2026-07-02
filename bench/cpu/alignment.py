@@ -36,6 +36,10 @@ CASE_NAMES = [
     "detect_prepare_stream",
     "detect_wavelet_stream",
     "detect_extract_stream",
+    "detect_bandpass_stream",
+    "detect_threshold_morph_stream",
+    "detect_contour_stream",
+    "detect_ellipse_intensity_stream",
     "features_stream",
     "geometry_stream",
     "match_stream",
@@ -53,6 +57,25 @@ class DetectPayload:
     img_blr: np.ndarray
     mask: np.ndarray
     resize_factor: float
+
+
+@dataclasses.dataclass
+class DetectBandpassPayload:
+    img_rec: np.ndarray
+    mask: np.ndarray
+
+
+@dataclasses.dataclass
+class DetectThresholdPayload:
+    img_rec: np.ndarray
+    bw: np.ndarray
+
+
+@dataclasses.dataclass
+class DetectContourPayload:
+    img_rec: np.ndarray
+    bw: np.ndarray
+    contours: list[np.ndarray]
 
 
 def _prepare_detect_payload(frame: np.ndarray,
@@ -96,14 +119,42 @@ def _prepare_detect_payload(frame: np.ndarray,
     )
 
 
-def _extract_detect_features(payload: DetectPayload) -> None:
+def _prepare_detect_bandpass_payload(payload: DetectPayload) -> DetectBandpassPayload:
     img_rec = _wavelet_dec_rec(
         payload.img_blr, resize_factor=payload.resize_factor) * payload.mask
-    bw = ((img_rec > np.percentile(img_rec[payload.mask], 99.5)) *
+    return DetectBandpassPayload(img_rec=img_rec, mask=payload.mask)
+
+
+def _threshold_morph_detect_image(payload: DetectBandpassPayload) -> np.ndarray:
+    bw = ((payload.img_rec > np.percentile(payload.img_rec[payload.mask], 99.5)) *
           payload.mask).astype(np.uint8) * 255
-    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    return cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+
+def _prepare_detect_threshold_payload(
+        payload: DetectBandpassPayload) -> DetectThresholdPayload:
+    return DetectThresholdPayload(
+        img_rec=payload.img_rec,
+        bw=_threshold_morph_detect_image(payload),
+    )
+
+
+def _find_detect_contours(bw: np.ndarray) -> list[np.ndarray]:
     contours, _ = cv2.findContours(bw, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-    contours = [contour for contour in contours if len(contour) > 5]
+    return [contour for contour in contours if len(contour) > 5]
+
+
+def _prepare_detect_contour_payload(
+        payload: DetectThresholdPayload) -> DetectContourPayload:
+    return DetectContourPayload(
+        img_rec=payload.img_rec,
+        bw=payload.bw,
+        contours=_find_detect_contours(payload.bw),
+    )
+
+
+def _measure_detect_ellipse_intensity(payload: DetectContourPayload) -> None:
+    contours = payload.contours
     if not contours:
         return
 
@@ -115,20 +166,29 @@ def _extract_detect_features(payload: DetectPayload) -> None:
         np.array([1 - (elp[1][0] / elp[1][1])**2 for elp in elps]))
     _ = eccentricities
 
-    mask_img = np.zeros(bw.shape, np.uint8)
+    mask_img = np.zeros(payload.bw.shape, np.uint8)
     intensities = np.zeros(areas.shape)
     for i, contour in enumerate(contours):
         cv2.drawContours(mask_img, contours, i, 255, -1)
         rect = cv2.boundingRect(contour)
         val = cv2.mean(
-            img_rec[rect[1]:rect[1] + rect[3] + 1,
-                    rect[0]:rect[0] + rect[2] + 1],
+            payload.img_rec[rect[1]:rect[1] + rect[3] + 1,
+                            rect[0]:rect[0] + rect[2] + 1],
             mask_img[rect[1]:rect[1] + rect[3] + 1,
                      rect[0]:rect[0] + rect[2] + 1])
         mask_img[rect[1]:rect[1] + rect[3] + 1,
                  rect[0]:rect[0] + rect[2] + 1] = 0
         intensities[i] = val[0]
     _ = intensities
+
+
+def _extract_detect_features(payload: DetectPayload) -> None:
+    img_rec = _wavelet_dec_rec(
+        payload.img_blr, resize_factor=payload.resize_factor) * payload.mask
+    bandpass_payload = DetectBandpassPayload(img_rec=img_rec, mask=payload.mask)
+    threshold_payload = _prepare_detect_threshold_payload(bandpass_payload)
+    contour_payload = _prepare_detect_contour_payload(threshold_payload)
+    _measure_detect_ellipse_intensity(contour_payload)
 
 
 def load_frames_from_dir(input_dir: str, frames: int) -> list[np.ndarray]:
@@ -226,6 +286,28 @@ def bench_detect_wavelet_stream(payloads: list[DetectPayload]) -> None:
 def bench_detect_extract_stream(payloads: list[DetectPayload]) -> None:
     for payload in payloads:
         _extract_detect_features(payload)
+
+
+def bench_detect_bandpass_stream(payloads: list[DetectPayload]) -> None:
+    for payload in payloads:
+        _ = _prepare_detect_bandpass_payload(payload)
+
+
+def bench_detect_threshold_morph_stream(
+        payloads: list[DetectBandpassPayload]) -> None:
+    for payload in payloads:
+        _ = _threshold_morph_detect_image(payload)
+
+
+def bench_detect_contour_stream(payloads: list[DetectThresholdPayload]) -> None:
+    for payload in payloads:
+        _ = _find_detect_contours(payload.bw)
+
+
+def bench_detect_ellipse_intensity_stream(
+        payloads: list[DetectContourPayload]) -> None:
+    for payload in payloads:
+        _measure_detect_ellipse_intensity(payload)
 
 
 def bench_features_stream(frames: list[np.ndarray]) -> None:
@@ -406,10 +488,45 @@ def main() -> None:
             f"Unknown alignment benchmark case(s): {unknown_cases}. "
             f"Available: {list(CASE_NAMES)}")
 
+    detect_payload_cases = {
+        "detect_wavelet_stream",
+        "detect_extract_stream",
+        "detect_bandpass_stream",
+        "detect_threshold_morph_stream",
+        "detect_contour_stream",
+        "detect_ellipse_intensity_stream",
+    }
     detect_payloads = None
-    if any(case in args.cases
-           for case in ("detect_wavelet_stream", "detect_extract_stream")):
+    if any(case in args.cases for case in detect_payload_cases):
         detect_payloads = [_prepare_detect_payload(frame) for frame in frames]
+
+    bandpass_payloads = None
+    if any(case in args.cases for case in (
+            "detect_threshold_morph_stream",
+            "detect_contour_stream",
+            "detect_ellipse_intensity_stream",
+    )):
+        bandpass_payloads = [
+            _prepare_detect_bandpass_payload(payload)
+            for payload in detect_payloads
+        ]
+
+    threshold_payloads = None
+    if any(case in args.cases for case in (
+            "detect_contour_stream",
+            "detect_ellipse_intensity_stream",
+    )):
+        threshold_payloads = [
+            _prepare_detect_threshold_payload(payload)
+            for payload in bandpass_payloads
+        ]
+
+    contour_payloads = None
+    if "detect_ellipse_intensity_stream" in args.cases:
+        contour_payloads = [
+            _prepare_detect_contour_payload(payload)
+            for payload in threshold_payloads
+        ]
 
     remap_payloads = None
     if "remap_stream" in args.cases:
@@ -422,6 +539,14 @@ def main() -> None:
             detect_payloads),
         "detect_extract_stream": lambda: bench_detect_extract_stream(
             detect_payloads),
+        "detect_bandpass_stream": lambda: bench_detect_bandpass_stream(
+            detect_payloads),
+        "detect_threshold_morph_stream": lambda: bench_detect_threshold_morph_stream(
+            bandpass_payloads),
+        "detect_contour_stream": lambda: bench_detect_contour_stream(
+            threshold_payloads),
+        "detect_ellipse_intensity_stream": lambda: bench_detect_ellipse_intensity_stream(
+            contour_payloads),
         "features_stream": lambda: bench_features_stream(frames),
         "geometry_stream": lambda: bench_geometry_stream(frames),
         "match_stream": lambda: bench_match_stream(frames),
