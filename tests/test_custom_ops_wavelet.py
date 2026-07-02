@@ -106,13 +106,16 @@ class TestWaveletDecRecCustomOp(unittest.TestCase):
         image = rng.normal(size=(30, 32))
         expected = wavelet_ops.wavelet_dec_rec(image, 1.0)
 
-        with mock.patch.object(
-                wavelet_ops, "_load_compiled_module_result",
-                return_value=(None, "mock error")) as load_module:
+        with mock.patch.dict(
+                "os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "auto"},
+                clear=False):
             with mock.patch.object(
-                    wavelet_ops, "MIN_COMPILED_WAVELET_PIXELS", 0):
-                wavelet_ops._select_wavelet_dec_rec_backend.cache_clear()
-                got = wavelet_ops.wavelet_dec_rec(image, 1.0)
+                    wavelet_ops, "_load_compiled_module_result",
+                    return_value=(None, "mock error")) as load_module:
+                with mock.patch.object(
+                        wavelet_ops, "MIN_COMPILED_WAVELET_PIXELS", 0):
+                    wavelet_ops._select_wavelet_dec_rec_backend.cache_clear()
+                    got = wavelet_ops.wavelet_dec_rec(image, 1.0)
 
         load_module.assert_called_once()
         np.testing.assert_allclose(got, expected, rtol=1e-10, atol=1e-12)
