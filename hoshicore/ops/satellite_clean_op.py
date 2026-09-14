@@ -46,6 +46,7 @@ class SatelliteCleanOp(BaseOp):
     CONFIGS: dict[str, Any] = {
         "window_size": {"type": "int", "default": 3},
         "mask": {"type": "image", "default": None},
+        "camera_mode": {"type": "str", "default": "exif"},
         "focal_length_mm": {"type": "float", "default": None},
         "crop_factor": {"type": "float", "default": 1.0},
         "fallback_focal_equiv_mm": {"type": "float", "default": 20.0},
@@ -69,10 +70,23 @@ class SatelliteCleanOp(BaseOp):
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         W: int = configs['window_size']
         mask: Optional[np.ndarray] = configs['mask']
+        camera_mode = configs.get('camera_mode', 'exif')
+        if camera_mode not in ('exif', 'manual'):
+            raise ValueError(
+                f"camera_mode must be 'exif' or 'manual', got {camera_mode!r}")
         focal_length_mm = configs.get('focal_length_mm')
         crop_factor = configs.get('crop_factor') or 1.0
-        focal_equiv_mm = (float(focal_length_mm) * float(crop_factor)
-                          if focal_length_mm is not None else None)
+        if camera_mode == 'manual':
+            if focal_length_mm in (None, ""):
+                raise ValueError(
+                    "focal_length_mm is required when camera_mode='manual'")
+            if float(focal_length_mm) <= 0:
+                raise ValueError("focal_length_mm must be positive")
+            if float(crop_factor) <= 0:
+                raise ValueError("crop_factor must be positive")
+            focal_equiv_mm = float(focal_length_mm) * float(crop_factor)
+        else:
+            focal_equiv_mm = None
         fallback_focal_equiv_mm = float(
             configs.get('fallback_focal_equiv_mm', 20.0))
         exifs_active = self.inputs['exifs'].active
@@ -113,6 +127,7 @@ class SatelliteCleanOp(BaseOp):
                         frame_arr.shape,
                         focal_equiv_mm=focal_equiv_mm,
                         fallback_focal_equiv_mm=fallback_focal_equiv_mm,
+                        camera_mode=camera_mode,
                     )
                     geo = await self._run_cpu(
                         self._detect_geometry, frame_arr, mask, camera)
@@ -185,13 +200,24 @@ class SatelliteCleanOp(BaseOp):
         image_shape: tuple[int, ...],
         focal_equiv_mm: Optional[float],
         fallback_focal_equiv_mm: float,
+        camera_mode: str = "exif",
     ) -> CameraModel:
         """Build the zero-distortion perspective camera used by homography.
 
-        EXIF intrinsics take priority.  The manual 35mm-equivalent focal value
-        is used when EXIF is absent or incomplete, followed by the historical
-        20mm fallback (or its configured replacement).
+        In exif mode, EXIF intrinsics are used with the historical 20mm
+        fallback (or its configured replacement). In manual mode, EXIF is
+        ignored and the provided 35mm-equivalent focal value is required.
         """
+        if camera_mode not in ("exif", "manual"):
+            raise ValueError(
+                f"camera_mode must be 'exif' or 'manual', got {camera_mode!r}")
+        if camera_mode == "manual":
+            if focal_equiv_mm is None:
+                raise ValueError(
+                    "focal_length_mm is required when camera_mode='manual'")
+            exif_obj = None
+        else:
+            focal_equiv_mm = None
         if isinstance(exif_obj, dict):
             exif_tags = exif_obj
         else:

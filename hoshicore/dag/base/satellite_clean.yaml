@@ -8,6 +8,7 @@ inputs:
 configs:
   window_size: { type: int, default: 3 }
   mask: { type: str, required: false, default: null }
+  camera_mode: { type: str, default: "exif" }
   focal_length_mm: { type: float, default: null }
   crop_factor: { type: float, default: 1.0 }
   fallback_focal_equiv_mm: { type: float, default: 20.0 }
@@ -28,6 +29,7 @@ nodes:
     configs:
       window_size: configs.window_size
       mask: load_mask.result
+      camera_mode: configs.camera_mode
       focal_length_mm: configs.focal_length_mm
       crop_factor: configs.crop_factor
       fallback_focal_equiv_mm: configs.fallback_focal_equiv_mm
