@@ -98,12 +98,28 @@ def _frame(index, status=FrameAlignmentStatus.SOLVED, rotation=None,
     )
 
 
-@pytest.mark.parametrize(("configured_reference", "expected_reference"), [
-    (1, 1),
-    (None, 2),
-])
+@pytest.mark.parametrize(
+    (
+        "configured_reference",
+        "expected_reference",
+        "camera_setup_mode",
+        "expected_camera_tags",
+        "expected_focal",
+    ),
+    [
+        (1, 1, None, {"frame": 1}, 14.0),
+        (None, 2, "auto", {"frame": 2}, None),
+        (None, 2, "manual", None, 14.0),
+    ],
+)
 def test_bundle_adjustment_uses_reference_camera_for_every_frame(
-        monkeypatch, configured_reference, expected_reference):
+        monkeypatch,
+        configured_reference,
+        expected_reference,
+        camera_setup_mode,
+        expected_camera_tags,
+        expected_focal,
+):
     op = BundleAdjustmentOp("bundle")
     op.length = 4
     op.display_name = "Bundle adjustment"
@@ -158,6 +174,7 @@ def test_bundle_adjustment_uses_reference_camera_for_every_frame(
 
     configs = {
         "method": "distortion",
+        "camera_setup_mode": camera_setup_mode,
         "focal_length_mm": 14.0,
         "crop_factor": 1.0,
         "fallback_focal_equiv_mm": 20.0,
@@ -170,7 +187,8 @@ def test_bundle_adjustment_uses_reference_camera_for_every_frame(
     asyncio.run(op._async_execute(configs))
 
     assert len(candidate_calls) == 1
-    assert candidate_calls[0][0] == {"frame": expected_reference}
+    assert candidate_calls[0][0] == expected_camera_tags
+    assert candidate_calls[0][4] == expected_focal
     assert all(frame.candidate is shared_candidate for frame in captured["frames"])
     assert len(detection_masks) == 4
     assert all(mask.shape == (8, 12) and mask.dtype == np.bool_

@@ -58,6 +58,8 @@ configs:
     label: "镜头焦距（mm）"
     description: "手动模式下使用的实际焦距。"
     widget: input
+    nullable: true
+    null_text: "请输入焦距"
     visible_when:
       all:
         - { key: "enable_satellite_clean", eq: true }

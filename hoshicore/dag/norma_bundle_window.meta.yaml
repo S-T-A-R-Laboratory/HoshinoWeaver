@@ -36,6 +36,7 @@ configs:
   loader_type:              { type: str, default: "img_file_list" }
   loader_configs:           { type: dict, default: {} }
   reference_frame_index:    { type: int, default: null }
+  camera_setup_mode:        { type: str, default: "auto" }
   lens_type:                { type: str, default: null }
   distortion:               { type: list, default: null }
   focal_length_mm:          { type: float, default: null }
@@ -102,6 +103,7 @@ nodes:
     configs:
       mask: load_mask.result
       reference_frame_index: configs.reference_frame_index
+      camera_setup_mode: configs.camera_setup_mode
       lens_type: configs.lens_type
       distortion: configs.distortion
       focal_length_mm: configs.focal_length_mm

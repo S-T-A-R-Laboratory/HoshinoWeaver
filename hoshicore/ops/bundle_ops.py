@@ -316,6 +316,7 @@ class BundleAdjustmentOp(BaseOp):
         "mask": {"type": "image", "default": None},
         "reference_frame_index": {"type": "int", "default": None},
         "method": {"type": "str", "default": "distortion"},
+        "camera_setup_mode": {"type": "str", "default": None},
         "lens_type": {"type": "str", "default": None},
         "distortion": {"type": "list", "default": None},
         "focal_length_mm": {"type": "float", "default": None},
@@ -364,9 +365,21 @@ class BundleAdjustmentOp(BaseOp):
                 self.name, self.length + edge_count + 1,
                 desc=self.display_name)
         exifs_active = self.inputs["exifs"].active
+        camera_setup_mode = configs.get("camera_setup_mode")
+        if camera_setup_mode not in (None, "auto", "manual"):
+            raise ValueError(
+                f"Unsupported camera_setup_mode {camera_setup_mode!r}; "
+                "expected 'auto' or 'manual'")
         focal_length = configs.get("focal_length_mm")
-        focal_equiv = (float(focal_length) * float(configs.get("crop_factor") or 1.0)
-                       if focal_length is not None else None)
+        if camera_setup_mode == "auto":
+            focal_length = None
+        elif camera_setup_mode == "manual" and focal_length in (None, ""):
+            raise ValueError(
+                "focal_length_mm is required when "
+                "camera_setup_mode='manual'")
+        focal_equiv = (
+            float(focal_length) * float(configs.get("crop_factor") or 1.0)
+            if focal_length is not None else None)
         fallback = float(configs.get("fallback_focal_equiv_mm", 20.0))
         configured_reference = configs.get("reference_frame_index")
         configured_mask = configs.get("mask")
@@ -419,8 +432,10 @@ class BundleAdjustmentOp(BaseOp):
             allow_large_principal_point_offset=bool(
                 configs.get("allow_large_principal_point_offset", False)),
         )
+        camera_tags = (
+            None if camera_setup_mode == "manual" else reference_tags)
         shared_candidate = build_camera_candidate(
-            reference_tags, reference_array_shape, "distortion",
+            camera_tags, reference_array_shape, "distortion",
             configs.get("distortion"), focal_equiv, policy)
         reference_shape = reference_array_shape[:2]
         if any(shape[:2] != reference_shape
