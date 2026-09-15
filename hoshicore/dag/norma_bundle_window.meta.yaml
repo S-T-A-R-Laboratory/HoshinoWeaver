@@ -53,7 +53,7 @@ configs:
   max_nfev:                 { type: int, default: 2000 }
   random_seed:              { type: int, default: 0 }
   window_size:              { type: int, default: 5 }
-  min_contributors:         { type: int, default: 2 }
+  min_contributors:         { type: int, default: 1 }
   ground_window_size:       { type: int, default: 5 }
   ground_min_contributors:  { type: int, default: 1 }
   remap_map_scale:          { type: float, default: 0.5 }
