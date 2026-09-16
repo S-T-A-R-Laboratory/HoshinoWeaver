@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from hoshicore.component.image_io import peek_shape
+from hoshicore.component.image_io import load_tiff_preview, peek_shape
 
 
 class TestPeekShapeTiff:
@@ -29,6 +29,38 @@ class TestPeekShapeTiff:
         shape, dtype_bytes = peek_shape(path)
         assert shape == (64, 64)
         assert dtype_bytes == 4
+
+
+class TestLoadTiffPreview:
+    @pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.uint32])
+    def test_unsigned_rgb_uses_dtype_full_range(self, tmp_path, dtype):
+        path = tmp_path / f"{np.dtype(dtype).name}_rgb.tif"
+        max_value = np.iinfo(dtype).max
+        data = np.array(
+            [0, max_value // 2, max_value], dtype=dtype).reshape(1, 1, 3)
+        tifffile.imwrite(path, data, photometric="rgb")
+
+        preview = load_tiff_preview(str(path))
+
+        assert preview.shape == data.shape
+        assert preview.dtype == np.uint8
+        assert preview.flags.c_contiguous
+        np.testing.assert_array_equal(
+            preview, np.array([0, 127, 255], dtype=np.uint8).reshape(1, 1, 3))
+
+    def test_float32_grayscale_handles_nonfinite_values(self, tmp_path):
+        path = tmp_path / "float32_gray.tif"
+        data = np.linspace(-0.5, 1.5, 16, dtype=np.float32).reshape(4, 4)
+        data[0, 0] = np.nan
+        data[0, 1] = np.inf
+        tifffile.imwrite(path, data)
+
+        preview = load_tiff_preview(str(path))
+
+        assert preview.shape == (4, 4, 3)
+        assert preview.dtype == np.uint8
+        np.testing.assert_array_equal(preview[:, :, 0], preview[:, :, 1])
+        np.testing.assert_array_equal(preview[:, :, 1], preview[:, :, 2])
 
 
 class TestPeekShapeCommon:

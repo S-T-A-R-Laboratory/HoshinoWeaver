@@ -26,10 +26,18 @@ class TestRescaleArray:
         assert up[-1] == 255 * (256 + 1)  # 65535
 
     def test_uint8_to_uint32(self):
-        arr = np.array([255], dtype=np.uint8)
+        arr = np.array([0, 255], dtype=np.uint8)
         up = rescale_array(arr, np.dtype("uint8"), np.dtype("uint32"))
         assert up.dtype == np.uint32
-        assert up[0] > 0
+        np.testing.assert_array_equal(
+            up, np.array([0, np.iinfo(np.uint32).max], dtype=np.uint32))
+
+    def test_uint16_to_uint32(self):
+        arr = np.array([0, 65535], dtype=np.uint16)
+        up = rescale_array(arr, np.dtype("uint16"), np.dtype("uint32"))
+        assert up.dtype == np.uint32
+        np.testing.assert_array_equal(
+            up, np.array([0, np.iinfo(np.uint32).max], dtype=np.uint32))
 
     def test_uint16_to_uint8(self):
         arr = np.array([0, 257, 32896, 65535], dtype=np.uint16)

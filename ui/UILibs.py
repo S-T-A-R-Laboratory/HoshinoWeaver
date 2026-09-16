@@ -5,6 +5,7 @@
 import numpy as np
 import PIL.Image
 import rawpy
+from hoshicore.component.image_io import load_tiff_preview
 from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QImage,
                            QMouseEvent, QPainter, QPixmap, QPolygon,
@@ -49,7 +50,9 @@ class imgDisplayQFrame(QFrame):
             if suffix in ('cr2', 'cr3', 'arw', 'nef', 'dng', 'rw2', 'orf', 'raf'):
                 with rawpy.imread(self.img_path) as raw:
                     rgb = raw.postprocess(output_color=rawpy.ColorSpace(4),
-                    use_camera_wb=True, no_auto_bright=True)
+                    output_bps=8, use_camera_wb=True, no_auto_bright=True)
+            elif suffix in ('tif', 'tiff'):
+                rgb = load_tiff_preview(self.img_path)
             else:
                 rgb = np.array(PIL.Image.open(self.img_path).convert("RGB"), dtype=np.uint8)
 

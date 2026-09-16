@@ -169,5 +169,5 @@ outputs:
     type: sequence
     dtype_key: output_dtype
     formats: ["PNG", "TIFF", "JPG"]
-    dtype_options: ["uint8", "uint16"]
+    dtype_options: ["uint8", "uint16", "uint32"]
     template_key: output_template
