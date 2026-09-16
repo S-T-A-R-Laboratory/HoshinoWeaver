@@ -149,8 +149,10 @@ class StarAlignmentOp(FilterBaseOp):
         ref_policy = CameraInitializationPolicy(
             lens_type=ref_lens_type, **policy_kwargs)
 
+        use_manual_intrinsics = camera_setup_mode == "manual"
         ref_candidate = build_camera_candidate(
-            ref_exif_tags, ref_arr.shape, method, init_distortion,
+            None if use_manual_intrinsics else ref_exif_tags,
+            ref_arr.shape, method, init_distortion,
             focal_equiv_mm, ref_policy)
         ref_camera = ref_candidate.camera
         ref_detection = await self._run_cpu(
@@ -207,7 +209,8 @@ class StarAlignmentOp(FilterBaseOp):
                 src_policy = CameraInitializationPolicy(
                     lens_type=src_lens_type, **policy_kwargs)
                 src_candidate = build_camera_candidate(
-                    exif_tags, frame_arr.shape, method, init_distortion,
+                    None if use_manual_intrinsics else exif_tags,
+                    frame_arr.shape, method, init_distortion,
                     focal_equiv_mm, src_policy)
                 src_camera = src_candidate.camera
 

@@ -129,6 +129,15 @@ def intrinsics_from_exif(exif_tags: dict[str, str], img_width: int,
     Returns:
         Intrinsics 或 None。
     """
+    focal_equiv_mm = _parse_rational(
+        exif_tags.get("Exif.Photo.FocalLengthIn35mmFilm"))
+    if focal_equiv_mm is not None and focal_equiv_mm > 0:
+        logger.debug(
+            "intrinsics_from_exif: using FocalLengthIn35mmFilm="
+            f"{focal_equiv_mm:.1f}mm")
+        return intrinsics_from_focal_equiv(
+            focal_equiv_mm, img_width, img_height)
+
     focal_mm = _parse_rational(exif_tags.get("Exif.Photo.FocalLength"))
     if focal_mm is None or focal_mm <= 0:
         logger.debug("intrinsics_from_exif: FocalLength missing or invalid")

@@ -45,7 +45,7 @@ IMAGE_FORMAT_PRESETS: dict[str, dict[str, Any]] = {
     "TIFF": {
         "ext": [".tif", ".tiff"],
         "default_ext": ".tif",
-        "allowed_dtypes": ["uint8", "uint16", "uint32"],
+        "allowed_dtypes": ["uint8", "uint16", "uint32","float32"],
         "params": {},
     },
 }

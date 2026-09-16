@@ -5,7 +5,8 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QLocale, Qt, Signal
+from PySide6.QtGui import QColor, QDoubleValidator, QPalette
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -44,6 +45,34 @@ class ConfigSpec:
     # right handle from meta.yaml rather than a hard-coded max.
     bind_default: Any = None
     visible_when: dict | None = None
+    nullable: bool = False
+    null_text: str = "自动"
+
+
+class _NullableFloatLineEdit(QLineEdit):
+    """Empty numeric input with a focus-sensitive default placeholder."""
+
+    def __init__(self, null_text: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._null_text = null_text
+        palette = self.palette()
+        palette.setColor(QPalette.PlaceholderText, QColor(128, 128, 128))
+        self.setPalette(palette)
+        self.setPlaceholderText(null_text)
+        self.textChanged.connect(self._sync_placeholder)
+
+    def _sync_placeholder(self, value: str) -> None:
+        self.setPlaceholderText("" if value else self._null_text)
+
+    def focusInEvent(self, event) -> None:
+        if not self.text():
+            self.setPlaceholderText("")
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        if not self.text():
+            self.setPlaceholderText(self._null_text)
 
 
 @dataclass
@@ -311,18 +340,52 @@ def create_config_row(
         layout.addStretch()
 
     elif spec.widget == "input" and spec.type == "float":
-        spin = QDoubleSpinBox(row)
-        spin.setMinimum(spec.min if spec.min is not None else -999999.0)
-        spin.setMaximum(spec.max if spec.max is not None else 999999.0)
-        spin.setSingleStep(spec.step if spec.step else 0.1)
-        spin.setDecimals(1)
-        spin.setValue(float(spec.default) if spec.default is not None else 0.0)
-        if on_change:
-            spin.valueChanged.connect(lambda _: on_change())
-        getter = spin.value
-        setter = spin.setValue
-        layout.addWidget(spin)
-        layout.addStretch()
+        if spec.nullable:
+            line = _NullableFloatLineEdit(spec.null_text, row)
+            line.setStyleSheet(LINEEDIT_STYLE)
+            validator = QDoubleValidator(
+                spec.min if spec.min is not None else -999999.0,
+                spec.max if spec.max is not None else 999999.0,
+                6,
+                line,
+            )
+            validator.setLocale(QLocale.c())
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            line.setValidator(validator)
+            if spec.default is not None:
+                line.setText(str(float(spec.default)))
+            if on_change:
+                line.textChanged.connect(lambda _: on_change())
+
+            def getter():
+                value = line.text().strip()
+                if not value:
+                    return None
+                try:
+                    return float(value)
+                except ValueError:
+                    return None
+
+            def setter(v):
+                line.setText("" if v is None else str(float(v)))
+
+            layout.addWidget(line, 1)
+        else:
+            spin = QDoubleSpinBox(row)
+            spin.setMinimum(
+                spec.min if spec.min is not None else -999999.0)
+            spin.setMaximum(
+                spec.max if spec.max is not None else 999999.0)
+            spin.setSingleStep(spec.step if spec.step else 0.1)
+            spin.setDecimals(1)
+            spin.setValue(
+                float(spec.default) if spec.default is not None else 0.0)
+            if on_change:
+                spin.valueChanged.connect(lambda _: on_change())
+            getter = spin.value
+            setter = spin.setValue
+            layout.addWidget(spin)
+            layout.addStretch()
 
     else:
         line = QLineEdit(row)

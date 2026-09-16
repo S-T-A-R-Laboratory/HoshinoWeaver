@@ -42,6 +42,7 @@ class CommonExifTags:
     DateTimeDigitized = "Exif.Photo.DateTimeDigitized"
     OffsetTime = "Exif.Photo.OffsetTime"
     FocalLength = "Exif.Photo.FocalLength"
+    FocalLengthIn35mmFilm = "Exif.Photo.FocalLengthIn35mmFilm"
     FocalPlaneXResolution = "Exif.Photo.FocalPlaneXResolution"
     FocalPlaneYResolution = "Exif.Photo.FocalPlaneYResolution"
     FocalPlaneResolutionUnit = "Exif.Photo.FocalPlaneResolutionUnit"

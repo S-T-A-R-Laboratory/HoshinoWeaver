@@ -49,6 +49,7 @@ route_configs:
       allow_large_principal_point_offset: { type: bool, default: false }
     bundle:
       reference_frame_index: { type: int, default: null }
+      camera_setup_mode: { type: str, default: "auto" }
       lens_type: { type: str, default: null }
       focal_length_mm: { type: float, default: null }
       crop_factor: { type: float, default: 1.0 }

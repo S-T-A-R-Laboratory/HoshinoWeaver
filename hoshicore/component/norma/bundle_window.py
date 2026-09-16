@@ -44,13 +44,13 @@ def build_bundle_window_schedule(
     plan: BAAlignmentPlan,
     window_size: int,
     *,
-    min_contributors: int = 2,
+    min_contributors: int = 1,
 ) -> BundleWindowSchedule:
     """Build shrinking-edge windows while omitting excluded BA frames.
 
     Excluded frames are never centers or contributors. A solved center is
-    emitted only when at least ``min_contributors`` solved frames remain in its
-    truncated window.
+    emitted only when at least ``min_contributors`` solved frames, including
+    the center frame itself, remain in its truncated window.
     """
     if not isinstance(plan, BAAlignmentPlan):
         raise TypeError("plan must be a BAAlignmentPlan")

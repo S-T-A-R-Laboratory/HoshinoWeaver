@@ -186,6 +186,8 @@ def _build_config_spec(key: str, meta_spec: dict, ui_spec: dict) -> ConfigSpec:
         accept=ui_spec.get("accept"),
         transform=ui_spec.get("transform"),
         visible_when=ui_spec.get("visible_when"),
+        nullable=bool(ui_spec.get("nullable", False)),
+        null_text=str(ui_spec.get("null_text", "自动")),
     )
 
 

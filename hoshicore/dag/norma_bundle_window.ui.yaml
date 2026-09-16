@@ -36,6 +36,14 @@ routes:
       sigma_clip: { label: "Sigma 裁剪" }
 
 configs:
+  camera_setup_mode:
+    label: "焦距信息"
+    description: "读取 EXIF 时，信息不完整则使用默认等效焦距；手动指定会覆盖 EXIF 焦距。"
+    widget: select
+    options:
+      - { value: "auto", label: "读取 EXIF" }
+      - { value: "manual", label: "手动指定" }
+
   reference_frame_index:
     label: "BA 参考帧序号"
     description: "从 0 开始计数，仅定义全局 BA 坐标系；每张输出仍以其窗口中心帧为重映射参考。"
@@ -52,11 +60,13 @@ configs:
 
   focal_length_mm:
     label: "镜头焦距（mm）"
-    description: "EXIF 不完整时使用的实际焦距。鱼眼镜头允许 BA 从尺度候选进一步修正。"
+    description: "手动指定模式下使用的实际焦距；该值会覆盖 EXIF 焦距。"
     widget: input
+    nullable: true
+    null_text: "请输入焦距"
     visible_when:
       all:
-        - { key: "lens_type", neq: null }
+        - { key: "camera_setup_mode", eq: "manual" }
     min: 1
     max: 2000
 
@@ -66,7 +76,7 @@ configs:
     widget: input
     visible_when:
       all:
-        - { key: "lens_type", neq: null }
+        - { key: "camera_setup_mode", eq: "manual" }
     min: 0.5
     max: 4.0
 
@@ -114,7 +124,7 @@ configs:
         - { key: "enable_ground", eq: true }
 
   mask:
-    label: "天空/地景蒙版"
+    label: "天空蒙版"
     description: "白色使用天空对齐结果，黑色使用未变换的地景窗口结果。"
     widget: file_picker
 
@@ -124,7 +134,7 @@ configs:
 
   min_contributors:
     label: "最少贡献帧数"
-    description: "有效对齐帧少于该值时跳过对应中心帧。"
+    description: "统计包含中心主帧；有效对齐帧少于该值时跳过对应中心帧。设为 1 时，即使邻帧均对齐失败也会仅使用主帧。"
     widget: slider
     min: 1
     max: 31
@@ -190,6 +200,12 @@ configs:
     hidden: true
   max_pair_offset:
     hidden: true
+  max_nfev:
+    hidden: true
+  enable_frame_rotation_export_save:
+    hidden: true
+  frame_rotations_output_path:
+    hidden: true
 
 route_configs:
   sigma_clip:
@@ -221,6 +237,7 @@ layout:
       keys:
         [
           reference_frame_index,
+          camera_setup_mode,
           lens_type,
           focal_length_mm,
           crop_factor,
@@ -255,6 +272,7 @@ layout:
       window_stacker,
       ground_window_stacker,
       reference_frame_index,
+      camera_setup_mode,
       lens_type,
       focal_length_mm,
       crop_factor,
@@ -277,5 +295,5 @@ outputs:
     type: sequence
     dtype_key: output_dtype
     formats: ["PNG", "TIFF", "JPG"]
-    dtype_options: ["uint8", "uint16"]
+    dtype_options: ["uint8", "uint16", "uint32"]
     template_key: output_template
