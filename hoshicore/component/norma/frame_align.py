@@ -18,7 +18,8 @@ from .optimization import (CameraOptimizationPolicy,
                            DEFAULT_PRINCIPAL_POINT_OFFSET_LIMIT,
                            LARGE_PRINCIPAL_POINT_OFFSET_LIMIT)
 from .geometry_view import GeometryView, StarDetectionCache
-from .intrinsics_from_exif import (intrinsics_from_exif,
+from .intrinsics_from_exif import (exif_focal_sources,
+                                   intrinsics_from_exif,
                                    intrinsics_from_focal_equiv,
                                    intrinsics_from_fisheye_estimate)
 from .types import (BaseCameraModel, CameraModel, Distortion,
@@ -75,6 +76,11 @@ class AlignmentCameraCandidate:
     optimization_policy: CameraOptimizationPolicy
     init_source: str
     scale: float = 1.0
+    # pixel-density focal / 35mm-equivalent focal from EXIF, when both were
+    # available. 1.0 means the two derivations agree; anything far from 1.0
+    # means the metadata is stale (post-capture crop) or the pixels were
+    # resampled, which is reported but not corrected here.
+    focal_metadata_ratio: Optional[float] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -241,9 +247,16 @@ def build_camera_candidate(
         )
     else:
         policy = _policy_for_camera(source, init_policy)
+    # Only meaningful when the camera actually comes from EXIF: it compares the
+    # two independent EXIF focal derivations, so a manual/fallback camera has
+    # nothing to cross-check.
+    focal_metadata_ratio = (
+        exif_focal_sources(exif_tags, img_shape[1], img_shape[0]).ratio
+        if exif_tags and source == "exif" else None)
     return AlignmentCameraCandidate(camera=camera,
                                     optimization_policy=policy,
-                                    init_source=source)
+                                    init_source=source,
+                                    focal_metadata_ratio=focal_metadata_ratio)
 
 
 def _check_star_count(ref_geo: GeometryView,

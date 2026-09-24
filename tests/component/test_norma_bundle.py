@@ -138,7 +138,8 @@ def test_bundle_solver_applies_camera_bounds_and_leaves_poses_unbounded(
 def test_bundle_falls_back_to_focal_only_without_rebuilding_edges(monkeypatch):
     camera = _camera()
     requested = CameraOptimizationPolicy(True, True, False, 4)
-    candidate = AlignmentCameraCandidate(camera, requested, "manual")
+    candidate = AlignmentCameraCandidate(camera, requested, "manual",
+                                         focal_metadata_ratio=1.42)
     stars = DetectedStars(np.empty((0, 2)), np.empty(0))
     frames = [BundleFrame(index, stars, candidate) for index in range(2)]
     edge_calls = []
@@ -172,6 +173,8 @@ def test_bundle_falls_back_to_focal_only_without_rebuilding_edges(monkeypatch):
     assert plan.camera_fallback_reason == (
         "shared camera parameters are rank deficient")
     assert plan.active_camera_parameter_count == 1
+    # the reference frame's EXIF cross-check factor reaches the plan verbatim
+    assert plan.focal_metadata_ratio == 1.42
 
 
 def test_plan_frame_access():

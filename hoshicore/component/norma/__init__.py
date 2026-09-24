@@ -11,7 +11,8 @@ from .frame_align import (AlignmentCameraCandidate, AlignmentError,
                           align_frame_homography, build_camera_candidate,
                           build_camera, solve_star_alignment)
 from .geometry_view import GeometryView, StarDetectionCache, to_gray_f64
-from .intrinsics_from_exif import (intrinsics_from_exif,
+from .intrinsics_from_exif import (ExifFocalSources, exif_focal_sources,
+                                   intrinsics_from_exif,
                                    intrinsics_from_fisheye_estimate,
                                    intrinsics_from_focal_equiv,
                                    lens_type_from_exif)

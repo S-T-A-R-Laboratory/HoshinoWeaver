@@ -76,6 +76,11 @@ class BAAlignmentPlan:
     observability_condition: Optional[float]
     camera_solve_mode: str = "requested"
     camera_fallback_reason: Optional[str] = None
+    # pixel-density focal / 35mm-equivalent focal from the reference frame's
+    # EXIF, when both derivations were available. 1.0 means they agree; a value
+    # far from 1.0 marks metadata that no longer matches the pixels (post-capture
+    # crop or resample), so the shared camera's absolute scale is unverified.
+    focal_metadata_ratio: Optional[float] = None
 
     def frame(self, index: int) -> FrameAlignment:
         if index < 0 or index >= len(self.frames):
@@ -998,7 +1003,9 @@ def _assemble_plan(
         active_camera_parameter_count=_camera_parameter_count(solved_policy),
         observability_condition=condition,
         camera_solve_mode=solve_mode,
-        camera_fallback_reason=fallback_reason)
+        camera_fallback_reason=fallback_reason,
+        focal_metadata_ratio=by_index[
+            reference_frame_index].candidate.focal_metadata_ratio)
 
 
 def solve_anchor_camera_and_rotations(
