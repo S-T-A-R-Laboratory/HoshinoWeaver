@@ -22,6 +22,7 @@ configs:
   star_shrink_mode:       { type: str,  default: "moderate" }
   enable_satellite_clean: { type: bool, default: false }
   sat_window_size:        { type: int,  default: 3 }
+  sat_camera_mode:        { type: str,  default: "exif" }
   sat_focal_length_mm:    { type: float, default: null }
   sat_crop_factor:        { type: float, default: 1.0 }
   mask: { type: str, required: false, default: null }
@@ -76,15 +77,24 @@ nodes:
     bypass: data
     inputs:
       data: data_loader.result
-      exifs: exif_loader.result
+      exifs: satellite_exif_loader.result
     configs:
       window_size: configs.sat_window_size
       mask: configs.mask
+      camera_mode: configs.sat_camera_mode
       focal_length_mm: configs.sat_focal_length_mm
       crop_factor: configs.sat_crop_factor
     outputs:
       result: { type: sequence }
-  
+
+  satellite_exif_loader:
+    op: ExifReadOp
+    enable: configs.enable_satellite_clean
+    inputs:
+      fnames: inputs.fnames
+    outputs:
+      result: { type: sequence }
+
   star_shrink:
     op: StarShrinkOp
     enable: configs.enable_star_shrink

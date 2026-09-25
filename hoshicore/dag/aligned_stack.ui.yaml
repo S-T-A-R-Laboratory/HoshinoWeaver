@@ -1,0 +1,300 @@
+inputs:
+  fnames:
+    label: "图像文件"
+    description: "同一场景拍摄的序列。直接对齐逐帧独立配准；联合对齐需整段序列由同一相机拍摄。"
+    widget: file_picker
+    accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
+
+routes:
+  align_mode:
+    label: "对齐方式"
+    widget: tabs
+    options:
+      simple:
+        label: "直接对齐"
+        description: "逐帧独立对齐到指定参考图，参考图可来自序列外部，允许不同相机/镜头。适合单张对齐或参考图不在序列内的场景。"
+      bundle:
+        label: "联合对齐"
+        description: "整段序列联合求解同一相机与各帧指向，参考帧从序列内部选择。要求同一相机，几何一致性更好、速度更快。"
+  stacker:
+    label: "天空叠加算法"
+    widget: tabs
+    options:
+      mean:
+        label: "均值"
+        description: "不排除异常值的平均值叠加，计算快，信噪比高，但容易受到干扰。适合无干扰的干净素材。"
+      sigma_clip:
+        label: "Sigma 裁剪"
+        description: "多轮迭代排除异常值后求平均。适合有卫星/飞机线或其他异常值干扰，且叠加图像张数较多(>10张)的场景。"
+      median:
+        label: "中位数"
+        description: "逐像素取中位数，天然排异。适合有卫星/飞机线或其他异常值干扰，且叠加图像张数偏少(<10张)的场景。"
+      huber_mean:
+        label: "Huber 均值"
+        description: "使用 Huber 损失自动降低异常像素权重。速度较快，适合轻微异常场景"
+      max_mix:
+        label: "最大值混合"
+        description: "在最大值基础上校正空间亮度不均，适合需要保留所有飞机/卫星轨迹的场景。"
+      max:
+        label: "最大值"
+        description: "逐像素取最大值，不做其他处理，适合需要保留所有飞机/卫星轨迹的场景。"
+  ground_stacker:
+    label: "地面叠加算法"
+    widget: tabs
+    visible_when: { key: "enable_ground", eq: true }
+    options:
+      mean:
+        label: "均值"
+        description: "不排除异常值的平均值叠加，速度快，适合稳定、干净的地面区域。"
+      sigma_clip:
+        label: "Sigma 裁剪"
+        description: "迭代排除地面区域中的移动物体或其他异常像素。"
+      median:
+        label: "中位数"
+        description: "逐像素取中位数，适合帧数较少且存在偶发干扰的地面区域。"
+      huber_mean:
+        label: "Huber 均值"
+        description: "自动降低异常像素权重，适合轻微干扰。"
+      max_mix:
+        label: "最大值混合"
+        description: "保留较亮变化并校正空间亮度不均。"
+      max:
+        label: "最大值"
+        description: "逐像素取最大值，不进行异常值抑制。"
+
+configs:
+  remap_map_scale:
+    hidden: true
+  distortion:
+    hidden: true
+  int_weight:
+    hidden: true
+  mask:
+    label: "天空遮罩"
+    description: "为天空部分施加蒙版，仅允许白色区域参与对齐和叠加。"
+    widget: file_picker
+    accept: ".tif,.tiff,.png,.jpg"
+  enable_ground:
+    label: "叠加地面"
+    description: "使用天空遮罩的反向区域叠加地面，并与天空结果重新混合。"
+    widget: switch
+  loader_type:
+    hidden: true
+  loader_configs:
+    hidden: true
+  exif_reduce_type:
+    hidden: true
+  output_filename:
+    hidden: true
+  output_dtype:
+    hidden: true
+  jpg_quality:
+    hidden: true
+  png_compressing:
+    hidden: true
+
+route_configs:
+  "!include": fragments/stacker_route_configs.ui.yaml
+  # ── 直接对齐（align_mode: simple）专属 ──
+  simple:
+    align_base:
+      label: "对齐基准帧"
+      description: "对齐的参考图像，可来自序列外部。"
+      widget: file_picker
+      accept: ".cr2,.cr3,.arw,.nef,.dng,.rw2,.orf,.raf,.tiff,.tif,.jpeg,.jpg,.png,.bmp,.gif,.fits"
+      visible_when: { key: "align_mode", eq: "simple" }
+    align_method:
+      label: "对齐方式"
+      description: "透视变换速度快，适合已矫正畸变的图像；畸变校正路径更精确，但需要 EXIF 或手动焦距。"
+      widget: select
+      visible_when: { key: "align_mode", eq: "simple" }
+      options:
+        - { value: "homography", label: "透视变换" }
+        - { value: "distortion", label: "畸变校正" }
+    camera_setup_mode:
+      label: "相机信息"
+      description: "优先使用自动读取；仅在 EXIF 不完整或参考帧、输入帧来自不同镜头时手动展开。"
+      widget: select
+      visible_when:
+        all:
+          - { key: "align_mode", eq: "simple" }
+          - { key: "align_mode.align_method", eq: "distortion" }
+      options:
+        - { value: "auto", label: "读取 EXIF" }
+        - { value: "manual", label: "指定同一相机" }
+        - { value: "separate", label: "指定不同相机" }
+    same_camera:
+      hidden: true
+    matching_path:
+      hidden: true
+    guided_refine:
+      hidden: true
+    ref_lens_type:
+      label: "参考帧镜头类型"
+      description: "显式指定参考帧投影模型；留空时尝试从参考帧 EXIF 推断。"
+      widget: select
+      visible_when:
+        all:
+          - { key: "align_mode", eq: "simple" }
+          - { key: "align_mode.align_method", eq: "distortion" }
+          - { key: "align_mode.camera_setup_mode", eq: "separate" }
+      options:
+        - { value: null, label: "自动" }
+        - { value: "perspective", label: "透视" }
+        - { value: "fisheye", label: "鱼眼" }
+    src_lens_type:
+      label: "输入帧镜头类型"
+      description: "显式指定输入帧投影模型；留空时逐帧从 EXIF 推断。"
+      widget: select
+      visible_when:
+        all:
+          - { key: "align_mode", eq: "simple" }
+          - { key: "align_mode.align_method", eq: "distortion" }
+          - { key: "align_mode.camera_setup_mode", eq: "separate" }
+      options:
+        - { value: null, label: "自动" }
+        - { value: "perspective", label: "透视" }
+        - { value: "fisheye", label: "鱼眼" }
+    lens_type:
+      label: "镜头类型"
+      description: "自动时从 EXIF 推断；EXIF 不完整时请明确选择标准镜头或鱼眼。"
+      widget: select
+      visible_when: 
+        all:
+          - { key: "align_mode.camera_setup_mode", eq: "manual" }
+      options:
+        - { value: null, label: "自动（EXIF）" }
+        - { value: "perspective", label: "标准镜头" }
+        - { value: "fisheye", label: "鱼眼镜头" }
+    focal_length_mm:
+      label: "镜头焦距（mm）"
+      description: "手动指定模式下使用的实际焦距；该值会覆盖 EXIF 焦距。"
+      widget: input
+      nullable: true
+      null_text: "请输入焦距"
+      visible_when:
+        all:
+          - { key: "align_mode.camera_setup_mode", eq: "manual" }
+      min: 1
+      max: 2000
+    crop_factor:
+      label: "传感器裁切系数"
+      description: "全画幅为 1.0；等效焦距 = 实际焦距 × 裁切系数。"
+      widget: input
+      visible_when:
+        all:
+          - { key: "align_mode.camera_setup_mode", eq: "manual" }
+      min: 0.5
+      max: 4.0
+    allow_large_principal_point_offset:
+      label: "中心偏移"
+      description: "允许共享光心在每个图像轴上最多偏移 50%；关闭时默认限制为 5%。仅在已知裁切或明显偏心时开启。"
+      widget: switch
+    fallback_focal_equiv_mm:
+      hidden: true
+
+  # ── 联合对齐（align_mode: bundle）专属 ──
+  bundle:
+    camera_setup_mode:
+      label: "焦距信息"
+      description: "读取 EXIF 时，信息不完整则使用默认等效焦距；手动指定会覆盖 EXIF 焦距。"
+      widget: select
+      options:
+        - { value: "auto", label: "读取 EXIF" }
+        - { value: "manual", label: "手动指定" }
+    reference_frame_index:
+      label: "参考帧序号"
+      description: "指定从 0 开始计数，序列内部的帧号；所有图像将重映射到该帧。"
+      widget: input
+      min: 0
+      visible_when: { key: "align_mode", eq: "bundle" }
+    optimize_focal:
+      label: "联合优化焦距"
+      description: "使用全序列匹配共同优化共享焦距。"
+      widget: switch
+      visible_when: { key: "align_mode", eq: "bundle" }
+    optimize_distortion:
+      label: "联合优化畸变"
+      description: "使用全序列匹配共同优化共享畸变；需要足够的边缘星点覆盖。"
+      widget: switch
+      visible_when: { key: "align_mode", eq: "bundle" }
+    optimize_principal_point:
+      label: "联合优化主点"
+      description: "仅在主点存在明确系统偏差时启用，会提高可观测性要求。"
+      widget: switch
+      hidden: true
+    allow_large_principal_point_offset:
+      label: "中心偏移"
+      description: "允许共享光心在每个图像轴上最多偏移 50%；关闭时默认限制为 5%。仅在已知裁切或明显偏心时开启。"
+      widget: switch
+    pair_offsets:
+      hidden: true
+    max_pairs_per_edge:
+      hidden: true
+    edge_topology:
+      label: "建边拓扑"
+      description: "稠密：为 pair_offsets 中每个间隔连接全部符合位置的帧对，边数随间隔数线性增长。多尺度：稀疏交错起点的多尺度拓扑，边数恒定在约 2 倍帧数附近，帧数较多时求解显著更快，但长距离约束更稀疏。"
+      widget: select
+      options:
+        - { value: "dense", label: "稠密（默认）" }
+        - { value: "multiscale", label: "多尺度（稀疏，长序列更快）" }
+      hidden: true
+    max_pair_offset:
+      hidden: true
+    lens_type:
+      label: "镜头类型"
+      description: "自动时从 EXIF 推断；EXIF 不完整时请明确选择标准镜头或鱼眼。"
+      widget: select
+      options:
+        - { value: null, label: "自动（EXIF）" }
+        - { value: "perspective", label: "标准镜头" }
+        - { value: "fisheye", label: "鱼眼镜头" }
+    focal_length_mm:
+      label: "镜头焦距（mm）"
+      description: "手动指定模式下使用的实际焦距；该值会覆盖 EXIF 焦距。"
+      widget: input
+      nullable: true
+      null_text: "请输入焦距"
+      visible_when:
+        all:
+          - { key: "align_mode.camera_setup_mode", eq: "manual" }
+      min: 1
+      max: 2000
+    crop_factor:
+      label: "传感器裁切系数"
+      description: "全画幅为 1.0；等效焦距 = 实际焦距 × 裁切系数。"
+      widget: input
+      visible_when:
+        all:
+          - { key: "align_mode.camera_setup_mode", eq: "manual" }
+      min: 0.5
+      max: 4.0
+    fallback_focal_equiv_mm:
+      hidden: true
+layout:
+  groups:
+    - name: "天地分离"
+      keys: [mask, enable_ground]
+  order:
+    [
+      align_mode,
+      stacker,
+      ground_stacker,
+      align_base,
+      align_method,
+      camera_setup_mode,
+      ref_lens_type,
+      src_lens_type,
+      lens_type,
+      reference_frame_index,
+      optimize_focal,
+      optimize_distortion,
+      focal_length_mm,
+      crop_factor,
+      allow_large_principal_point_offset,
+      mask,
+      enable_ground,
+    ]
+
+outputs:
+  - "!include": fragments/image_output.ui.yaml

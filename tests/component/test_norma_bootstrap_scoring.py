@@ -40,6 +40,18 @@ def test_bootstrap_score_prefers_rotation_quality_after_coverage_is_sufficient()
     assert correct_score > wrong_score
 
 
+def test_bootstrap_score_accepts_small_residual_tradeoff_for_spatial_support():
+    concentrated = _diagnostics(80, 0.035, 0.080, 0.025, 2)
+    distributed = _diagnostics(320, 0.040, 0.095, 0.35, 72)
+
+    concentrated_score, _ = _bootstrap_candidate_score(
+        concentrated, 80, 2, 2, 1.0, 1.0)
+    distributed_score, _ = _bootstrap_candidate_score(
+        distributed, 320, 72, 8, 1.0, 1.0)
+
+    assert distributed_score > concentrated_score
+
+
 def test_same_camera_bootstrap_uses_only_equal_scale_pairs():
     ref = [SimpleNamespace(scale=scale) for scale in (0.7, 1.0, 1.3)]
     src = [SimpleNamespace(scale=scale) for scale in (0.7, 1.0, 1.3)]

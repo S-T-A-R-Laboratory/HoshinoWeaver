@@ -13,7 +13,7 @@ from ..component.data_container import FloatImage
 from ..component.merger import MaxMerger, MeanMerger
 from ..component.norma.bundle import (BAAlignmentPlan, BundleAdjustmentError,
                                       BundleFrame, FrameAlignmentStatus,
-                                      build_bundle_plan)
+                                      build_bundle_plan, estimate_edge_count)
 from ..component.norma.bundle_window import (BundleWindowSpec,
                                              build_bundle_window_schedule,
                                              build_identity_window_schedule,
@@ -316,6 +316,7 @@ class BundleAdjustmentOp(BaseOp):
         "mask": {"type": "image", "default": None},
         "reference_frame_index": {"type": "int", "default": None},
         "method": {"type": "str", "default": "distortion"},
+        "camera_setup_mode": {"type": "str", "default": None},
         "lens_type": {"type": "str", "default": None},
         "distortion": {"type": "list", "default": None},
         "focal_length_mm": {"type": "float", "default": None},
@@ -324,9 +325,14 @@ class BundleAdjustmentOp(BaseOp):
         "optimize_focal": {"type": "bool", "default": None},
         "optimize_distortion": {"type": "bool", "default": None},
         "optimize_principal_point": {"type": "bool", "default": None},
+        "allow_large_principal_point_offset": {"type": "bool", "default": False},
         "pair_offsets": {"type": "list", "default": [1, 2, 4]},
-        "max_pairs_per_edge": {"type": "int", "default": 512},
+        "max_pairs_per_edge": {"type": "int", "default": 128},
         "random_seed": {"type": "int", "default": 0},
+        "camera_solve_frames": {"type": "int", "default": 32},
+        "edge_topology": {"type": "str", "default": "dense"},
+        "max_pair_offset": {"type": "int", "default": None},
+        "max_nfev": {"type": "int", "default": 2000},
     }
     OUTPUTS: dict[str, Any] = {
         "alignment_plan": {"type": "object"},
@@ -350,16 +356,30 @@ class BundleAdjustmentOp(BaseOp):
             configs.get("pair_offsets") or (1, 2, 4)
             if int(value) > 0
         }))
+        edge_topology = configs.get("edge_topology") or "dense"
+        max_pair_offset = configs.get("max_pair_offset")
         if self.length is not None:
-            edge_count = sum(
-                max(self.length - offset, 0) for offset in pair_offsets)
+            edge_count = estimate_edge_count(
+                self.length, pair_offsets, edge_topology, max_pair_offset)
             self.tracker.create_bar(
                 self.name, self.length + edge_count + 1,
                 desc=self.display_name)
         exifs_active = self.inputs["exifs"].active
+        camera_setup_mode = configs.get("camera_setup_mode")
+        if camera_setup_mode not in (None, "auto", "manual"):
+            raise ValueError(
+                f"Unsupported camera_setup_mode {camera_setup_mode!r}; "
+                "expected 'auto' or 'manual'")
         focal_length = configs.get("focal_length_mm")
-        focal_equiv = (float(focal_length) * float(configs.get("crop_factor") or 1.0)
-                       if focal_length is not None else None)
+        if camera_setup_mode == "auto":
+            focal_length = None
+        elif camera_setup_mode == "manual" and focal_length in (None, ""):
+            raise ValueError(
+                "focal_length_mm is required when "
+                "camera_setup_mode='manual'")
+        focal_equiv = (
+            float(focal_length) * float(configs.get("crop_factor") or 1.0)
+            if focal_length is not None else None)
         fallback = float(configs.get("fallback_focal_equiv_mm", 20.0))
         configured_reference = configs.get("reference_frame_index")
         configured_mask = configs.get("mask")
@@ -409,9 +429,13 @@ class BundleAdjustmentOp(BaseOp):
             optimize_focal=configs.get("optimize_focal"),
             optimize_distortion=configs.get("optimize_distortion"),
             optimize_principal_point=configs.get("optimize_principal_point"),
+            allow_large_principal_point_offset=bool(
+                configs.get("allow_large_principal_point_offset", False)),
         )
+        camera_tags = (
+            None if camera_setup_mode == "manual" else reference_tags)
         shared_candidate = build_camera_candidate(
-            reference_tags, reference_array_shape, "distortion",
+            camera_tags, reference_array_shape, "distortion",
             configs.get("distortion"), focal_equiv, policy)
         reference_shape = reference_array_shape[:2]
         if any(shape[:2] != reference_shape
@@ -431,7 +455,7 @@ class BundleAdjustmentOp(BaseOp):
 
             edge_completed = report_edge_completed
         try:
-            configured_max_pairs = configs.get("max_pairs_per_edge", 512)
+            configured_max_pairs = configs.get("max_pairs_per_edge", 128)
             max_pairs_per_edge = (
                 None if configured_max_pairs is None
                 or int(configured_max_pairs) <= 0
@@ -442,7 +466,11 @@ class BundleAdjustmentOp(BaseOp):
                 pair_offsets=pair_offsets,
                 max_pairs_per_edge=max_pairs_per_edge,
                 random_seed=configs.get("random_seed", 0),
-                edge_completed=edge_completed)
+                camera_solve_frames=configs.get("camera_solve_frames"),
+                edge_completed=edge_completed,
+                edge_topology=edge_topology,
+                max_pair_offset=max_pair_offset,
+                max_nfev=configs.get("max_nfev", 2000))
         except BundleAdjustmentError:
             raise
         except Exception as exc:

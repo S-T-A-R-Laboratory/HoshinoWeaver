@@ -64,6 +64,7 @@ class StarAlignmentOp(FilterBaseOp):
         "optimize_focal": {"type": "bool", "default": None},
         "optimize_distortion": {"type": "bool", "default": None},
         "optimize_principal_point": {"type": "bool", "default": None},
+        "allow_large_principal_point_offset": {"type": "bool", "default": False},
     }
     OUTPUTS: dict[str, Any] = {
         "result": {"type": "sequence"},
@@ -127,6 +128,8 @@ class StarAlignmentOp(FilterBaseOp):
             optimize_focal=configs.get('optimize_focal'),
             optimize_distortion=configs.get('optimize_distortion'),
             optimize_principal_point=configs.get('optimize_principal_point'),
+            allow_large_principal_point_offset=bool(
+                configs.get('allow_large_principal_point_offset', False)),
         )
 
         exifs_active = self.inputs['exifs'].active
@@ -146,8 +149,10 @@ class StarAlignmentOp(FilterBaseOp):
         ref_policy = CameraInitializationPolicy(
             lens_type=ref_lens_type, **policy_kwargs)
 
+        use_manual_intrinsics = camera_setup_mode == "manual"
         ref_candidate = build_camera_candidate(
-            ref_exif_tags, ref_arr.shape, method, init_distortion,
+            None if use_manual_intrinsics else ref_exif_tags,
+            ref_arr.shape, method, init_distortion,
             focal_equiv_mm, ref_policy)
         ref_camera = ref_candidate.camera
         ref_detection = await self._run_cpu(
@@ -204,7 +209,8 @@ class StarAlignmentOp(FilterBaseOp):
                 src_policy = CameraInitializationPolicy(
                     lens_type=src_lens_type, **policy_kwargs)
                 src_candidate = build_camera_candidate(
-                    exif_tags, frame_arr.shape, method, init_distortion,
+                    None if use_manual_intrinsics else exif_tags,
+                    frame_arr.shape, method, init_distortion,
                     focal_equiv_mm, src_policy)
                 src_camera = src_candidate.camera
 

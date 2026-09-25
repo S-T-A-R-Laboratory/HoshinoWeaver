@@ -36,10 +36,8 @@ MODE_MAP = {
              _BASE_DIR / "hoshicore/dag/startrail.ui.yaml"),
     "堆栈降噪": (_BASE_DIR / "hoshicore/dag/stack.meta.yaml",
              _BASE_DIR / "hoshicore/dag/stack.ui.yaml"),
-    #"星点对齐叠加": (_BASE_DIR / "hoshicore/dag/sky_ground_stack.meta.yaml",
-    #         _BASE_DIR / "hoshicore/dag/sky_ground_stack.ui.yaml"),
-    "同相机对齐叠加": (_BASE_DIR / "hoshicore/dag/norma_bundle_stack.meta.yaml",
-                 _BASE_DIR / "hoshicore/dag/norma_bundle_stack.ui.yaml"),
+    "对齐叠加": (_BASE_DIR / "hoshicore/dag/aligned_stack.meta.yaml",
+             _BASE_DIR / "hoshicore/dag/aligned_stack.ui.yaml"),
     "延时降噪": (_BASE_DIR / "hoshicore/dag/norma_bundle_window.meta.yaml",
                 _BASE_DIR / "hoshicore/dag/norma_bundle_window.ui.yaml"),
     "星轨延时": (_BASE_DIR / "hoshicore/dag/timelapse_startrail.meta.yaml",
@@ -132,8 +130,7 @@ def _build_mode_menu(callback):
     actions = [
         ("星轨叠加", "将多张照片合成星轨效果，支持多种叠加算法"),
         ("堆栈降噪", "对多张照片进行堆栈平均/中值降噪处理"),
-        #("星点对齐叠加", "分离天地后对齐星点进行叠加，减少噪点并保持地景清晰"),
-        ("同相机对齐叠加", "对同一相机拍摄的图像序列对齐星点进行叠加，减少噪点并保持地景清晰"),
+        ("对齐叠加", "分离天地后对齐星点进行叠加，减少噪点并保持地景清晰；可切换简单对齐或同相机联合对齐"),
         ("延时降噪", "联合优化全序列几何，为序列的每张图像减少噪点"),
         ("星轨延时", "生成星轨延时序列帧，每帧为滑窗内累积星轨效果"),
     ]

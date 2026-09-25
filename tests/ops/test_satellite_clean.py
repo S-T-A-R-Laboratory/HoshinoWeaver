@@ -43,7 +43,7 @@ class TestCameraInitialization:
         assert camera.intrinsics.sensor_width_mm == pytest.approx(36.0)
         assert camera.intrinsics.sensor_height_mm == pytest.approx(24.0)
 
-    def test_manual_focal_is_used_for_incomplete_exif(self):
+    def test_exif_mode_ignores_stale_manual_focal(self):
         camera = SatelliteCleanOp._build_frame_camera(
             {"Exif.Photo.FocalLength": "50/1"},
             (4000, 6000, 3),
@@ -51,7 +51,34 @@ class TestCameraInitialization:
             fallback_focal_equiv_mm=20.0,
         )
 
+        assert camera.intrinsics.focal_length_mm == pytest.approx(20.0)
+
+    def test_manual_mode_ignores_complete_exif(self):
+        exif = {
+            "Exif.Photo.FocalLength": "50/1",
+            "Exif.Photo.FocalPlaneXResolution": "500/3",
+            "Exif.Photo.FocalPlaneYResolution": "500/3",
+            "Exif.Photo.FocalPlaneResolutionUnit": "4",
+        }
+        camera = SatelliteCleanOp._build_frame_camera(
+            exif,
+            (4000, 6000, 3),
+            focal_equiv_mm=35.0,
+            fallback_focal_equiv_mm=20.0,
+            camera_mode="manual",
+        )
+
         assert camera.intrinsics.focal_length_mm == pytest.approx(35.0)
+
+    def test_manual_mode_requires_focal_length(self):
+        with pytest.raises(ValueError, match="focal_length_mm is required"):
+            SatelliteCleanOp._build_frame_camera(
+                None,
+                (4000, 6000, 3),
+                focal_equiv_mm=None,
+                fallback_focal_equiv_mm=20.0,
+                camera_mode="manual",
+            )
 
     def test_configured_fallback_is_used_without_exif_or_manual_focal(self):
         camera = SatelliteCleanOp._build_frame_camera(

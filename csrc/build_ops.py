@@ -56,6 +56,8 @@ def _run_capture(cmd: list[str]) -> str | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except Exception:
         return None
@@ -224,6 +226,8 @@ def _collect_mingw_deps(start: Path, bin_dir: Path, objdump: Path) -> list[str]:
             [str(objdump), "-p", str(target)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         for line in result.stdout.splitlines():
             if "DLL Name:" not in line:
@@ -443,7 +447,8 @@ def _run_command(
     stage: str,
 ) -> None:
     if verbose:
-        subprocess.run(cmd, cwd=cwd, env=env, check=True)
+        subprocess.run(cmd, cwd=cwd, env=env, check=True, encoding="utf-8",
+                errors="replace")
         return
 
     proc = subprocess.run(
@@ -454,6 +459,8 @@ def _run_command(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     _print_filtered_output(proc.stdout or "", backend=backend, stage=stage)
 

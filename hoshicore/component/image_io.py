@@ -5,6 +5,7 @@ image_io包含了与图像IO相关的函数和类。
 """
 from __future__ import annotations
 
+from io import BytesIO
 from typing import Optional, Union
 
 import astropy.io.fits as fits
@@ -111,6 +112,78 @@ def load_img(file_path: str) -> Optional[np.ndarray]:
         return None
 
 
+def load_tiff_preview(
+    file_path: str,
+    low_percentile: float = 0.5,
+    high_percentile: float = 99.5,
+) -> np.ndarray:
+    """Load TIFF as RGB888; unsigned integers retain full-range brightness.
+
+    Floating-point TIFFs have no intrinsic full-scale value, so only those
+    images use the configurable percentile preview stretch.
+    """
+    if not 0 <= low_percentile < high_percentile <= 100:
+        raise ValueError("Expected 0 <= low_percentile < high_percentile <= 100")
+
+    image = np.asarray(tifffile.imread(file_path))
+    if image.ndim == 2:
+        image = image[:, :, None]
+    elif image.ndim == 3 and image.shape[-1] not in (1, 3, 4):
+        if image.shape[0] in (1, 3, 4):
+            image = np.moveaxis(image, 0, -1)
+        else:
+            raise ValueError(f"Unsupported TIFF preview shape: {image.shape}")
+    elif image.ndim != 3:
+        raise ValueError(f"Unsupported TIFF preview shape: {image.shape}")
+
+    if image.shape[2] == 1:
+        image = np.repeat(image, 3, axis=2)
+    elif image.shape[2] == 4:
+        image = image[:, :, :3]
+    elif image.shape[2] != 3:
+        raise ValueError(f"Unsupported TIFF channel count: {image.shape[2]}")
+
+    if image.dtype == np.uint8:
+        return np.ascontiguousarray(image)
+
+    if image.dtype.kind == "u":
+        max_value = np.iinfo(image.dtype).max
+        preview = image.astype(np.float64) / max_value
+        return np.ascontiguousarray(
+            np.rint(preview * 255).astype(np.uint8))
+
+    if image.dtype.kind != "f":
+        raise ValueError(f"Unsupported TIFF preview dtype: {image.dtype}")
+
+    data = image.astype(np.float32, copy=False)
+    finite = np.isfinite(data)
+    if not finite.any():
+        return np.zeros(data.shape, dtype=np.uint8)
+    low, high = np.percentile(
+        data[finite], (low_percentile, high_percentile))
+    preview = np.zeros(data.shape, dtype=np.float32)
+    if high > low:
+        np.subtract(data, low, out=preview, where=finite)
+        preview /= high - low
+        np.clip(preview, 0.0, 1.0, out=preview)
+    return np.ascontiguousarray(np.rint(preview * 255).astype(np.uint8))
+
+
+def _encode_32bit_tiff(img: np.ndarray) -> bytes:
+    tiff_img = img
+    photometric = None
+    if img.ndim == 3 and img.shape[2] == 3:
+        tiff_img = img[:, :, ::-1]
+        photometric = 'rgb'
+    elif img.ndim == 3 and img.shape[2] == 4:
+        tiff_img = img[:, :, [2, 1, 0, 3]]
+        photometric = 'rgb'
+    with BytesIO() as buffer:
+        tifffile.imwrite(
+            buffer, tiff_img, photometric=photometric, metadata=None)
+        return buffer.getvalue()
+
+
 def save_img(filename: str,
              img: np.ndarray,
              png_compressing: int = 0,
@@ -136,7 +209,16 @@ def save_img(filename: str,
     suffix = filename.upper().split(".")[-1]
 
     
-    if suffix in ["JPG", "JPEG"] and _HAS_TURBOJPEG:
+    is_32bit_tiff = suffix in ["TIF", "TIFF"] and (
+        (img.dtype.kind == "u" and img.dtype.itemsize == 4)
+        or (img.dtype.kind == "f" and img.dtype.itemsize == 4)
+    )
+    if is_32bit_tiff:
+        image_bytes = _encode_32bit_tiff(img)
+        if exif is not None:
+            image_bytes = encode_exif_data(
+                np.frombuffer(image_bytes, dtype=np.uint8), exif)
+    elif suffix in ["JPG", "JPEG"] and _HAS_TURBOJPEG:
         # JPEG 走 turbojpeg
         assert img.dtype == np.uint8, "Invalid: JPEG only supports 8-bit image!"
         image_bytes = _tj.encode(img, quality=jpg_quality,  # type: ignore[union-attr]

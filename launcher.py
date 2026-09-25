@@ -12,7 +12,7 @@ from hoshicore.component.utils import init_logger, is_support_format
 from hoshicore.engine.executor import DAGExecutionError
 from hoshicore.engine.inspect import InspectResult, inspect_yaml
 from hoshicore.engine.preflight import PreflightAction, CheckResult
-from hoshicore.engine.wiring import run_from_yaml
+from hoshicore.engine.wiring import _read_raw_settings, run_from_yaml
 
 
 def _parse_kv_list(items: list[str], flag_name: str) -> dict[str, str]:
@@ -41,6 +41,59 @@ def _coerce_value(raw: str, declared_type: str | None) -> object:
     if declared_type == "str" or declared_type is None:
         return raw
     return raw
+
+
+def _resolve_config_overrides(
+    raw_overrides: dict[str, str],
+    inspect_result: InspectResult,
+) -> dict[str, object]:
+    """Resolve CLI config names and coerce their values.
+
+    Route configs accept either their full dotted name or a leaf name when
+    that leaf is unique among the currently selected routes. Unknown and
+    ambiguous names are rejected so a typo cannot silently use a default.
+    """
+    configs = {c.name: c for c in inspect_result.configs}
+    route_configs = {c.name: c for c in inspect_result.route_configs}
+    runtime_config_types: dict[str, str | None] = {}
+    for name, entry in _read_raw_settings().items():
+        if name == "output_format" or not isinstance(entry, dict):
+            continue
+        value = entry.get("value")
+        value_type = type(value).__name__ if value is not None else None
+        runtime_config_types[name] = value_type
+    route_config_leaves: dict[str, list[str]] = {}
+    for full_name in route_configs:
+        leaf = full_name.rsplit(".", 1)[-1]
+        route_config_leaves.setdefault(leaf, []).append(full_name)
+
+    resolved: dict[str, object] = {}
+    for supplied_name, raw_value in raw_overrides.items():
+        if supplied_name in configs:
+            target_name = supplied_name
+            declared_type = configs[supplied_name].type
+        elif supplied_name in route_configs:
+            target_name = supplied_name
+            declared_type = route_configs[supplied_name].type
+        elif supplied_name in runtime_config_types:
+            target_name = supplied_name
+            declared_type = runtime_config_types[supplied_name]
+        else:
+            matches = route_config_leaves.get(supplied_name, [])
+            if len(matches) == 1:
+                target_name = matches[0]
+                declared_type = route_configs[target_name].type
+            elif len(matches) > 1:
+                choices = ", ".join(matches)
+                raise ValueError(
+                    f"配置项 '{supplied_name}' 有歧义，请使用完整名称：{choices}")
+            else:
+                known = sorted([
+                    *configs, *route_configs, *runtime_config_types])
+                hint = f" 可用配置项：{', '.join(known)}" if known else ""
+                raise ValueError(f"未知配置项 '{supplied_name}'。{hint}")
+        resolved[target_name] = _coerce_value(raw_value, declared_type)
+    return resolved
 
 
 def _dir_to_file_list(dir_path: str) -> list[str]:
@@ -240,13 +293,12 @@ def main():
     # Build global_configs from --config flags with type coercion
     config_overrides = _parse_kv_list(args.configs, "--config")
     inspect_result = inspect_yaml(yaml_path, route_choices=route_choices or None)
-    type_map = {c.name: c.type for c in inspect_result.configs}
-    for c in inspect_result.route_configs:
-        type_map[c.name] = c.type
-
-    global_configs: dict[str, object] = {}
-    for key, raw_val in config_overrides.items():
-        global_configs[key] = _coerce_value(raw_val, type_map.get(key))
+    try:
+        global_configs = _resolve_config_overrides(
+            config_overrides, inspect_result)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        logger.error(f"命令行配置无效：{exc}")
+        sys.exit(1)
 
     # Validate required inputs
     for inp in inspect_result.inputs:

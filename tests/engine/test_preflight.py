@@ -319,6 +319,51 @@ class TestConfigValidityCheck:
             dag, {"buffer_mode": "replay", "temp_path": "/nonexistent/path"}, {})
         assert result.issues == []
 
+    def test_satellite_manual_mode_requires_focal_length(self):
+        dag = self._make_dag()
+        result = config_validity_check(
+            dag,
+            {
+                "buffer_mode": "memory",
+                "enable_satellite_clean": True,
+                "sat_camera_mode": "manual",
+                "sat_focal_length_mm": None,
+                "sat_crop_factor": 1.0,
+            },
+            {},
+        )
+        assert [issue.code for issue in result.issues] == [
+            "config.satellite_clean.focal_length.missing"
+        ]
+
+    def test_satellite_exif_mode_does_not_require_manual_values(self):
+        dag = self._make_dag()
+        result = config_validity_check(
+            dag,
+            {
+                "buffer_mode": "memory",
+                "enable_satellite_clean": True,
+                "sat_camera_mode": "exif",
+                "sat_focal_length_mm": None,
+            },
+            {},
+        )
+        assert result.issues == []
+
+    def test_disabled_satellite_clean_ignores_stale_manual_mode(self):
+        dag = self._make_dag()
+        result = config_validity_check(
+            dag,
+            {
+                "buffer_mode": "memory",
+                "enable_satellite_clean": False,
+                "sat_camera_mode": "manual",
+                "sat_focal_length_mm": None,
+            },
+            {},
+        )
+        assert result.issues == []
+
     def test_missing_temp_path(self, tmp_path):
         dag = self._make_dag()
         missing = str(tmp_path / "nonexistent_dir")

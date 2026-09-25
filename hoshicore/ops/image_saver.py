@@ -79,7 +79,7 @@ class ImageSaveOp(BaseOp):
 
         target_dtype = None
         # JPEG 强制要求 uint8
-        if output_filename.lower().endswith(".jpg"):
+        if output_filename.lower().endswith((".jpg", ".jpeg")):
             target_dtype = np.dtype('uint8')
         elif output_dtype_str:
             # 按需 dtype 转换
@@ -100,14 +100,14 @@ class ImageSaveOp(BaseOp):
                                     png_compressing=png_compressing,
                                     jpg_quality=jpg_quality,
                                     exif=exif)
-            return_code = 0
             logger.info(f"Image saved successfully to {output_filename}")
         except Exception as e:
-            logger.error(f"Failed to save image to {output_filename}: {e}")
-            return_code = 1
+            err_msg = f"Failed to save image to {output_filename}: {e}"
+            logger.error(err_msg)
+            raise RuntimeError(err_msg) from e
 
-        # 广播返回码
-        await self._broadcast_outputs({"return_code": return_code})
+        # 广播返回码0
+        await self._broadcast_outputs({"return_code": 0})
 
 
 def _format_output_path(
@@ -216,7 +216,7 @@ class BatchImageSaveOp(ParallelBaseOp):
 
         # dtype 转换
         target_dtype = None
-        if filepath.lower().endswith(".jpg"):
+        if filepath.lower().endswith((".jpg", ".jpeg")):
             target_dtype = np.dtype('uint8')
         elif output_dtype_str:
             target_dtype = np.dtype(output_dtype_str)

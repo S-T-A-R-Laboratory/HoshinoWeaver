@@ -14,13 +14,16 @@ The solve has four stages:
 """
 import dataclasses
 import enum
+import time
 from collections import defaultdict, deque
 from typing import Callable, Optional, Sequence
 
 import cv2
 import numpy as np
+from loguru import logger
 from numpy.typing import NDArray
 from scipy.optimize import least_squares
+from scipy.optimize._numdiff import approx_derivative
 from scipy.spatial.transform import Rotation
 
 from .detection import DetectedStars
@@ -98,10 +101,27 @@ _ROTATION_ONLY_POLICY = CameraOptimizationPolicy(False, False, False, 0)
 _FOCAL_FALLBACK_POLICY = CameraOptimizationPolicy(True, False, False, 0)
 _FOCAL_SCALE_DELTA_LIMIT = 0.3
 _DISTORTION_ABS_LIMIT = 1.0
-_DEFAULT_MAX_PAIRS_PER_EDGE = 512
+_DEFAULT_MAX_PAIRS_PER_EDGE = 128
 _SPATIAL_RADIAL_BINS = 3
 _SPATIAL_SECTORS = 8
 _SPATIAL_BIN_RESERVE = 2
+
+
+def _log_solve_summary(stage: str, fit, *, n_vars: int, n_edges: int,
+                       elapsed_seconds: float) -> None:
+    """Record least_squares convergence cost for scaling analysis across runs.
+
+    ``nfev`` grows super-linearly with sequence length in practice (chained
+    initial-rotation propagation and multiscale long-range edges disagree
+    more as the sequence gets longer), so these numbers are the input to any
+    future max_nfev sizing decision, not just a debugging aid.
+    """
+    logger.debug(
+        f"{stage}: n_vars={n_vars} n_edges={n_edges} "
+        f"nfev={getattr(fit, 'nfev', None)} njev={getattr(fit, 'njev', None)} "
+        f"status={getattr(fit, 'status', None)} success={fit.success} "
+        f"cost={getattr(fit, 'cost', float('nan')):.6e} "
+        f"elapsed={elapsed_seconds:.3f}s")
 
 
 def _camera_parameter_count(policy: CameraOptimizationPolicy) -> int:
@@ -114,8 +134,8 @@ def _pack_camera_parameters(camera: BaseCameraModel,
                             policy: CameraOptimizationPolicy) -> NDArray[np.float64]:
     """Pack shared camera variables before the per-frame rotation variables.
 
-    Focal length and principal point use offsets from the initial camera;
-    distortion coefficients use their current model values directly.
+    Focal length and principal point use relative offsets from the initial
+    camera; distortion coefficients use their current model values directly.
     """
     parts: list[NDArray[np.float64]] = []
     if policy.optimize_focal:
@@ -141,8 +161,12 @@ def _camera_parameter_bounds(
         lower.extend([-_DISTORTION_ABS_LIMIT] * policy.n_dist)
         upper.extend([_DISTORTION_ABS_LIMIT] * policy.n_dist)
     if policy.optimize_principal_point:
-        lower.extend([-np.inf, -np.inf])
-        upper.extend([np.inf, np.inf])
+        limit = float(policy.principal_point_offset_limit)
+        if not 0.0 < limit <= 0.5:
+            raise ValueError(
+                "principal_point_offset_limit must be in (0, 0.5]")
+        lower.extend([-limit] * 2)
+        upper.extend([limit] * 2)
     return np.asarray(lower, dtype=np.float64), np.asarray(
         upper, dtype=np.float64)
 
@@ -171,7 +195,8 @@ def _camera_from_parameters(camera: BaseCameraModel,
     if policy.optimize_principal_point:
         cx, cy = camera.intrinsics.principal_point_px
         intrinsics = intrinsics.with_principal_point(
-            cx + float(values[offset]), cy + float(values[offset + 1]))
+            cx + float(values[offset]) * intrinsics.image_width_px,
+            cy + float(values[offset + 1]) * intrinsics.image_height_px)
     return camera.with_intrinsics(intrinsics).with_distortion(distortion)
 
 
@@ -181,6 +206,62 @@ def _rotation_from_rvec(rvec: NDArray[np.float64]) -> NDArray[np.float64]:
 
 def _rvec_from_rotation(rotation: NDArray[np.float64]) -> NDArray[np.float64]:
     return cv2.Rodrigues(np.asarray(rotation, dtype=np.float64))[0].reshape(3)
+
+
+def _rotation_derivative(rvec: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return ``dR/drvec`` indexed as ``[row, column, rvec_component]``.
+
+    ``cv2.Rodrigues`` reports the derivative as a ``(3, 9)`` block whose
+    transpose is the row-major flattened rotation differentiated by each
+    rotation-vector component.
+    """
+    _, jacobian = cv2.Rodrigues(np.asarray(rvec, dtype=np.float64).reshape(3, 1))
+    return jacobian.T.reshape(3, 3, 3)
+
+
+def _skew_rows(vectors: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Stack one skew-symmetric matrix per input row."""
+    stacked = np.zeros((len(vectors), 3, 3), dtype=np.float64)
+    stacked[:, 0, 1] = -vectors[:, 2]
+    stacked[:, 0, 2] = vectors[:, 1]
+    stacked[:, 1, 0] = vectors[:, 2]
+    stacked[:, 1, 2] = -vectors[:, 0]
+    stacked[:, 2, 0] = -vectors[:, 1]
+    stacked[:, 2, 1] = vectors[:, 0]
+    return stacked
+
+
+def _edge_rotation_jacobians(
+    first_rays: NDArray[np.float64],
+    second_rays: NDArray[np.float64],
+    first_rvec: Optional[NDArray[np.float64]],
+    second_rvec: Optional[NDArray[np.float64]],
+    first_rotation: NDArray[np.float64],
+    second_rotation: NDArray[np.float64],
+) -> tuple[Optional[NDArray[np.float64]], Optional[NDArray[np.float64]]]:
+    """Differentiate one edge's cross-product residual by its two rotations.
+
+    The residual for a matched pair is ``(R_second R_first^T f) x s``, so the
+    outer derivative is ``-skew(s)`` and the inner derivatives follow from the
+    Rodrigues derivative of each rotation. Passing ``None`` for a rotation
+    vector marks the gauge-fixed reference frame, which owns no variables.
+    """
+    outer = -_skew_rows(second_rays)
+    first_jacobian = None
+    second_jacobian = None
+    if second_rvec is not None:
+        # ``predicted`` is linear in the second rotation once the first frame
+        # has mapped its rays into the shared reference system.
+        reference_rays = first_rays @ first_rotation
+        derivative = _rotation_derivative(second_rvec)
+        inner = np.einsum('abl,pb->pal', derivative, reference_rays)
+        second_jacobian = np.einsum('pab,pbl->pal', outer, inner)
+    if first_rvec is not None:
+        derivative = _rotation_derivative(first_rvec)
+        inner = np.einsum('bal,pb->pal', derivative, first_rays)
+        inner = np.einsum('ab,pbl->pal', second_rotation, inner)
+        first_jacobian = np.einsum('pab,pbl->pal', outer, inner)
+    return first_jacobian, second_jacobian
 
 
 def _readonly_rotation(rotation: Optional[NDArray[np.float64]]) -> Optional[NDArray[np.float64]]:
@@ -207,20 +288,24 @@ def _connected_component(edges: Sequence[_BundleEdge], root: int) -> set[int]:
     return seen
 
 
-def _initial_rotations(edges: Sequence[_BundleEdge], root: int,
-                       component: set[int]) -> dict[int, NDArray[np.float64]]:
-    """Propagate pairwise rotations over a BFS spanning tree.
+def _initial_rotations(
+    edges: Sequence[_BundleEdge], fixed_rotations: dict[int, NDArray[np.float64]],
+    component: set[int],
+) -> dict[int, NDArray[np.float64]]:
+    """Propagate pairwise rotations over a BFS forest seeded at every fixed frame.
 
     The returned rotation for frame ``i`` maps reference-frame rays to frame
-    ``i`` rays. All graph edges, not only this implicit tree, are used later by
-    the global optimizer.
+    ``i`` rays. All graph edges, not only this implicit forest, are used later
+    by the global optimizer. Seeding the BFS from every fixed frame (rather
+    than a single root) lets a hierarchical solve fix both boundary poses of a
+    segment instead of only one reference frame.
     """
     graph: dict[int, list[tuple[int, NDArray[np.float64]]]] = defaultdict(list)
     for edge in edges:
         graph[edge.first_index].append((edge.second_index, edge.initial_rotation))
         graph[edge.second_index].append((edge.first_index, edge.initial_rotation.T))
-    rotations = {root: np.eye(3, dtype=np.float64)}
-    pending = deque([root])
+    rotations = dict(fixed_rotations)
+    pending = deque(fixed_rotations.keys())
     while pending:
         first = pending.popleft()
         for second, first_to_second in graph[first]:
@@ -295,6 +380,7 @@ def _make_edge(first: BundleFrame, second: BundleFrame,
             same_camera=True,
             use_asterism_bootstrap=True,
             random_seed=random_seed,
+            residual_space="cross",
         )
         if len(match.pair_idx) < 6:
             raise ValueError(f"only {len(match.pair_idx)} matched stars")
@@ -394,14 +480,79 @@ def _sequence_scales(frames: Sequence[BundleFrame]) -> tuple[float, ...]:
             tuple(float(scale) for scale in DEFAULT_BOOTSTRAP_SCALES))
 
 
-def _build_edges(
+def _dense_edge_pairs(
+    frame_count: int, offsets: Sequence[int],
+) -> list[tuple[int, int]]:
+    """Every ``(pos, pos + offset)`` in range, for each offset, position-major."""
+    pairs = []
+    for pos in range(frame_count):
+        for offset in offsets:
+            if pos + offset < frame_count:
+                pairs.append((pos, pos + offset))
+    return pairs
+
+
+def _multiscale_edge_pairs(
+    frame_count: int,
+    max_offset: int | None = None,
+    min_degree: int = 4,
+) -> list[tuple[int, int]]:
+    """Sparse multi-scale topology: ~2N edges, interleaved dyadic starts.
+
+    Offset 1 forms a full chain. Each larger offset ``2**m`` contributes a
+    disjoint set of edges starting at ``2**(m - 1) - 1`` and spaced by
+    ``2**(m + 1)`` (i.e. non-overlapping pairs at that scale), so every scale
+    adds roughly ``frame_count / offset`` edges instead of one per position.
+    This keeps the total near ``2 * frame_count`` while covering long-range
+    connections that a purely dense ``{1, 2, 4}`` topology would need far more
+    edges to reach. Sequence lengths that are not a clean power of two starve
+    a few nodes near the tail of long-range coverage; a greedy top-up with
+    offsets 2, then 4, then 1 (in that order of preference, cheapest first)
+    brings every node besides the two sequence endpoints back up to
+    ``min_degree``. The endpoints are structurally short by one edge since
+    they only extend in a single direction.
+    """
+    if frame_count < 2:
+        return []
+    pairs: set[tuple[int, int]] = set()
+    for i in range(frame_count - 1):
+        pairs.add((i, i + 1))
+    scale = 2
+    while True:
+        offset = 2 ** scale
+        if offset >= frame_count or (max_offset is not None and offset > max_offset):
+            break
+        start = 2 ** (scale - 1) - 1
+        for i in range(start, frame_count - offset, offset):
+            pairs.add((i, i + offset))
+        scale += 1
+
+    degree = [0] * frame_count
+    for a, b in pairs:
+        degree[a] += 1
+        degree[b] += 1
+    for fill_offset, require_both in ((2, True), (4, False), (1, False)):
+        for i in range(0, frame_count - fill_offset):
+            j = i + fill_offset
+            if (i, j) in pairs:
+                continue
+            below = (degree[i] < min_degree and degree[j] < min_degree) if require_both \
+                else (degree[i] < min_degree or degree[j] < min_degree)
+            if below:
+                pairs.add((i, j))
+                degree[i] += 1
+                degree[j] += 1
+    return sorted(pairs)
+
+
+def _build_edges_from_pairs(
     frames: Sequence[BundleFrame],
-    offsets: Sequence[int],
+    pairs: Sequence[tuple[int, int]],
     random_seed: int | None,
     edge_completed: Callable[[], None] | None = None,
     max_pairs_per_edge: int | None = _DEFAULT_MAX_PAIRS_PER_EDGE,
 ) -> tuple[list[_BundleEdge], float]:
-    """Build edges with a short full-search probe, then preferred-scale reuse.
+    """Build edges for explicit ``(pos, pos)`` position pairs into ``frames``.
 
     A successful single-scale solve already passed the matcher's rotation
     quality checks. It is accepted without a vote because the other scales
@@ -411,39 +562,88 @@ def _build_edges(
     votes = {scale: 0 for scale in _sequence_scales(frames)}
     successful_probes = 0
     edges = []
-    for pos, first in enumerate(frames):
-        for offset in offsets:
-            if pos + offset >= len(frames):
-                continue
-            second = frames[pos + offset]
-            ordered_scales = _ordered_scales(votes)
-            if successful_probes < _SCALE_PROBE_EDGE_COUNT:
-                edge = _make_edge(first, second, random_seed, ordered_scales)
+    for pos, second_pos in pairs:
+        first = frames[pos]
+        second = frames[second_pos]
+        ordered_scales = _ordered_scales(votes)
+        if successful_probes < _SCALE_PROBE_EDGE_COUNT:
+            edge = _make_edge(first, second, random_seed, ordered_scales)
+            if edge.error is None:
+                _vote_for_scale(votes, edge.selected_scale)
+                successful_probes += 1
+        else:
+            edge = _make_edge(first, second, random_seed,
+                              ordered_scales[:1])
+            if edge.error is not None and len(ordered_scales) > 1:
+                edge = _make_edge(first, second, random_seed,
+                                  ordered_scales[1:])
                 if edge.error is None:
                     _vote_for_scale(votes, edge.selected_scale)
-                    successful_probes += 1
-            else:
-                edge = _make_edge(first, second, random_seed,
-                                  ordered_scales[:1])
-                if edge.error is not None and len(ordered_scales) > 1:
-                    edge = _make_edge(first, second, random_seed,
-                                      ordered_scales[1:])
-                    if edge.error is None:
-                        _vote_for_scale(votes, edge.selected_scale)
-            if edge.error is None:
-                camera = first.candidate.camera
-                sample_seed = (None if random_seed is None else
-                               (int(random_seed) + first.index * 1009
-                                + second.index * 9176) % (2 ** 32))
-                edge = _sample_edge_pairs(
-                    edge, max_pairs_per_edge,
-                    camera.intrinsics.image_width_px,
-                    camera.intrinsics.image_height_px,
-                    sample_seed)
-            edges.append(edge)
-            if edge_completed is not None:
-                edge_completed()
+        if edge.error is None:
+            camera = first.candidate.camera
+            sample_seed = (None if random_seed is None else
+                           (int(random_seed) + first.index * 1009
+                            + second.index * 9176) % (2 ** 32))
+            edge = _sample_edge_pairs(
+                edge, max_pairs_per_edge,
+                camera.intrinsics.image_width_px,
+                camera.intrinsics.image_height_px,
+                sample_seed)
+        edges.append(edge)
+        if edge_completed is not None:
+            edge_completed()
     return edges, _ordered_scales(votes)[0]
+
+
+_EDGE_TOPOLOGIES = ("dense", "multiscale")
+
+
+def estimate_edge_count(
+    frame_count: int,
+    offsets: Sequence[int],
+    edge_topology: str = "dense",
+    max_pair_offset: int | None = None,
+) -> int:
+    """Count edges a solve would build, without matching or allocating them."""
+    return len(_select_edge_pairs(
+        frame_count, offsets, edge_topology, max_pair_offset))
+
+
+def _select_edge_pairs(
+    frame_count: int,
+    offsets: Sequence[int],
+    topology: str,
+    max_pair_offset: int | None,
+) -> list[tuple[int, int]]:
+    if topology == "dense":
+        return _dense_edge_pairs(frame_count, offsets)
+    if topology == "multiscale":
+        return _multiscale_edge_pairs(frame_count, max_pair_offset)
+    raise BundleAdjustmentError(f"unknown edge topology: {topology!r}")
+
+
+def _build_edges(
+    frames: Sequence[BundleFrame],
+    offsets: Sequence[int],
+    random_seed: int | None,
+    edge_completed: Callable[[], None] | None = None,
+    max_pairs_per_edge: int | None = _DEFAULT_MAX_PAIRS_PER_EDGE,
+    edge_topology: str = "dense",
+    max_pair_offset: int | None = None,
+) -> tuple[list[_BundleEdge], float]:
+    """Build edges over either the dense or sparse multi-scale topology.
+
+    ``edge_topology="dense"`` (the default, unchanged behavior) builds every
+    ``(pos, pos + offset)`` pair for each offset. ``edge_topology="multiscale"``
+    instead builds the sparse interleaved-start topology from
+    ``_multiscale_edge_pairs``, which keeps the total near ``2 * len(frames)``
+    edges regardless of how many dyadic scales it spans, optionally capped at
+    ``max_pair_offset``.
+    """
+    pairs = _select_edge_pairs(
+        len(frames), offsets, edge_topology, max_pair_offset)
+    return _build_edges_from_pairs(
+        frames, pairs, random_seed, edge_completed, max_pairs_per_edge)
 
 
 def _solve_bundle_parameters(
@@ -457,7 +657,8 @@ def _solve_bundle_parameters(
            list[_BundleEdge], Optional[float]]:
     """Jointly solve one bounded camera model and the connected frame poses."""
     _coverage_precheck(edges, policy, camera)
-    initial = _initial_rotations(edges, reference_frame_index, component)
+    initial = _initial_rotations(
+        edges, {reference_frame_index: np.eye(3, dtype=np.float64)}, component)
     variable_indices = [
         index for index in sorted(component) if index != reference_frame_index]
     camera0 = _pack_camera_parameters(camera, policy)
@@ -523,13 +724,67 @@ def _solve_bundle_parameters(
             raise BundleAdjustmentError(
                 f"{stage} shared camera parameters reached optimization bounds")
 
+    def jacobian(values, selected_edges):
+        """Differentiate the residual analytically in the rotation variables.
+
+        Finite differencing this residual costs one full residual evaluation
+        per variable, so a long sequence spends most of its time rebuilding
+        unchanged edge geometry. The rotation columns are cheap to derive in
+        closed form; the few shared-camera columns keep using finite
+        differences because they pass through the lens model.
+        """
+        solved_camera, rotations = unpack(values)
+        camera_width = len(camera0)
+        pose_column = {index: camera_width + 3 * position
+                       for position, index in enumerate(variable_indices)}
+        total_rows = sum(len(edge.first_pts) * 3 for edge in selected_edges)
+        matrix = np.zeros((total_rows, len(values)), dtype=np.float64)
+
+        if camera_width:
+            def camera_residual(camera_values):
+                merged = np.concatenate((camera_values, values[camera_width:]))
+                return residual(merged, selected_edges)
+
+            matrix[:, :camera_width] = approx_derivative(
+                camera_residual, values[:camera_width], method="2-point")
+
+        row_offset = 0
+        for edge in selected_edges:
+            rows = len(edge.first_pts) * 3
+            first_rays = solved_camera.unproject(edge.first_pts)
+            second_rays = solved_camera.unproject(edge.second_pts)
+            first_rvec = (
+                None if edge.first_index == reference_frame_index else
+                values[pose_column[edge.first_index]:
+                       pose_column[edge.first_index] + 3])
+            second_rvec = (
+                None if edge.second_index == reference_frame_index else
+                values[pose_column[edge.second_index]:
+                       pose_column[edge.second_index] + 3])
+            first_block, second_block = _edge_rotation_jacobians(
+                first_rays, second_rays, first_rvec, second_rvec,
+                rotations[edge.first_index], rotations[edge.second_index])
+            for index, block in ((edge.first_index, first_block),
+                                 (edge.second_index, second_block)):
+                if block is None:
+                    continue
+                column = pose_column[index]
+                matrix[row_offset:row_offset + rows,
+                       column:column + 3] = block.reshape(rows, 3)
+            row_offset += rows
+        return matrix
+
     # First pass uses every successfully matched edge in the component. Huber
     # loss limits individual bad pairs before edge-level rejection is possible.
     initial_residual = residual(x0, edges)
     scale = max(float(np.median(np.abs(initial_residual))) * 2.0, 1e-6)
+    started = time.perf_counter()
     fit = least_squares(
-        residual, x0, args=(edges,), method="trf", loss="huber",
+        residual, x0, jac=jacobian, args=(edges,), method="trf", loss="huber",
         f_scale=scale, max_nfev=max_nfev, bounds=parameter_bounds())
+    _log_solve_summary("_solve_bundle_parameters[global]", fit,
+                       n_vars=len(x0), n_edges=len(edges),
+                       elapsed_seconds=time.perf_counter() - started)
     validate_fit(fit, "global")
     solved_camera, rotations = unpack(fit.x)
 
@@ -560,9 +815,14 @@ def _solve_bundle_parameters(
             if index != reference_frame_index]
         initial = {index: rotations[index] for index in component}
         x0 = pack_with_poses(fit.x[:len(camera0)], initial)
+        started = time.perf_counter()
         fit = least_squares(
-            residual, x0, args=(retained,), method="trf", loss="huber",
-            f_scale=scale, max_nfev=max_nfev, bounds=parameter_bounds())
+            residual, x0, jac=jacobian, args=(retained,), method="trf",
+            loss="huber", f_scale=scale, max_nfev=max_nfev,
+            bounds=parameter_bounds())
+        _log_solve_summary("_solve_bundle_parameters[refined]", fit,
+                           n_vars=len(x0), n_edges=len(retained),
+                           elapsed_seconds=time.perf_counter() - started)
         validate_fit(fit, "refined")
         solved_camera, rotations = unpack(fit.x)
 
@@ -571,30 +831,76 @@ def _solve_bundle_parameters(
     return solved_camera, rotations, retained, condition
 
 
-def build_bundle_plan(
+def _sample_camera_frames(
+    ordered: Sequence[BundleFrame],
+    sample_count: int,
+    reference_frame_index: int,
+) -> list[BundleFrame]:
+    """Pick an evenly spaced subset of frames for the camera calibration pass.
+
+    Sequence endpoints are always included so that long-range rotation drift is
+    observable; the reference frame is included so the sampled graph keeps the
+    same gauge. Interior frames are drawn at uniform positions, which spreads
+    the shared camera constraints across the whole sequence.
+    """
+    if sample_count is None or len(ordered) <= sample_count:
+        return list(ordered)
+    positions = {
+        frame.index: position for position, frame in enumerate(ordered)}
+    target = max(3, int(sample_count))
+    picked = np.unique(np.linspace(
+        0, len(ordered) - 1, target, dtype=np.int64))
+    picked = set(int(position) for position in picked)
+    picked.add(positions[reference_frame_index])
+    picked.add(0)
+    picked.add(len(ordered) - 1)
+    return [ordered[position] for position in sorted(picked)]
+
+
+def _remap_frames(
+    frames: Sequence[BundleFrame],
+) -> tuple[list[BundleFrame], dict[int, int]]:
+    """Return a copy with contiguous 0..K-1 indices and the original mapping."""
+    remapped: list[BundleFrame] = []
+    original_index: dict[int, int] = {}
+    for local_index, frame in enumerate(sorted(
+            frames, key=lambda item: item.index)):
+        original_index[local_index] = frame.index
+        remapped.append(dataclasses.replace(frame, index=local_index))
+    return remapped, original_index
+
+
+def _replace_camera(
+    frames: Sequence[BundleFrame],
+    camera: BaseCameraModel,
+) -> list[BundleFrame]:
+    """Point every frame's candidate at one shared camera model."""
+    updated: list[BundleFrame] = []
+    for frame in frames:
+        candidate = dataclasses.replace(
+            frame.candidate, camera=camera, init_source="staged")
+        updated.append(dataclasses.replace(frame, candidate=candidate))
+    return updated
+
+
+def _solve_single_stage(
     frames: Sequence[BundleFrame],
     reference_frame_index: int,
-    *,
-    pair_offsets: Sequence[int] = (1, 2, 4),
-    random_seed: int | None = 0,
-    max_nfev: int = 300,
-    max_pairs_per_edge: int | None = _DEFAULT_MAX_PAIRS_PER_EDGE,
-    edge_completed: Callable[[], None] | None = None,
+    offsets: Sequence[int],
+    random_seed: int | None,
+    max_nfev: int,
+    max_pairs_per_edge: int | None,
+    edge_completed: Callable[[], None] | None,
+    edge_topology: str = "dense",
+    max_pair_offset: int | None = None,
 ) -> BAAlignmentPlan:
-    """Build a robust same-camera geometry plan from collected frames.
+    """Jointly solve one shared camera and every frame pose (the original path).
 
-    Frames contain detected stars rather than source pixels. Integration remaps
-    the original sequence separately after the plan is final.
+    The whole sequence is bundled together: edge matching, scale voting, and a
+    single bounded camera+rotation solve. This is the reference implementation
+    and also the path for sequences short enough that the joint solve is cheap.
     """
-    if not frames:
-        raise BundleAdjustmentError("cannot bundle-adjust an empty sequence")
-    # A duplicate index is overwritten by the dict comprehension, so the
-    # length comparison also validates that frame indices are unique.
     by_index = {frame.index: frame for frame in frames}
-    if len(by_index) != len(frames) or reference_frame_index not in by_index:
-        raise BundleAdjustmentError("reference_frame_index must identify one collected frame")
-    # All frames share the reference camera's projection family, dimensions,
-    # and optimization policy. The global solve below owns the shared values.
     reference = by_index[reference_frame_index]
     camera = reference.candidate.camera
     policy = reference.candidate.optimization_policy
@@ -605,15 +911,11 @@ def build_bundle_plan(
            for frame in frames):
         raise BundleAdjustmentError("sequence BA requires a single image geometry")
 
-    # Offsets address positions in the time-ordered sequence, not numeric frame
-    # index differences. With (1, 2, 4), the graph is a chain plus skip edges.
-    offsets = tuple(sorted({int(value) for value in pair_offsets if int(value) > 0}))
-    if not offsets:
-        raise ValueError("pair_offsets must contain at least one positive offset")
     ordered = sorted(frames, key=lambda item: item.index)
     edges, sequence_scale = _build_edges(
         ordered, offsets, random_seed, edge_completed,
-        max_pairs_per_edge=max_pairs_per_edge)
+        max_pairs_per_edge=max_pairs_per_edge,
+        edge_topology=edge_topology, max_pair_offset=max_pair_offset)
     # Pair-scale voting estimates the projection scale needed to establish
     # reliable rotations. Use the same consensus as the shared-camera BA
     # starting point instead of discarding it after edge construction.
@@ -647,7 +949,24 @@ def build_bundle_plan(
             _solve_bundle_parameters(
                 accepted, reference_frame_index, component, camera,
                 solved_policy, max_nfev))
+    return _assemble_plan(
+        by_index, reference_frame_index, edges, retained, solved_camera,
+        rotations, solved_policy, condition, solve_mode, fallback_reason)
 
+
+def _assemble_plan(
+    by_index: dict[int, BundleFrame],
+    reference_frame_index: int,
+    edges: Sequence[_BundleEdge],
+    retained: Sequence[_BundleEdge],
+    solved_camera: BaseCameraModel,
+    rotations: dict[int, NDArray[np.float64]],
+    solved_policy: CameraOptimizationPolicy,
+    condition: Optional[float],
+    solve_mode: str,
+    fallback_reason: Optional[str],
+) -> BAAlignmentPlan:
+    """Wrap solver output into the immutable plan handed to stream integration."""
     edge_by_frame: dict[int, list[float]] = defaultdict(list)
     for edge in retained:
         p90 = float(np.percentile(_edge_residuals(edge, rotations, solved_camera), 90))
@@ -680,3 +999,355 @@ def build_bundle_plan(
         observability_condition=condition,
         camera_solve_mode=solve_mode,
         camera_fallback_reason=fallback_reason)
+
+
+def solve_anchor_camera_and_rotations(
+    frames: Sequence[BundleFrame],
+    reference_frame_index: int,
+    *,
+    sample_count: int,
+    pair_offsets: Sequence[int] = (1, 2, 4),
+    random_seed: int | None = 0,
+    max_nfev: int = 300,
+    max_pairs_per_edge: int | None = _DEFAULT_MAX_PAIRS_PER_EDGE,
+    edge_topology: str = "dense",
+    max_pair_offset: int | None = None,
+) -> tuple[BaseCameraModel, dict[int, NDArray[np.float64]]]:
+    """Stage A: calibrate the shared lens model on an evenly spaced subset,
+    keeping the subset's solved poses as anchors for the segmented Stage B
+    rotation solve.
+
+    The subset always contains the sequence endpoints and the reference
+    frame, so the returned camera observes the whole rotation range. The
+    hierarchical rotation solve fixes each segment's boundary poses to these
+    anchors, so the anchor subset must use the same edge topology as the
+    full sequence: a long-range edge at this small anchor-subset scale is a
+    direct observation between two anchors, not merely a low-hop path
+    threaded through intermediate ones, and that independence is what keeps
+    drift in check over long sequences.
+    """
+    ordered = sorted(frames, key=lambda item: item.index)
+    sampled = _sample_camera_frames(ordered, sample_count, reference_frame_index)
+    remapped, original_index = _remap_frames(sampled)
+    local_reference = next(
+        local for local, original in original_index.items()
+        if original == reference_frame_index)
+    plan = build_bundle_plan(
+        remapped, local_reference, pair_offsets=pair_offsets,
+        random_seed=random_seed, max_nfev=max_nfev,
+        max_pairs_per_edge=max_pairs_per_edge,
+        edge_topology=edge_topology, max_pair_offset=max_pair_offset)
+    anchor_rotations = {
+        original_index[local]: entry.rotation_ref_to_src
+        for local, entry in enumerate(plan.frames)
+        if entry.status == FrameAlignmentStatus.SOLVED
+        and entry.rotation_ref_to_src is not None
+    }
+    if reference_frame_index not in anchor_rotations:
+        raise BundleAdjustmentError(
+            "anchor subset solve excluded the reference frame")
+    return plan.shared_camera, anchor_rotations
+
+
+def solve_rotations_fixed_camera(
+    frames: Sequence[BundleFrame],
+    reference_frame_index: int,
+    camera: BaseCameraModel,
+    *,
+    anchor_rotations: dict[int, NDArray[np.float64]] | None = None,
+    pair_offsets: Sequence[int] = (1, 2, 4),
+    random_seed: int | None = 0,
+    max_nfev: int = 300,
+    max_pairs_per_edge: int | None = _DEFAULT_MAX_PAIRS_PER_EDGE,
+    edge_completed: Callable[[], None] | None = None,
+    edge_topology: str = "dense",
+    max_pair_offset: int | None = None,
+) -> tuple[dict[int, NDArray[np.float64]], Sequence[_BundleEdge],
+           Sequence[_BundleEdge]]:
+    """Stage B: solve only the per-frame rotations with the camera held fixed.
+
+    The shared camera is an input rather than an optimize-able variable, so the
+    residual still uses the cross-product of the two projected rays but the
+    camera columns are constant. This is meaningfully cheaper than the joint
+    solve for long sequences because the rotation block is much smaller and the
+    noisy shared-camera columns no longer couple all edges together.
+
+    ``anchor_rotations``, when given (at least two entries, already solved
+    against this same fixed ``camera``), splits the sequence into independent
+    segments between consecutive anchors instead of solving every pose in one
+    least-squares problem. Each segment's boundary poses are gauge-fixed to
+    the anchor solve's result, so segments do not depend on each other and
+    stay at the variable-count scale validated on real sequences (tens to
+    ~100 frames) regardless of total sequence length. Without anchors (or
+    with fewer than two), this falls back to the original single-solve path
+    gauge-fixed at ``reference_frame_index``.
+    """
+    ordered = sorted(frames, key=lambda item: item.index)
+    if any(type(frame.candidate.camera) is not type(camera) for frame in frames):
+        raise BundleAdjustmentError("sequence BA requires one camera projection family")
+    edges, _ = _build_edges(
+        ordered, tuple(sorted({int(v) for v in pair_offsets if int(v) > 0})),
+        random_seed, edge_completed, max_pairs_per_edge=max_pairs_per_edge,
+        edge_topology=edge_topology, max_pair_offset=max_pair_offset)
+    accepted = [edge for edge in edges if edge.error is None]
+    component = _connected_component(accepted, reference_frame_index)
+    if len(component) < 2:
+        raise BundleAdjustmentError("reference frame has no reliable sequence connection")
+    accepted = [edge for edge in accepted if edge.first_index in component and edge.second_index in component]
+
+    if anchor_rotations is not None and len(anchor_rotations) >= 2:
+        rotations, retained = _solve_rotations_hierarchical(
+            accepted, component, anchor_rotations, camera, max_nfev)
+        return rotations, retained, edges
+
+    rotations, retained, _ = _solve_rotations_only(
+        accepted, {reference_frame_index: np.eye(3, dtype=np.float64)},
+        component, camera, max_nfev)
+    return rotations, retained, edges
+
+
+def _solve_rotations_hierarchical(
+    edges: Sequence[_BundleEdge],
+    component: set[int],
+    anchor_rotations: dict[int, NDArray[np.float64]],
+    camera: BaseCameraModel,
+    max_nfev: int,
+) -> tuple[dict[int, NDArray[np.float64]], list[_BundleEdge]]:
+    """Solve each segment between consecutive anchors as an independent
+    two-point boundary value problem, instead of one full-sequence solve.
+
+    ``anchor_rotations`` (already gauge-consistent, solved against this same
+    fixed camera by ``solve_anchor_camera_and_rotations``) fixes both ends of
+    every segment, so each segment's variable count only depends on segment
+    length, not on the total sequence length. This keeps every segment at
+    the scale already validated on real sequences instead of paying the
+    super-linear cost growth of solving the whole sequence at once.
+
+    Frames that are not covered by any segment (outside the anchor span, or
+    disconnected within their segment) are simply absent from the returned
+    dict, matching how the caller already handles unreachable frames from
+    the single-solve path.
+    """
+    anchor_positions = sorted(index for index in anchor_rotations if index in component)
+    if len(anchor_positions) < 2:
+        raise BundleAdjustmentError(
+            "anchor rotations do not cover the reference-connected component")
+    rotations: dict[int, NDArray[np.float64]] = {}
+    retained: list[_BundleEdge] = []
+    for lo, hi in zip(anchor_positions[:-1], anchor_positions[1:]):
+        segment_edges = [
+            edge for edge in edges
+            if lo <= edge.first_index <= hi and lo <= edge.second_index <= hi]
+        segment_component = _connected_component(segment_edges, lo)
+        if hi not in segment_component:
+            raise BundleAdjustmentError(
+                f"anchors {lo} and {hi} are not connected within their segment")
+        segment_edges = [
+            edge for edge in segment_edges
+            if edge.first_index in segment_component
+            and edge.second_index in segment_component]
+        segment_fixed = {lo: anchor_rotations[lo], hi: anchor_rotations[hi]}
+        segment_rotations, segment_retained, _ = _solve_rotations_only(
+            segment_edges, segment_fixed, segment_component, camera, max_nfev)
+        for index, rotation in segment_rotations.items():
+            rotations.setdefault(index, rotation)
+        retained.extend(segment_retained)
+    return rotations, retained
+
+
+def _solve_rotations_only(
+    edges: Sequence[_BundleEdge],
+    fixed_rotations: dict[int, NDArray[np.float64]],
+    component: set[int],
+    camera: BaseCameraModel,
+    max_nfev: int,
+) -> tuple[dict[int, NDArray[np.float64]], list[_BundleEdge], Optional[float]]:
+    """Full rotation-only backend: factor the camera out of the variables.
+
+    Mirrors ``_solve_bundle_parameters`` but always with an empty camera block,
+    so the optimization vector is exactly the per-frame rotation vectors. The
+    camera is passed in as a constant model used by the residual closure.
+    ``fixed_rotations`` gauge-fixes one or more frames to known absolute
+    rotations; a single fixed frame removes the usual rotation-group gauge
+    freedom, and two fixed frames turn the remaining component into a
+    two-point boundary value problem (used by the hierarchical segment
+    solver to fix both ends of a sub-sequence).
+    """
+    from scipy import sparse
+    from scipy.optimize import least_squares
+
+    initial = _initial_rotations(edges, fixed_rotations, component)
+    variable_indices = [
+        index for index in sorted(component) if index not in fixed_rotations]
+    pose_column = {index: 3 * position
+                   for position, index in enumerate(variable_indices)}
+
+    def pack(pose_values: dict[int, NDArray[np.float64]]) -> NDArray[np.float64]:
+        return np.concatenate(
+            [_rvec_from_rotation(pose_values[index])
+             for index in variable_indices])
+
+    def unpack(values: NDArray[np.float64]) -> dict[int, NDArray[np.float64]]:
+        rotations = dict(fixed_rotations)
+        for index in variable_indices:
+            rotations[index] = _rotation_from_rvec(
+                values[pose_column[index]:pose_column[index] + 3])
+        return rotations
+
+    def residual(values: NDArray[np.float64]) -> NDArray[np.float64]:
+        rotations = unpack(values)
+        values_out = []
+        for edge in edges:
+            first = camera.unproject(edge.first_pts)
+            second = camera.unproject(edge.second_pts)
+            predicted = (
+                rotations[edge.second_index]
+                @ rotations[edge.first_index].T
+                @ first.T).T
+            values_out.append(np.cross(predicted, second).reshape(-1))
+        return np.concatenate(values_out)
+
+    def jacobian(values: NDArray[np.float64]) -> "sparse.csr_matrix":
+        """Assemble the block-sparse Jacobian directly as COO triplets.
+
+        Every residual row only has nonzero entries in the (up to two) pose
+        columns of its edge's two frames, so a dense ``(rows, cols)`` array
+        wastes memory that scales with ``edge_count * frame_count`` instead
+        of the true nonzero count. Long sequences (hundreds of frames, each
+        edge capped near ``max_pairs_per_edge``) make that dense allocation
+        large enough to exceed typical memory limits.
+        """
+        rotations = unpack(values)
+        rows = sum(len(edge.first_pts) * 3 for edge in edges)
+        row_chunks: list[NDArray[np.intp]] = []
+        col_chunks: list[NDArray[np.intp]] = []
+        data_chunks: list[NDArray[np.float64]] = []
+        row_offset = 0
+        for edge in edges:
+            edge_rows = len(edge.first_pts) * 3
+            first_rays = camera.unproject(edge.first_pts)
+            second_rays = camera.unproject(edge.second_pts)
+            first_rvec = (
+                None if edge.first_index in fixed_rotations else
+                values[pose_column[edge.first_index]:
+                       pose_column[edge.first_index] + 3])
+            second_rvec = (
+                None if edge.second_index in fixed_rotations else
+                values[pose_column[edge.second_index]:
+                       pose_column[edge.second_index] + 3])
+            first_block, second_block = _edge_rotation_jacobians(
+                first_rays, second_rays, first_rvec, second_rvec,
+                rotations[edge.first_index], rotations[edge.second_index])
+            for index, block in ((edge.first_index, first_block),
+                                 (edge.second_index, second_block)):
+                if block is None:
+                    continue
+                column = pose_column[index]
+                block = block.reshape(edge_rows, 3)
+                local_rows = np.repeat(np.arange(edge_rows), 3)
+                local_cols = np.tile(np.arange(column, column + 3), edge_rows)
+                row_chunks.append(row_offset + local_rows)
+                col_chunks.append(local_cols)
+                data_chunks.append(block.reshape(-1))
+            row_offset += edge_rows
+        if row_chunks:
+            all_rows = np.concatenate(row_chunks)
+            all_cols = np.concatenate(col_chunks)
+            all_data = np.concatenate(data_chunks)
+        else:
+            all_rows = np.empty(0, dtype=np.intp)
+            all_cols = np.empty(0, dtype=np.intp)
+            all_data = np.empty(0, dtype=np.float64)
+        return sparse.coo_matrix(
+            (all_data, (all_rows, all_cols)),
+            shape=(rows, len(values))).tocsr()
+
+    x0 = pack(initial)
+    initial_residual = residual(x0)
+    scale = max(float(np.median(np.abs(initial_residual))) * 2.0, 1e-6)
+    started = time.perf_counter()
+    fit = least_squares(
+        residual, x0, jac=jacobian, method="trf", loss="huber",
+        f_scale=scale, max_nfev=max_nfev, tr_solver="lsmr", x_scale="jac",
+        bounds=(-np.inf, np.inf))
+    _log_solve_summary("_solve_rotations_only", fit,
+                       n_vars=len(x0), n_edges=len(edges),
+                       elapsed_seconds=time.perf_counter() - started)
+    if not fit.success or not np.all(np.isfinite(fit.x)):
+        raise BundleAdjustmentError(
+            f"rotation-only bundle optimization failed: {fit.message}")
+    rotations = unpack(fit.x)
+    return rotations, list(edges), None
+
+
+def build_bundle_plan(
+    frames: Sequence[BundleFrame],
+    reference_frame_index: int,
+    *,
+    pair_offsets: Sequence[int] = (1, 2, 4),
+    random_seed: int | None = 0,
+    max_nfev: int = 2000,
+    max_pairs_per_edge: int | None = _DEFAULT_MAX_PAIRS_PER_EDGE,
+    camera_solve_frames: int | None = None,
+    edge_completed: Callable[[], None] | None = None,
+    edge_topology: str = "multiscale",
+    max_pair_offset: int | None = None,
+) -> BAAlignmentPlan:
+    """Build a robust same-camera geometry plan from collected frames.
+
+    Frames contain detected stars rather than source pixels. Integration remaps
+    the original sequence separately after the plan is final.
+
+    ``camera_solve_frames`` switches to the two-stage solver when the sequence
+    is longer than that value. A subset (endpoints and the reference frame
+    included) calibrates the shared camera first, then the rotation-only pass
+    recovers every pose with that camera held fixed. Shorter sequences keep the
+    single-stage joint solve, which is both exact and already cheap there.
+
+    ``edge_topology="dense"`` builds every ``(pos, pos + offset)`` pair for 
+    each entry in ``pair_offsets``. ``edge_topology="multiscale"`` (default)
+    instead uses the sparse interleaved-start topology (``pair_offsets`` is
+    then ignored; edges span every dyadic offset up to ``max_pair_offset``,
+    or the whole sequence if unset) which keeps the total edge count near
+    ``2 * len(frames)`` regardless of how many scales it spans.
+    """
+    if not frames:
+        raise BundleAdjustmentError("cannot bundle-adjust an empty sequence")
+    if edge_topology not in _EDGE_TOPOLOGIES:
+        raise BundleAdjustmentError(f"unknown edge topology: {edge_topology!r}")
+    by_index = {frame.index: frame for frame in frames}
+    if len(by_index) != len(frames) or reference_frame_index not in by_index:
+        raise BundleAdjustmentError("reference_frame_index must identify one collected frame")
+
+    if camera_solve_frames is None or len(frames) <= camera_solve_frames:
+        return _solve_single_stage(
+            frames, reference_frame_index,
+            tuple(sorted({int(v) for v in pair_offsets if int(v) > 0})),
+            random_seed, max_nfev, max_pairs_per_edge, edge_completed,
+            edge_topology=edge_topology, max_pair_offset=max_pair_offset)
+
+    # Two-stage: calibrate the camera on a subset, then solve poses fixed-camera.
+    # The subset solve's own poses become anchors for the segmented Stage B
+    # solve below, so the full sequence is never solved as one least-squares
+    # problem regardless of its length.
+    offsets = tuple(sorted({int(v) for v in pair_offsets if int(v) > 0}))
+    camera, anchor_rotations = solve_anchor_camera_and_rotations(
+        frames, reference_frame_index, sample_count=camera_solve_frames,
+        pair_offsets=offsets, random_seed=random_seed, max_nfev=max_nfev,
+        max_pairs_per_edge=max_pairs_per_edge,
+        edge_topology=edge_topology, max_pair_offset=max_pair_offset)
+    injections = _replace_camera(frames, camera)
+    rotations, retained, all_edges = solve_rotations_fixed_camera(
+        injections, reference_frame_index, camera,
+        anchor_rotations=anchor_rotations,
+        pair_offsets=offsets, random_seed=random_seed, max_nfev=max_nfev,
+        max_pairs_per_edge=max_pairs_per_edge,
+        edge_completed=edge_completed,
+        edge_topology=edge_topology, max_pair_offset=max_pair_offset)
+    reference = next(
+        frame for frame in injections if frame.index == reference_frame_index)
+    return _assemble_plan(
+        by_index, reference_frame_index, all_edges, retained, camera,
+        rotations, reference.candidate.optimization_policy, None,
+        "staged", None)
+

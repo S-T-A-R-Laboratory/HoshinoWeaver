@@ -12,11 +12,13 @@ from hoshicore.component.norma.bundle import (
     FrameAlignmentStatus,
     _BundleEdge,
     _build_edges,
+    _camera_from_parameters,
     _camera_parameter_bounds,
     _camera_observability,
     _make_edge,
     _sample_edge_pairs,
     _solve_bundle_parameters,
+    _solve_rotations_only,
     _spatial_pair_bins,
     build_bundle_plan,
 )
@@ -50,6 +52,27 @@ def test_camera_parameter_bounds_limit_focal_and_distortion():
     lower, upper = _camera_parameter_bounds(policy)
     np.testing.assert_allclose(lower, [-0.3, -1.0, -1.0, -1.0, -1.0])
     np.testing.assert_allclose(upper, [0.3, 1.0, 1.0, 1.0, 1.0])
+
+
+def test_bundle_principal_point_uses_bounded_image_relative_offsets():
+    camera = _camera()
+    policy = CameraOptimizationPolicy(False, False, True, 0)
+    lower, upper = _camera_parameter_bounds(policy)
+
+    np.testing.assert_allclose(lower, [-0.05, -0.05])
+    np.testing.assert_allclose(upper, [0.05, 0.05])
+    solved = _camera_from_parameters(camera, policy, np.array([0.1, -0.2]))
+    assert solved.intrinsics.principal_point_px == pytest.approx((72.0, 24.0))
+
+
+def test_bundle_principal_point_large_offset_uses_explicit_policy():
+    policy = CameraOptimizationPolicy(
+        False, False, True, 0, principal_point_offset_limit=0.5)
+
+    lower, upper = _camera_parameter_bounds(policy)
+
+    np.testing.assert_allclose(lower, [-0.5, -0.5])
+    np.testing.assert_allclose(upper, [0.5, 0.5])
 
 
 def test_edge_sampling_reserves_spatial_bins_then_caps_deterministically():
@@ -195,6 +218,7 @@ def test_bundle_edge_refines_rotation_without_camera_parameters(monkeypatch):
     assert calls[0][2]["bootstrap_scales"] == (0.7, 1.0, 1.3)
     assert calls[0][2]["same_camera"] is True
     assert calls[0][2]["random_seed"] == 7
+    assert calls[0][2]["residual_space"] == "cross"
 
 
 def test_bundle_scale_votes_reuse_preferred_and_fall_back(monkeypatch):
@@ -285,7 +309,7 @@ def test_bundle_plan_jointly_recovers_relative_rotations(monkeypatch):
     monkeypatch.setattr(bundle_module, "_make_edge", fake_edge)
     stars = DetectedStars(np.empty((0, 2)), np.empty(0))
     frames = [BundleFrame(index, stars, candidate) for index in range(4)]
-    plan = build_bundle_plan(frames, 0, pair_offsets=(1,))
+    plan = build_bundle_plan(frames, 0, pair_offsets=(1,), edge_topology='dense')
     assert [item.status for item in plan.frames] == [
         FrameAlignmentStatus.SOLVED,
         FrameAlignmentStatus.SOLVED,
@@ -299,3 +323,143 @@ def test_bundle_plan_jointly_recovers_relative_rotations(monkeypatch):
     assert plan.accepted_edge_count == 2
     assert plan.frame(3).rotation_ref_to_src is None
     assert plan.rejected_edge_count == 1
+
+
+def test_solve_rotations_only_recovers_fixed_camera_poses(monkeypatch):
+    from scipy import sparse
+
+    camera = _camera()
+    true_rotations = {0: np.eye(3), 1: _rotation_z(0.04), 2: _rotation_z(0.09)}
+    rays = np.array([[-0.2, -0.1, 1.0], [0.1, -0.2, 1.0], [0.2, 0.1, 1.0],
+                     [-0.1, 0.2, 1.0], [0.05, 0.08, 1.0], [-0.18, 0.14, 1.0]])
+    rays /= np.linalg.norm(rays, axis=1, keepdims=True)
+
+    edges = []
+    for first_index, second_index in ((0, 1), (1, 2)):
+        first_pts = camera.project(
+            (true_rotations[first_index] @ rays.T).T)
+        second_pts = camera.project(
+            (true_rotations[second_index] @ rays.T).T)
+        relative = true_rotations[second_index] @ true_rotations[first_index].T
+        edges.append(_BundleEdge(
+            first_index, second_index, first_pts, second_pts, relative))
+
+    from scipy.optimize import least_squares as real_least_squares
+
+    captured_jacobians = []
+
+    def spying_least_squares(fun, x0, *, jac, **kwargs):
+        matrix = jac(x0)
+        captured_jacobians.append(matrix)
+        return real_least_squares(fun, x0, jac=jac, **kwargs)
+
+    monkeypatch.setattr(
+        "scipy.optimize.least_squares", spying_least_squares)
+
+    rotations, retained, condition = _solve_rotations_only(
+        edges, {0: np.eye(3)}, {0, 1, 2}, camera, max_nfev=100)
+
+    assert condition is None
+    assert retained == edges
+    np.testing.assert_allclose(rotations[0], np.eye(3), atol=1e-8)
+    np.testing.assert_allclose(rotations[1], true_rotations[1], atol=1e-5)
+    np.testing.assert_allclose(rotations[2], true_rotations[2], atol=1e-5)
+
+    assert len(captured_jacobians) == 1
+    matrix = captured_jacobians[0]
+    assert sparse.issparse(matrix)
+    assert matrix.shape == (2 * 6 * 3, 2 * 3)
+
+
+def test_sample_camera_frames_keeps_endpoints_and_reference():
+    """Sampling must keep endpoints + reference, spread evenly, sorted."""
+    camera = _camera()
+    candidate = AlignmentCameraCandidate(
+        camera, CameraOptimizationPolicy(True, True, False, 4), "manual")
+    stars = DetectedStars(np.empty((0, 2)), np.empty(0))
+    frames = [BundleFrame(index, stars, candidate) for index in range(40)]
+
+    # reference at an interior index must survive sampling
+    sampled = bundle_module._sample_camera_frames(frames, 12, 27)
+    indices = [frame.index for frame in sampled]
+    assert indices == sorted(indices)
+    assert indices[0] == 0
+    assert indices[-1] == 39
+    assert 27 in indices
+    assert len(sampled) <= 14
+    # uniform-ish spread: gap between consecutive samples is small relative
+    # to the full span for an evenly sampled interior
+    assert max(indices[i + 1] - indices[i] for i in range(len(indices) - 1)) <= 7
+
+    # small sequences are passed through untouched
+    short = [BundleFrame(index, stars, candidate) for index in range(5)]
+    assert bundle_module._sample_camera_frames(short, 12, 2) == short
+
+
+def test_remap_frames_contiguous_and_traceable():
+    camera = _camera()
+    candidate = AlignmentCameraCandidate(
+        camera, CameraOptimizationPolicy(True, True, False, 4), "manual")
+    stars = DetectedStars(np.empty((0, 2)), np.empty(0))
+    original = [BundleFrame(index * 3, stars, candidate) for index in range(6)]
+
+    remapped, mapping = bundle_module._remap_frames(original)
+    assert [frame.index for frame in remapped] == list(range(6))
+    assert [mapping[local] for local in range(6)] == [0, 3, 6, 9, 12, 15]
+    # original frames remain untouched (frozen dataclass replace)
+    assert original[0].index == 0
+    assert original[1].index == 3
+
+
+def test_dense_edge_pairs_matches_old_behavior():
+    pairs = bundle_module._dense_edge_pairs(6, (1, 2, 4))
+    assert pairs == [
+        (0, 1), (0, 2), (0, 4),
+        (1, 2), (1, 3), (1, 5),
+        (2, 3), (2, 4),
+        (3, 4), (3, 5),
+        (4, 5),
+    ]
+
+
+@pytest.mark.parametrize("n", [10, 23, 100, 341])
+@pytest.mark.parametrize("max_offset", [None, 32, 64])
+def test_multiscale_edge_pairs_stays_sparse_and_connected(n, max_offset):
+    """~2N edges, every non-endpoint node reaches the minimum degree."""
+    pairs = bundle_module._multiscale_edge_pairs(n, max_offset)
+    assert len(pairs) == len(set(pairs))
+    for a, b in pairs:
+        assert 0 <= a < b < n
+
+    degree = [0] * n
+    for a, b in pairs:
+        degree[a] += 1
+        degree[b] += 1
+    # Total edge count stays close to 2N regardless of how many dyadic
+    # scales are available.
+    assert len(pairs) <= 2.2 * n
+    # Every node except the two true sequence endpoints reaches min_degree;
+    # endpoints are structurally short by one edge (they extend one way).
+    for index in range(1, n - 1):
+        assert degree[index] >= 4, f"node {index} has degree {degree[index]}"
+    assert degree[0] >= 3
+    assert degree[n - 1] >= 3
+
+    if max_offset is not None:
+        assert max(b - a for a, b in pairs) <= max_offset
+
+
+def test_multiscale_edge_pairs_respects_max_offset_cap():
+    uncapped = bundle_module._multiscale_edge_pairs(200, None)
+    capped = bundle_module._multiscale_edge_pairs(200, 16)
+    assert max(b - a for a, b in uncapped) > 16
+    assert max(b - a for a, b in capped) <= 16
+
+
+def test_select_edge_pairs_dense_vs_multiscale():
+    dense = bundle_module._select_edge_pairs(50, (1, 2, 4), "dense", None)
+    multiscale = bundle_module._select_edge_pairs(50, (), "multiscale", None)
+    assert dense == bundle_module._dense_edge_pairs(50, (1, 2, 4))
+    assert multiscale == bundle_module._multiscale_edge_pairs(50, None)
+    with pytest.raises(BundleAdjustmentError):
+        bundle_module._select_edge_pairs(50, (), "bogus", None)

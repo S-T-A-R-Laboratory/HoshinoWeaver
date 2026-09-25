@@ -2,13 +2,56 @@ import asyncio
 
 import numpy as np
 import pytest
+import tifffile
 
+import hoshicore.component.image_io as image_io
 import hoshicore.ops.image_saver as image_saver
-from hoshicore.ops.image_saver import BatchImageSaveOp, _format_output_path
+from hoshicore.ops.image_saver import (
+    BatchImageSaveOp, ImageSaveOp, _format_output_path)
 
 
 async def _ready(value):
     return value
+
+
+@pytest.mark.parametrize("dtype", [np.uint32, np.float32])
+def test_save_32bit_tiff_uses_tifffile(monkeypatch, tmp_path, dtype):
+    def reject_opencv(*args, **kwargs):
+        raise AssertionError("32-bit TIFF must not use OpenCV")
+
+    monkeypatch.setattr(image_io.cv2, "imencode", reject_opencv)
+    path = tmp_path / f"image_{np.dtype(dtype).name}.tiff"
+    values = (np.linspace(-0.5, 1.5, 12, dtype=dtype)
+              if dtype is np.float32 else np.arange(12, dtype=dtype))
+    bgr = values.reshape(2, 2, 3)
+    image_io.save_img(str(path), bgr)
+
+    stored_rgb = tifffile.imread(path)
+    assert stored_rgb.dtype == np.dtype(dtype)
+    np.testing.assert_array_equal(stored_rgb, bgr[:, :, ::-1])
+    np.testing.assert_array_equal(image_io.load_img(str(path)), bgr)
+
+
+@pytest.mark.parametrize("dtype_name", ["uint32", "float32"])
+def test_image_save_op_supports_32bit_tiff(tmp_path, dtype_name):
+    path = tmp_path / f"op_{dtype_name}.tif"
+    op = ImageSaveOp("save")
+    source = np.array([0, 32768, 65535], dtype=np.uint16).reshape(1, 1, 3)
+    asyncio.run(op._async_execute({
+        "image": source,
+        "output_filename": str(path),
+        "output_dtype": dtype_name,
+        "exif": None,
+        "jpg_quality": 85,
+        "png_compressing": 7,
+    }))
+    saved = tifffile.imread(path)
+    assert saved.dtype == np.dtype(dtype_name)
+    if dtype_name == "uint32":
+        expected = source.astype(np.uint32) * np.uint32(65537)
+    else:
+        expected = source.astype(np.float32)
+    np.testing.assert_array_equal(saved, expected[:, :, ::-1])
 
 
 def test_format_output_path_supports_sequence_and_frame_indices():

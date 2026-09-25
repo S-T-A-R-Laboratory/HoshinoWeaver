@@ -1,9 +1,10 @@
 """Run Norma bundle adjustment on every supported image in one folder.
 
 This is a local diagnostic tool, not a test or a stable application entrypoint.
-It compares the BA result with an adjacent-pair chain assembled from the same
-production two-frame solver. Image-domain residual shift is the primary
-accuracy signal; match residuals and graph consistency explain failures.
+It compares the BA result with an adjacent-pair chain and, optionally, a
+single-reference star of independent two-frame solves. Image-domain residual
+shift is the primary accuracy signal; match residuals and graph consistency
+explain failures.
 """
 from __future__ import annotations
 
@@ -62,8 +63,14 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--exclude-glob", action="append", default=[],
                         help="Repeatable filename/path glob to exclude")
     parser.add_argument("--evaluation-mask", type=Path)
+    parser.add_argument(
+        "--detection-mask", type=Path,
+        help="Binary mask applied during star detection and matching")
     parser.add_argument("--no-exif", action="store_true")
     parser.add_argument("--max-images", type=int)
+    parser.add_argument(
+        "--uniform-sample-fraction", type=float,
+        help="Uniformly retain this fraction of the discovered sequence")
     parser.add_argument("--reference-index", type=int, default=0)
     parser.add_argument("--lens-type", choices=("auto", "perspective", "fisheye"),
                         default="auto")
@@ -77,10 +84,40 @@ def _arguments() -> argparse.Namespace:
                         action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--optimize-principal-point",
                         action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--allow-large-principal-point-offset", action="store_true",
+        help="Allow each principal-point axis to move by up to 50%% instead of 5%%")
     parser.add_argument("--pair-offsets",
                         type=lambda value: _csv_numbers(value, int), default=(1, 2, 4))
+    parser.add_argument(
+        "--diagnostic-offsets", type=lambda value: _csv_numbers(value, int),
+        default=(),
+        help=("Additional pair offsets to evaluate without adding them to the "
+              "BA graph; offset N evaluates every available i->i+N pair"))
+    parser.add_argument(
+        "--baseline-camera", choices=("initial", "ba"), default="initial",
+        help="Fixed camera used by the rotation-only diagnostic pair solves")
+    parser.add_argument(
+        "--star-reference-baseline", action="store_true",
+        help=("Also solve every reference-to-frame pair independently, "
+              "including shared camera parameters for each pair"))
     parser.add_argument("--random-seed", type=int, default=0)
     parser.add_argument("--max-nfev", type=int, default=300)
+    parser.add_argument(
+        "--max-pairs-per-edge", type=int, default=512,
+        help="Cap matched pairs sampled per BA graph edge")
+    parser.add_argument(
+        "--camera-solve-frames", type=int, default=None,
+        help="Solve the shared camera on an evenly spaced subset of this many "
+             "frames first, then refine poses over the whole sequence")
+    parser.add_argument(
+        "--edge-topology", choices=("dense", "multiscale"), default="multiscale",
+        help=("dense: every (pos, pos+offset) pair per --pair-offsets entry. "
+              "multiscale: sparse interleaved-start dyadic topology, "
+              "~2N edges regardless of scale count (--pair-offsets is ignored)"))
+    parser.add_argument(
+        "--max-pair-offset", type=int, default=None,
+        help="Cap the maximum frame-index gap an edge may span (multiscale only)")
     parser.add_argument("--map-scale", type=float, default=0.5)
     parser.add_argument(
         "--image-scale", type=float, default=1.0,
@@ -282,6 +319,15 @@ def main() -> int:
     output_dir = (args.output_dir or input_dir / "debug_norma_ba_results").resolve()
     paths = _image_paths(input_dir, args.recursive, output_dir,
                          args.exclude_glob)
+    if args.uniform_sample_fraction is not None:
+        fraction = float(args.uniform_sample_fraction)
+        if not 0.0 < fraction <= 1.0:
+            raise ValueError("uniform-sample-fraction must be in (0, 1]")
+        sample_count = max(2, int(round(len(paths) * fraction)))
+        sample_indices = np.linspace(
+            0, len(paths) - 1, min(sample_count, len(paths)),
+            dtype=np.int64)
+        paths = [paths[int(index)] for index in sample_indices]
     if args.max_images is not None:
         paths = paths[:args.max_images]
     if len(paths) < 2:
@@ -292,6 +338,13 @@ def main() -> int:
 
     focal_equiv = (args.focal_length_mm * args.crop_factor
                    if args.focal_length_mm is not None else None)
+    detection_mask_source = None
+    if args.detection_mask is not None:
+        detection_mask_source = load_img(str(args.detection_mask))
+        if detection_mask_source is None:
+            raise ValueError("detection mask is missing")
+        if detection_mask_source.ndim == 3:
+            detection_mask_source = np.max(detection_mask_source, axis=2)
     frames, candidates, star_counts = [], [], []
     started = time.perf_counter()
     stage_started = started
@@ -309,12 +362,19 @@ def main() -> int:
             optimize_focal=args.optimize_focal,
             optimize_distortion=args.optimize_distortion,
             optimize_principal_point=args.optimize_principal_point,
+            allow_large_principal_point_offset=(
+                args.allow_large_principal_point_offset),
         )
         candidate = build_camera_candidate(
             tags, image.shape, "distortion",
             init_distortion=(list(args.distortion) if args.distortion else None),
             focal_equiv_mm=focal_equiv, init_policy=policy)
-        stars = detect_star_points(to_gray_f64(image))
+        detection_mask = None
+        if detection_mask_source is not None:
+            detection_mask = cv2.resize(
+                detection_mask_source, (image.shape[1], image.shape[0]),
+                interpolation=cv2.INTER_NEAREST) > 0
+        stars = detect_star_points(to_gray_f64(image), mask=detection_mask)
         candidates.append(candidate)
         star_counts.append(len(stars.positions))
         frames.append(BundleFrame(index, stars, candidate))
@@ -324,17 +384,23 @@ def main() -> int:
     stage_started = time.perf_counter()
     plan = build_bundle_plan(
         frames, args.reference_index, pair_offsets=args.pair_offsets,
-        random_seed=args.random_seed, max_nfev=args.max_nfev)
+        random_seed=args.random_seed, max_nfev=args.max_nfev,
+        max_pairs_per_edge=args.max_pairs_per_edge,
+        camera_solve_frames=args.camera_solve_frames,
+        edge_topology=args.edge_topology,
+        max_pair_offset=args.max_pair_offset)
     ba_seconds = time.perf_counter() - stage_started
 
     # Solve the diagnostic graph independently. Offset-1 edges form the chain;
     # skip edges measure consistency of both chain and BA pose estimates.
     fixed_policy = CameraOptimizationPolicy(False, False, False, 0)
+    fixed_camera = (plan.shared_camera if args.baseline_camera == "ba" else
+                    candidates[args.reference_index].camera)
     fixed_candidate = AlignmentCameraCandidate(
-        candidates[args.reference_index].camera, fixed_policy,
-        "fixed_shared_baseline")
+        fixed_camera, fixed_policy, f"fixed_{args.baseline_camera}_baseline")
     pair_results: dict[tuple[int, int], dict[str, Any]] = {}
-    diagnostic_offsets = tuple(sorted(set(args.pair_offsets) | {1}))
+    diagnostic_offsets = tuple(sorted(
+        set(args.pair_offsets) | set(args.diagnostic_offsets) | {1}))
     stage_started = time.perf_counter()
     for first in range(len(frames)):
         for offset in diagnostic_offsets:
@@ -353,6 +419,27 @@ def main() -> int:
             except Exception as exc:
                 pair_results[(first, second)] = {"error": str(exc)}
     baseline_seconds = time.perf_counter() - stage_started
+
+    star_results: dict[int, dict[str, Any]] = {}
+    stage_started = time.perf_counter()
+    if args.star_reference_baseline:
+        reference_frame = frames[args.reference_index]
+        for index, frame in enumerate(frames):
+            if index == args.reference_index:
+                continue
+            print(f"star {args.reference_index}->{index}")
+            try:
+                alignment, match = solve_star_alignment(
+                    reference_frame.stars, frame.stars,
+                    candidates[args.reference_index], candidates[index],
+                    bootstrap_scales=(0.7, 1.0, 1.3), same_camera=True,
+                    use_asterism_bootstrap=True,
+                    random_seed=args.random_seed)
+                star_results[index] = {
+                    "alignment": alignment, "match": match, "error": None}
+            except Exception as exc:
+                star_results[index] = {"error": str(exc)}
+    star_seconds = time.perf_counter() - stage_started
 
     chain_rotations = _build_chain(pair_results, args.reference_index)
     ba_rotations = {
@@ -417,7 +504,7 @@ def main() -> int:
                                  interpolation=cv2.INTER_NEAREST)
         evaluation_mask = np.where(loaded_mask > 0, 255, 0).astype(np.uint8)
     frame_rows = []
-    ba_shifts, chain_shifts = [], []
+    ba_shifts, chain_shifts, star_shifts = [], [], []
     ba_max = None
     chain_max = None
     stage_started = time.perf_counter()
@@ -438,6 +525,7 @@ def main() -> int:
                         "coverage": 0.0, "shift_p90_px": None}
             row["ba_image"] = disabled
             row["chain_image"] = disabled.copy()
+            row["star_image"] = disabled.copy()
             frame_rows.append(row)
             continue
         source = load_img(str(path))
@@ -488,6 +576,38 @@ def main() -> int:
             row["chain_image"] = {"status": "no_pose", "tiles": 0,
                                   "coverage": 0.0, "shift_p90_px": None}
 
+        if index == args.reference_index and args.star_reference_baseline:
+            star_aligned = source.copy()
+            row["star_image"] = {
+                "status": "reference", "tiles": 0,
+                "coverage": 1.0, "shift_p90_px": 0.0}
+        elif index in star_results and not star_results[index].get("error"):
+            star_alignment = star_results[index]["alignment"]
+            star_ref_camera = _scaled_camera(
+                star_alignment.ref_camera, args.image_scale)
+            star_src_camera = _scaled_camera(
+                star_alignment.src_camera, args.image_scale)
+            star_aligned = star_ref_camera.project_image_from_camera(
+                star_src_camera, source, evaluation_size,
+                rotation_dst_to_src=star_alignment.rotation_ref_to_src,
+                map_scale=args.map_scale)
+            star_mask = star_ref_camera.project_image_from_camera(
+                star_src_camera, source_mask, evaluation_size,
+                interpolation=cv2.INTER_NEAREST,
+                rotation_dst_to_src=star_alignment.rotation_ref_to_src,
+                map_scale=args.map_scale) > 250
+            row["star_image"] = _image_residual(
+                reference, star_aligned, star_mask & (evaluation_mask > 0),
+                args)
+            if row["star_image"]["shift_p90_px"] is not None:
+                star_shifts.append(row["star_image"]["shift_p90_px"])
+        else:
+            star_aligned = None
+            row["star_image"] = {
+                "status": "disabled" if not args.star_reference_baseline
+                else "no_pose",
+                "tiles": 0, "coverage": 0.0, "shift_p90_px": None}
+
         if args.write_max_stack:
             if ba_aligned is not None:
                 ba_max = (ba_aligned.copy() if ba_max is None else
@@ -499,7 +619,8 @@ def main() -> int:
         if not args.no_write_images:
             stem = f"{index:04d}_{path.stem}.{args.output_format}"
             for name, image in (("src", source), ("ba", ba_aligned),
-                                ("chain_shared", chain_aligned)):
+                                ("chain_shared", chain_aligned),
+                                ("star_reference", star_aligned)):
                 if image is not None:
                     folder = output_dir / name
                     folder.mkdir(exist_ok=True)
@@ -513,6 +634,15 @@ def main() -> int:
                          f"chain_shared_max.{args.output_format}"), chain_max)
     remap_seconds = time.perf_counter() - stage_started
 
+    star_match_p90 = [
+        value for result in star_results.values()
+        if not result.get("error")
+        for value in [_pixel_residual_p90(
+            result["match"], result["alignment"].rotation_ref_to_src,
+            result["alignment"].ref_camera,
+            result["alignment"].src_camera)]
+        if value is not None
+    ]
     paired = [(row["ba_image"]["shift_p90_px"],
                row["chain_image"]["shift_p90_px"])
               for row in frame_rows if row["index"] != args.reference_index
@@ -522,6 +652,8 @@ def main() -> int:
         "primary_accuracy_metric": "reference remap local phase residual shift",
         "ba_image_shift_p90_px": _summarize(ba_shifts),
         "chain_image_shift_p90_px": _summarize(chain_shifts),
+        "star_image_shift_p90_px": _summarize(star_shifts),
+        "star_match_p90_px": _summarize(star_match_p90),
         "paired_image_frames": len(paired),
         "image_shift_median_improvement_px": (
             float(np.median([chain for _, chain in paired])
@@ -547,14 +679,37 @@ def main() -> int:
         "accepted_edge_count": plan.accepted_edge_count,
         "rejected_edge_count": plan.rejected_edge_count,
         "observability_condition": plan.observability_condition,
+        "rotations_ref_to_src": {
+            str(frame.index): (
+                frame.rotation_ref_to_src.tolist()
+                if frame.rotation_ref_to_src is not None else None
+            )
+            for frame in plan.frames
+        },
         "timings_seconds": {
             "load_detect": detection_seconds,
             "build_bundle_plan": ba_seconds,
             "baseline_pairs": baseline_seconds,
+            "star_reference_pairs": star_seconds,
             "remap_and_metrics": remap_seconds,
         },
         "elapsed_seconds": time.perf_counter() - started,
         "benefit": benefit, "frames": frame_rows, "pairs": pair_rows,
+        "star_reference_pairs": {
+            str(index): ({"error": result.get("error")}
+                         if result.get("error") else {
+                "error": None,
+                "match_count": len(result["match"].ref_pts),
+                "match_p90_px": _pixel_residual_p90(
+                    result["match"], result["alignment"].rotation_ref_to_src,
+                    result["alignment"].ref_camera,
+                    result["alignment"].src_camera),
+                "reference_camera": _camera_payload(
+                    result["alignment"].ref_camera),
+                "source_camera": _camera_payload(
+                    result["alignment"].src_camera),
+            }) for index, result in star_results.items()
+        },
     }
     (output_dir / "report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False, default=str),
@@ -562,13 +717,15 @@ def main() -> int:
     with (output_dir / "frames.csv").open("w", newline="", encoding="utf-8-sig") as handle:
         fields = ["index", "file", "stars", "status", "pose_source",
                   "incident_edges", "ba_edge_residual_p90_deg",
-                  "ba_shift_p90_px", "chain_shift_p90_px"]
+                  "ba_shift_p90_px", "chain_shift_p90_px",
+                  "star_shift_p90_px"]
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for row in frame_rows:
             writer.writerow({**{key: row.get(key) for key in fields},
                              "ba_shift_p90_px": row["ba_image"]["shift_p90_px"],
-                             "chain_shift_p90_px": row["chain_image"]["shift_p90_px"]})
+                             "chain_shift_p90_px": row["chain_image"]["shift_p90_px"],
+                             "star_shift_p90_px": row["star_image"]["shift_p90_px"]})
     print(json.dumps(benefit, indent=2, ensure_ascii=False))
     print(f"report: {output_dir / 'report.json'}")
     return 0

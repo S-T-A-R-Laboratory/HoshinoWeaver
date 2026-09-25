@@ -78,10 +78,10 @@ def inspect_yaml(
     # --- configs (global, before route_configs merge) ---
     configs = _collect_configs(raw_spec.get("configs", {}))
 
-    # --- route_configs (need meta_resolve with route_choices) ---
+    # --- route_configs (resolve explicit choices or route defaults) ---
     route_cfgs: list[ConfigParam] = []
-    if is_meta and route_choices:
-        route_cfgs = _collect_route_configs(raw_spec, route_choices)
+    if is_meta:
+        route_cfgs = _collect_route_configs(raw_spec, route_choices or {})
 
     return InspectResult(
         yaml_path=yaml_path,

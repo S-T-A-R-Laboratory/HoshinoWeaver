@@ -22,10 +22,15 @@ from .matching import (DEFAULT_COVERAGE_REPAIR, FISHEYE_ROTATION_VALIDATION,
 from .optimization import (CameraOptimizationPolicy, CameraOptimizationState,
                            CameraSolvedParams, FlexibleOptimizationContext,
                            compute_flexible_residual_diagnostics,
+                           iter_optimized_camera_param_slices,
                            make_flexible_regularization_weights,
                            pack_flexible_initial_params,
                            run_flexible_optimization, unpack_flexible_params)
 from .types import BaseCameraModel, CameraModel, Distortion, FisheyeCameraModel, FisheyeDistortion
+
+
+class AlignmentOptimizationError(RuntimeError):
+    """Raised when a two-image camera fit is unsuccessful or unsafe."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -36,6 +41,7 @@ class AlignmentResult:
     ref_camera: BaseCameraModel
     src_camera: BaseCameraModel
     pair_idx: Optional[NDArray[np.int32]] = None
+
     def compose(self, other: "AlignmentResult") -> "AlignmentResult":
         """Chain: self is A→B, other is B→C, returns A→C."""
         return AlignmentResult(
@@ -263,6 +269,7 @@ def optimize_alignment(
     ref_policy: Optional[CameraOptimizationPolicy] = None,
     src_policy: Optional[CameraOptimizationPolicy] = None,
     focal_regularization_weight: float = 0.0,
+    residual_space: str = "cross",
 ) -> AlignmentResult:
     """Optimize rotation and camera parameters from matched points.
 
@@ -274,6 +281,8 @@ def optimize_alignment(
             3 for fisheye cameras and 4 for perspective cameras.
         focal_regularization_weight: prior weight for fisheye focal scale.
             The default is zero; pass ``1.0`` to restore the previous prior.
+        residual_space: residual representation used by least squares. The
+            production default is the directional ``"cross"`` residual.
 
     Returns:
         AlignmentResult with optimized rotation and refined cameras.
@@ -319,6 +328,7 @@ def optimize_alignment(
         ref_state=_camera_optimization_state(camera1, ref_policy),
         src_state=_camera_optimization_state(camera2, src_policy),
         same_camera=same_camera,
+        residual_space=residual_space,
     )
     x0 = pack_flexible_initial_params(rvec, ctx)
     ctx.params0 = x0.copy()
@@ -327,8 +337,56 @@ def optimize_alignment(
 
     # jointly optimize rotation and camera parameters, with optional regularization
     res = run_flexible_optimization(x0, ctx, max_nfev=300)
+    _validate_flexible_optimization(res, ctx)
     _log_flexible_optimization_summary(ctx, res.x)
     return _build_flexible_result(res.x, ctx, camera1, camera2)
+
+
+def _validate_flexible_optimization(
+    res,
+    ctx: FlexibleOptimizationContext,
+) -> None:
+    """Reject failed, bounded, or unobservable two-image camera solutions."""
+    if not res.success or not np.all(np.isfinite(res.x)):
+        raise AlignmentOptimizationError(
+            f"two-image optimization failed: {res.message}")
+
+    camera_slices = [
+        param_slice
+        for _, _, param_slice in iter_optimized_camera_param_slices(ctx)
+    ]
+    if any(np.any(np.asarray(res.active_mask[param_slice]) != 0)
+           for param_slice in camera_slices):
+        raise AlignmentOptimizationError(
+            "two-image camera parameters reached optimization bounds")
+
+    camera_indices = np.concatenate([
+        np.arange(param_slice.start, param_slice.stop)
+        for param_slice in camera_slices
+    ]) if camera_slices else np.empty(0, dtype=np.int64)
+    if camera_indices.size == 0:
+        return
+
+    component_count = {"angular": 1, "cross": 3, "pixel": 2}[
+        ctx.residual_space]
+    data_rows = len(ctx.ref_pts) * component_count
+    jacobian = np.asarray(res.jac[:data_rows], dtype=np.float64)
+    camera_j = jacobian[:, camera_indices]
+    pose_j = jacobian[:, :3]
+    if pose_j.size:
+        q_mat, _ = np.linalg.qr(pose_j, mode="reduced")
+        camera_j = camera_j - q_mat @ (q_mat.T @ camera_j)
+    singular = np.linalg.svd(camera_j, compute_uv=False)
+    tolerance = (np.finfo(np.float64).eps * max(camera_j.shape)
+                 * singular[0]) if singular.size else 0.0
+    if (len(singular) < len(camera_indices)
+            or singular[-1] <= max(tolerance, 1e-10)):
+        raise AlignmentOptimizationError(
+            "two-image camera parameters are rank deficient")
+    condition = float(singular[0] / singular[-1])
+    if not np.isfinite(condition) or condition > 1e8:
+        raise AlignmentOptimizationError(
+            f"two-image camera parameters are ill-conditioned ({condition:.3e})")
 
 
 def _guided_rematch_residual_p90(
@@ -356,6 +414,7 @@ def run_guided_refine_stage(
     ref_policy: Optional[CameraOptimizationPolicy] = None,
     src_policy: Optional[CameraOptimizationPolicy] = None,
     focal_regularization_weight: float = 0.0,
+    residual_space: str = "cross",
 ) -> tuple[AlignmentResult, MatchResult, str]:
     """Run one guided-rematch + re-optimization stage, accepted only if it helps.
 
@@ -404,6 +463,7 @@ def run_guided_refine_stage(
         ref_policy=ref_policy,
         src_policy=src_policy,
         focal_regularization_weight=focal_regularization_weight,
+        residual_space=residual_space,
     )
 
     p90_before = _guided_rematch_residual_p90(guided_match, alignment)
@@ -434,13 +494,13 @@ def _default_optimization_policy(
         return CameraOptimizationPolicy(
             optimize_focal=True,
             optimize_distortion=True,
-            optimize_principal_point=False,
+            optimize_principal_point=True,
             n_dist=3 if n_dist is None else n_dist,
         )
     return CameraOptimizationPolicy(
         optimize_focal=True,
         optimize_distortion=True,
-        optimize_principal_point=False,
+        optimize_principal_point=True,
         n_dist=4 if n_dist is None else n_dist,
     )
 
@@ -457,7 +517,10 @@ def _camera_optimization_state(
         n_dist: int,
     ) -> NDArray[np.float64]:
         if n_dist <= 0:
-            return np.zeros(0, dtype=np.float64)
+            # A fixed-camera solve must still evaluate the initialized lens
+            # model.  ``n_dist`` controls which prefix may move; it does not
+            # disable distortion already present on the camera.
+            return camera.distortion.to_cv2().copy()
         if camera.distortion.is_zero:
             return np.zeros(n_dist, dtype=np.float64)
         if isinstance(camera, FisheyeCameraModel):
@@ -538,8 +601,7 @@ def _camera_with_solved_params(
     return refined.with_distortion(Distortion.from_cv2(dist_arr))
 
 
-def _build_flexible_result(params_flat, ctx, camera1,
-                           camera2) -> AlignmentResult:
+def _build_flexible_result(params_flat, ctx, camera1, camera2) -> AlignmentResult:
     rvec, ref_params, src_params = unpack_flexible_params(params_flat, ctx)
     R, _ = cv2.Rodrigues(rvec.reshape(3, 1))
     cam1_refined = _camera_with_solved_params(camera1, ctx.ref_state,

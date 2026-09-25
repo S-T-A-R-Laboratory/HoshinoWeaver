@@ -297,6 +297,24 @@ class TestTryBuildCamera:
             init_policy=CameraInitializationPolicy(lens_type="fisheye"),
         )
         assert cand.optimization_policy.n_dist == 3
+        assert cand.optimization_policy.optimize_principal_point
+        assert cand.optimization_policy.principal_point_offset_limit == pytest.approx(
+            0.05)
+
+    def test_large_principal_point_option_uses_half_axis_bound(self):
+        cand = build_camera_candidate(
+            None,
+            (4000, 6000),
+            "distortion",
+            init_policy=CameraInitializationPolicy(
+                lens_type="fisheye",
+                allow_large_principal_point_offset=True,
+            ),
+        )
+
+        assert cand.optimization_policy.optimize_principal_point
+        assert cand.optimization_policy.principal_point_offset_limit == pytest.approx(
+            0.5)
 
     def test_no_exif_perspective_uses_20mm_fallback(self):
         cam = build_camera(None, (4000, 6000), "distortion")

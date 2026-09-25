@@ -412,6 +412,7 @@ def config_validity_check(
     """检查配置参数合法性。
 
     当前检查项：
+    - 去卫星线手动焦距配置的完整性
     - temp_path 可用性（仅在 buffer_mode 需要磁盘缓存时）：
         - config.cache_path.missing      — 路径不存在，fix: 回退系统默认
         - config.cache_path.not_writable — 路径不可写，fix: 回退系统默认
@@ -419,13 +420,56 @@ def config_validity_check(
     _ = dag, global_inputs
     issues: list[PreflightIssue] = []
 
+    if effective_configs.get("enable_satellite_clean", False):
+        camera_mode = effective_configs.get("sat_camera_mode", "exif")
+        if camera_mode not in ("exif", "manual"):
+            issues.append(PreflightIssue(
+                severity="error",
+                code="config.satellite_clean.camera_mode.invalid",
+                message=(
+                    "去卫星线的焦距信息来源无效："
+                    f"{camera_mode!r}，应选择读取 EXIF 或手动指定。"),
+            ))
+        elif camera_mode == "manual":
+            focal_length = effective_configs.get("sat_focal_length_mm")
+            crop_factor = effective_configs.get("sat_crop_factor", 1.0)
+            if focal_length in (None, ""):
+                issues.append(PreflightIssue(
+                    severity="error",
+                    code="config.satellite_clean.focal_length.missing",
+                    message="去卫星线选择手动指定时，必须填写镜头焦距。",
+                ))
+            else:
+                try:
+                    focal_valid = float(focal_length) > 0
+                except (TypeError, ValueError):
+                    focal_valid = False
+                if not focal_valid:
+                    issues.append(PreflightIssue(
+                        severity="error",
+                        code="config.satellite_clean.focal_length.invalid",
+                        message="去卫星线的镜头焦距必须为正数。",
+                    ))
+            try:
+                crop_valid = float(crop_factor) > 0
+            except (TypeError, ValueError):
+                crop_valid = False
+            if not crop_valid:
+                issues.append(PreflightIssue(
+                    severity="error",
+                    code="config.satellite_clean.crop_factor.invalid",
+                    message="去卫星线的传感器裁切系数必须为正数。",
+                ))
+
     buffer_mode = effective_configs.get("buffer_mode", "disk")
     if buffer_mode in ("memory", "replay"):
-        return CheckResult(check_name=CONFIG_VALIDITY_CHECK_NAME, issues=[])
+        return CheckResult(
+            check_name=CONFIG_VALIDITY_CHECK_NAME, issues=issues)
 
     temp_path_str = effective_configs.get("temp_path")
     if not temp_path_str:
-        return CheckResult(check_name=CONFIG_VALIDITY_CHECK_NAME, issues=[])
+        return CheckResult(
+            check_name=CONFIG_VALIDITY_CHECK_NAME, issues=issues)
     system_default = tempfile.gettempdir()
     path = Path(temp_path_str)
 

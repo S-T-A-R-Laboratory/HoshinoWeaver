@@ -1,0 +1,104 @@
+description: "同相机联合对齐分支：整段序列共享相机联合求解，逐帧旋转重映射到参考帧"
+version: "1"
+
+inputs:
+  fnames: { type: sequence, required: true }
+
+configs:
+  mask:                     { type: image, default: null }
+  loader_type:              { type: str,  default: "img_file_list" }
+  loader_configs:           { type: dict, default: {} }
+  reference_frame_index:    { type: int,  default: null }
+  camera_setup_mode:        { type: str,  default: "auto" }
+  lens_type:                { type: str,  default: null }
+  distortion:               { type: list, default: null }
+  focal_length_mm:          { type: float, default: null }
+  crop_factor:              { type: float, default: 1.0 }
+  fallback_focal_equiv_mm:  { type: float, default: 20.0 }
+  optimize_focal:           { type: bool, default: true }
+  optimize_distortion:      { type: bool, default: true }
+  optimize_principal_point: { type: bool, default: null }
+  allow_large_principal_point_offset: { type: bool, default: false }
+  pair_offsets:             { type: list, default: [1, 2, 4] }
+  max_pairs_per_edge:       { type: int,  default: 128 }
+  edge_topology:            { type: str,  default: "multiscale" }
+  max_pair_offset:          { type: int,  default: null }
+  random_seed:              { type: int,  default: 0 }
+  remap_map_scale:          { type: float, default: 0.5 }
+
+nodes:
+  ba_data_loader:
+    op: ImgDataLoaderOp
+    inputs: { src: inputs.fnames }
+    configs:
+      loader_type: configs.loader_type
+      configs: configs.loader_configs
+    outputs: { result: { type: sequence } }
+
+  ba_exif_loader:
+    op: ExifReadOp
+    inputs: { fnames: inputs.fnames }
+    outputs: { result: { type: sequence } }
+
+  bundle_adjust:
+    op: BundleAdjustmentOp
+    inputs:
+      data: ba_data_loader.result
+      exifs: ba_exif_loader.result
+    configs:
+      mask: configs.mask
+      reference_frame_index: configs.reference_frame_index
+      camera_setup_mode: configs.camera_setup_mode
+      lens_type: configs.lens_type
+      distortion: configs.distortion
+      focal_length_mm: configs.focal_length_mm
+      crop_factor: configs.crop_factor
+      fallback_focal_equiv_mm: configs.fallback_focal_equiv_mm
+      optimize_focal: configs.optimize_focal
+      optimize_distortion: configs.optimize_distortion
+      optimize_principal_point: configs.optimize_principal_point
+      allow_large_principal_point_offset: configs.allow_large_principal_point_offset
+      pair_offsets: configs.pair_offsets
+      max_pairs_per_edge: configs.max_pairs_per_edge
+      edge_topology: configs.edge_topology
+      max_pair_offset: configs.max_pair_offset
+      random_seed: configs.random_seed
+    outputs: { alignment_plan: { type: object } }
+
+  remap_data_loader:
+    op: ImgDataLoaderOp
+    inputs: { src: inputs.fnames }
+    configs:
+      loader_type: configs.loader_type
+      configs: configs.loader_configs
+    outputs: { result: { type: sequence } }
+
+  remap_exif_loader:
+    op: ExifReadOp
+    inputs: { fnames: inputs.fnames }
+    outputs: { result: { type: sequence } }
+
+  remap_sky_mask:
+    op: ApplyMaskOp
+    inputs: { image: remap_data_loader.result }
+    configs: { mask: configs.mask }
+    outputs: { result: { type: sequence } }
+
+  bundle_remap:
+    op: BundleReferenceRemapOp
+    inputs:
+      data: remap_sky_mask.result
+      exifs: remap_exif_loader.result
+    configs:
+      alignment_plan: bundle_adjust.alignment_plan
+      remap_map_scale: configs.remap_map_scale
+    outputs:
+      result: { type: sequence }
+      aligned_exifs: { type: sequence }
+      remap_report: { type: object }
+
+outputs:
+  result: bundle_remap.result
+  aligned_exifs: bundle_remap.aligned_exifs
+  raw_data: remap_data_loader.result
+  remap_report: bundle_remap.remap_report

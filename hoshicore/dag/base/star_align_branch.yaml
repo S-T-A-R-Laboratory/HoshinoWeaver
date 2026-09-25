@@ -1,0 +1,82 @@
+description: "简单对齐分支：逐帧对齐到外部参考图（同/异相机均可，无共享相机约束）"
+version: "1"
+
+inputs:
+  fnames: { type: sequence, required: true }
+
+configs:
+  mask:              { type: image, default: null }
+  loader_type:       { type: str,  default: "img_file_list" }
+  loader_configs:    { type: dict, default: {} }
+  align_base:        { type: str,  default: null }
+  align_method:      { type: str,  default: "homography" }
+  camera_setup_mode: { type: str,  default: "auto" }
+  same_camera:       { type: bool, default: true }
+  matching_path:     { type: str,  default: "asterism" }
+  guided_refine:     { type: bool, default: false }
+  distortion:        { type: list, default: null }
+  lens_type:         { type: str,  default: null }
+  ref_lens_type:     { type: str,  default: null }
+  src_lens_type:     { type: str,  default: null }
+  focal_length_mm:   { type: float, default: null }
+  crop_factor:       { type: float, default: 1.0 }
+  allow_large_principal_point_offset: { type: bool, default: false }
+
+nodes:
+  data_loader:
+    op: ImgDataLoaderOp
+    inputs: { src: inputs.fnames }
+    configs:
+      loader_type: configs.loader_type
+      configs: configs.loader_configs
+    outputs: { result: { type: sequence } }
+
+  exif_loader:
+    op: ExifReadOp
+    inputs: { fnames: inputs.fnames }
+    outputs: { result: { type: sequence } }
+
+  apply_sky_mask:
+    op: ApplyMaskOp
+    inputs: { image: data_loader.result }
+    configs: { mask: configs.mask }
+    outputs: { result: { type: sequence } }
+
+  load_align_base:
+    op: LoadSingleImageOp
+    configs: { path: configs.align_base }
+    outputs: { result: { type: image } }
+
+  reference_exif_loader:
+    op: ExifReadSingleOp
+    configs: { fname: configs.align_base }
+    outputs: { result: { type: exif } }
+
+  star_aligner:
+    op: StarAlignmentOp
+    inputs:
+      data: apply_sky_mask.result
+      exifs: exif_loader.result
+    configs:
+      reference: load_align_base.result
+      reference_exif: reference_exif_loader.result
+      method: configs.align_method
+      camera_setup_mode: configs.camera_setup_mode
+      same_camera: configs.same_camera
+      matching_path: configs.matching_path
+      guided_refine: configs.guided_refine
+      distortion: configs.distortion
+      lens_type: configs.lens_type
+      ref_lens_type: configs.ref_lens_type
+      src_lens_type: configs.src_lens_type
+      focal_length_mm: configs.focal_length_mm
+      crop_factor: configs.crop_factor
+      allow_large_principal_point_offset: configs.allow_large_principal_point_offset
+    outputs:
+      result: { type: sequence }
+      aligned_exifs: { type: sequence }
+
+outputs:
+  result: star_aligner.result
+  aligned_exifs: star_aligner.aligned_exifs
+  raw_data: data_loader.result

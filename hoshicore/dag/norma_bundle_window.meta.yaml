@@ -36,6 +36,7 @@ configs:
   loader_type:              { type: str, default: "img_file_list" }
   loader_configs:           { type: dict, default: {} }
   reference_frame_index:    { type: int, default: null }
+  camera_setup_mode:        { type: str, default: "auto" }
   lens_type:                { type: str, default: null }
   distortion:               { type: list, default: null }
   focal_length_mm:          { type: float, default: null }
@@ -44,11 +45,15 @@ configs:
   optimize_focal:           { type: bool, default: true }
   optimize_distortion:      { type: bool, default: true }
   optimize_principal_point: { type: bool, default: null }
+  allow_large_principal_point_offset: { type: bool, default: false }
   pair_offsets:             { type: list, default: [1, 2, 4] }
-  max_pairs_per_edge:       { type: int, default: 512 }
+  max_pairs_per_edge:       { type: int, default: 128 }
+  edge_topology:            { type: str, default: "multiscale" }
+  max_pair_offset:          { type: int, default: null }
+  max_nfev:                 { type: int, default: 2000 }
   random_seed:              { type: int, default: 0 }
   window_size:              { type: int, default: 5 }
-  min_contributors:         { type: int, default: 2 }
+  min_contributors:         { type: int, default: 1 }
   ground_window_size:       { type: int, default: 5 }
   ground_min_contributors:  { type: int, default: 1 }
   remap_map_scale:          { type: float, default: 0.5 }
@@ -59,6 +64,10 @@ configs:
   output_dtype:             { type: str, default: "uint16" }
   jpg_quality:              { type: int, default: 85 }
   png_compressing:          { type: int, default: 7 }
+  enable_star_shrink:     { type: bool, default: false }
+  star_shrink_mode:       { type: str,  default: "moderate" }
+  enable_frame_rotation_export_save: { type: bool, default: false }
+  frame_rotations_output_path:       { type: str, default: null }
 
 nodes:
   ba_data_loader:
@@ -94,6 +103,7 @@ nodes:
     configs:
       mask: load_mask.result
       reference_frame_index: configs.reference_frame_index
+      camera_setup_mode: configs.camera_setup_mode
       lens_type: configs.lens_type
       distortion: configs.distortion
       focal_length_mm: configs.focal_length_mm
@@ -102,8 +112,12 @@ nodes:
       optimize_focal: configs.optimize_focal
       optimize_distortion: configs.optimize_distortion
       optimize_principal_point: configs.optimize_principal_point
+      allow_large_principal_point_offset: configs.allow_large_principal_point_offset
       pair_offsets: configs.pair_offsets
       max_pairs_per_edge: configs.max_pairs_per_edge
+      edge_topology: configs.edge_topology
+      max_pair_offset: configs.max_pair_offset
+      max_nfev: configs.max_nfev
       random_seed: configs.random_seed
     outputs: { alignment_plan: { type: object } }
 
@@ -202,10 +216,21 @@ nodes:
       aligned_exifs: { type: sequence }
       center_indices: { type: sequence }
 
+  star_shrink:
+    op: StarShrinkOp
+    enable: configs.enable_star_shrink
+    bypass: data
+    inputs:
+      data: window_filter.result
+    configs:
+      mode: configs.star_shrink_mode
+    outputs:
+      result: { type: sequence }
+
   batch_saver:
     op: BatchImageSaveOp
     inputs:
-      data: window_filter.result
+      data: star_shrink.result
       frame_indices: window_filter.center_indices
       exifs: window_filter.aligned_exifs
     configs:
@@ -223,6 +248,22 @@ nodes:
       window_report: window_stack.window_report
     outputs: { summary: { type: str } }
 
+  frame_rotation_export:
+    op: BundleFrameRotationExportOp
+    configs:
+      alignment_plan: bundle_adjust.alignment_plan
+    outputs: { export: { type: object } }
+
+  frame_rotation_export_save:
+    op: BundleFrameRotationExportSaveOp
+    enable: configs.enable_frame_rotation_export_save
+    configs:
+      export: frame_rotation_export.export
+      output_path: configs.frame_rotations_output_path
+    outputs: { result: { type: str } }
+
 outputs:
   result: batch_saver.result
   summary: report_display.summary
+  frame_rotations: frame_rotation_export.export
+  frame_rotations_path: { src: frame_rotation_export_save.result, required: false }

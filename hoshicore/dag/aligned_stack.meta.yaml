@@ -1,0 +1,241 @@
+description: "对齐叠加（简单对齐 / 同相机联合对齐可选）"
+version: "1"
+
+# ── 全局输入 ──
+inputs:
+  fnames: { type: sequence, required: true }
+
+# ── 路由定义 ──
+routes:
+  align_mode:
+    options:
+      simple: base/star_align_branch.yaml
+      bundle: base/bundle_align_branch.yaml
+    default: bundle
+  stacker:
+    options:
+      mean: null
+      sigma_clip: null
+      median: null
+      huber_mean: null
+      max_mix: null
+      max: null
+    default: mean
+  ground_stacker:
+    options:
+      mean: null
+      sigma_clip: null
+      median: null
+      huber_mean: null
+      max_mix: null
+      max: null
+    default: mean
+
+route_configs:
+  align_mode:
+    simple:
+      align_base: { type: str, default: null }
+      align_method: { type: str, default: "homography" }
+      camera_setup_mode: { type: str, default: "auto" }
+      same_camera: { type: bool, default: true }
+      matching_path: { type: str, default: "asterism" }
+      guided_refine: { type: bool, default: false }
+      ref_lens_type: { type: str, default: null }
+      src_lens_type: { type: str, default: null }
+      lens_type: { type: str, default: null }
+      focal_length_mm: { type: float, default: null }
+      crop_factor: { type: float, default: 1.0 }
+      fallback_focal_equiv_mm: { type: float, default: 20.0 }
+      allow_large_principal_point_offset: { type: bool, default: false }
+    bundle:
+      reference_frame_index: { type: int, default: null }
+      camera_setup_mode: { type: str, default: "auto" }
+      lens_type: { type: str, default: null }
+      focal_length_mm: { type: float, default: null }
+      crop_factor: { type: float, default: 1.0 }
+      optimize_focal: { type: bool, default: true }
+      optimize_distortion: { type: bool, default: true }
+      optimize_principal_point: { type: bool, default: null }
+      pair_offsets: { type: list, default: [1, 2, 4] }
+      max_pairs_per_edge: { type: int, default: 128 }
+      edge_topology: { type: str, default: "multiscale" }
+      max_pair_offset: { type: int, default: null }
+      fallback_focal_equiv_mm: { type: float, default: 20.0 }
+      allow_large_principal_point_offset: { type: bool, default: false }
+
+  stacker:
+    sigma_clip:
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
+    huber_mean:
+      huber_c: { type: float, default: 1.345 }
+    max_mix:
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
+      minus_only: { type: bool, default: true }
+  ground_stacker:
+    sigma_clip:
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
+    huber_mean:
+      huber_c: { type: float, default: 1.345 }
+    max_mix:
+      rej_high: { type: float, default: 3.0 }
+      rej_low: { type: float, default: 3.0 }
+      max_iter: { type: int, default: 5 }
+      minus_only: { type: bool, default: true }
+
+# ── 全局配置 ──
+configs:
+  loader_type: { type: str, default: "img_file_list" }
+  loader_configs: { type: dict, default: {} }
+  distortion: { type: list, default: null }
+  remap_map_scale: { type: float, default: 0.5 }
+  int_weight: { type: bool, default: true }
+  mask: { type: str, default: null }
+  enable_ground: { type: bool, default: true }
+  exif_reduce_type: { type: str, default: "sum" }
+  output_filename: { type: str, required: true }
+  output_dtype: { type: str, default: "uint16" }
+  jpg_quality: { type: int, default: 85 }
+  png_compressing: { type: int, default: 7 }
+
+# ── 节点 ──
+#
+#  inputs.fnames ──► align_branch(simple|bundle) ──► sky_stacker ──┐
+#                 └─────────────► remap_data_loader(内部) ──► ground_stacker ──┤
+#                                                                              ▼
+#                                                          image_add ──► image_saver
+
+nodes:
+  load_mask:
+    op: LoadMaskImageOp
+    configs:
+      path: configs.mask
+    outputs: { result: { type: image } }
+
+  mask_invert:
+    op: MaskInvertOp
+    configs:
+      mask: load_mask.result
+    outputs: { result: { type: image } }
+
+  align_branch:
+    route_key: align_mode
+    label: "对齐"
+    inputs:
+      fnames: inputs.fnames
+    route_configs:
+      simple:
+        mask: load_mask.result
+        loader_type: configs.loader_type
+        loader_configs: configs.loader_configs
+        distortion: configs.distortion
+      bundle:
+        mask: load_mask.result
+        loader_type: configs.loader_type
+        loader_configs: configs.loader_configs
+        distortion: configs.distortion
+        remap_map_scale: configs.remap_map_scale
+    outputs:
+      result: { type: sequence }
+      aligned_exifs: { type: sequence }
+      raw_data: { type: sequence }
+
+  sky_stacker:
+    op: base/stacker.meta.yaml
+    route_key: stacker
+    label: "天空叠加"
+    routes:
+      stacker: routes.stacker
+    inputs:
+      data: align_branch.result
+    route_configs:
+      mean:
+        int_weight: configs.int_weight
+        mask: load_mask.result
+      sigma_clip:
+        int_weight: configs.int_weight
+        mask: load_mask.result
+      median: {}
+      huber_mean:
+        int_weight: configs.int_weight
+        mask: load_mask.result
+      max_mix:
+        int_weight: configs.int_weight
+      max:
+        int_weight: configs.int_weight
+    outputs: { result: { type: image } }
+
+  ground_stacker:
+    op: base/stacker.meta.yaml
+    enable: configs.enable_ground
+    route_key: ground_stacker
+    label: "地面叠加"
+    routes:
+      stacker: routes.ground_stacker
+    inputs:
+      data: align_branch.raw_data
+    route_configs:
+      mean:
+        int_weight: configs.int_weight
+        mask: mask_invert.result
+      sigma_clip:
+        int_weight: configs.int_weight
+        mask: mask_invert.result
+      median: {}
+      huber_mean:
+        int_weight: configs.int_weight
+        mask: mask_invert.result
+      max_mix:
+        int_weight: configs.int_weight
+      max:
+        int_weight: configs.int_weight
+    outputs: { result: { type: image } }
+
+  sky_apply_mask:
+    op: ApplyMaskOp
+    inputs:
+      image: sky_stacker.result
+    configs:
+      mask: load_mask.result
+    outputs: { result: { type: sequence } }
+
+  ground_apply_mask:
+    op: ApplyMaskOp
+    enable: configs.enable_ground
+    inputs:
+      image: ground_stacker.result
+    configs:
+      mask: mask_invert.result
+    outputs: { result: { type: sequence } }
+
+  image_add:
+    op: ImageAddOp
+    configs:
+      image_a: sky_apply_mask.result
+      image_b: ground_apply_mask.result
+    outputs: { result: { type: image } }
+
+  exif_reducer:
+    op: ExifReduceOp
+    inputs: { exifs: align_branch.aligned_exifs }
+    configs: { merge_method: configs.exif_reduce_type }
+    outputs: { result: { type: object } }
+
+  image_saver:
+    op: ImageSaveOp
+    configs:
+      image: image_add.result
+      exif: exif_reducer.result
+      output_filename: configs.output_filename
+      output_dtype: configs.output_dtype
+      jpg_quality: configs.jpg_quality
+      png_compressing: configs.png_compressing
+    outputs: { return_code: { type: int } }
+
+outputs:
+  result: image_saver.return_code

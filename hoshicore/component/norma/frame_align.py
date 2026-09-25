@@ -14,7 +14,9 @@ from .alignment import (AlignmentResult, match_star_pairs,
                          run_guided_refine_stage)
 from .detection import DetectedStars
 from .matching import MatchResult, RotationDiagnostics, evaluate_rotation
-from .optimization import CameraOptimizationPolicy
+from .optimization import (CameraOptimizationPolicy,
+                           DEFAULT_PRINCIPAL_POINT_OFFSET_LIMIT,
+                           LARGE_PRINCIPAL_POINT_OFFSET_LIMIT)
 from .geometry_view import GeometryView, StarDetectionCache
 from .intrinsics_from_exif import (intrinsics_from_exif,
                                    intrinsics_from_focal_equiv,
@@ -64,6 +66,7 @@ class CameraInitializationPolicy:
     optimize_focal: Optional[bool] = None
     optimize_distortion: Optional[bool] = None
     optimize_principal_point: Optional[bool] = None
+    allow_large_principal_point_offset: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -187,9 +190,9 @@ def _policy_for_camera(
     optimize_distortion = (default_optimize_distortion
                            if init_policy.optimize_distortion is None else
                            init_policy.optimize_distortion)
-    optimize_principal_point = (False
-                                if init_policy.optimize_principal_point is None
-                                else init_policy.optimize_principal_point)
+    optimize_principal_point = (
+        True if init_policy.optimize_principal_point is None
+        else init_policy.optimize_principal_point)
     return CameraOptimizationPolicy(
         optimize_focal=optimize_focal,
         optimize_distortion=optimize_distortion,
@@ -198,6 +201,10 @@ def _policy_for_camera(
         # typical star-field coverage. Keep it fixed by default and optimize
         # k1..k3; perspective cameras retain their four-parameter policy.
         n_dist=3 if init_policy.lens_type == "fisheye" else 4,
+        principal_point_offset_limit=(
+            LARGE_PRINCIPAL_POINT_OFFSET_LIMIT
+            if init_policy.allow_large_principal_point_offset
+            else DEFAULT_PRINCIPAL_POINT_OFFSET_LIMIT),
     )
 
 
@@ -402,8 +409,10 @@ def _bootstrap_candidate_score(
     median_score = float(
         np.exp(-(diagnostics.median_angle_error_rad / median_scale)**2))
     coverage_score = float(1.0 - np.exp(-diagnostics.coverage_ratio / 0.10))
-    match_score = float(1.0 - np.exp(-max(match_count, 0) / 1000.0))
-    outer_score = float(1.0 - np.exp(-max(outer_count, 0) / 80.0))
+    # Counts saturate deliberately: after a few hundred well-distributed
+    # inliers, more central points add little camera-model information.
+    match_score = float(1.0 - np.exp(-max(match_count, 0) / 256.0))
+    outer_score = float(1.0 - np.exp(-max(outer_count, 0) / 32.0))
     sector_score = float(np.clip(active_sectors / 8.0, 0.0, 1.0))
     focal_score = float(
         np.exp(-(abs(ref_scale - 1.0) + abs(src_scale - 1.0)) / 0.30))
@@ -416,14 +425,17 @@ def _bootstrap_candidate_score(
         "sectors": sector_score,
         "focal": focal_score,
     }
+    # Every candidate has already passed the rotation acceptance gates.  The
+    # ranking therefore balances residual quality with how well the selected
+    # points constrain the image, instead of allowing P90 alone to dominate.
     score = (
-        4.0 * p90_score
-        + 1.5 * median_score
-        + 1.0 * coverage_score
-        + 0.8 * match_score
-        + 0.25 * outer_score
-        + 0.25 * sector_score
-        + 0.10 * focal_score
+        0.30 * p90_score
+        + 0.15 * median_score
+        + 0.20 * coverage_score
+        + 0.10 * match_score
+        + 0.10 * outer_score
+        + 0.10 * sector_score
+        + 0.05 * focal_score
     )
     return score, components
 
@@ -625,6 +637,7 @@ def solve_star_alignment(
     same_camera: bool = False,
     use_asterism_bootstrap: bool = True,
     random_seed: int | None = None,
+    residual_space: str = "cross",
 ) -> tuple[AlignmentResult, MatchResult]:
     """Align pre-detected stars without retaining source image pixels."""
     ref_geo = GeometryView(ref_stars, ref_candidate.camera)
@@ -646,6 +659,7 @@ def solve_star_alignment(
         same_camera=same_camera,
         ref_policy=selected_ref.optimization_policy,
         src_policy=selected_src.optimization_policy,
+        residual_space=residual_space,
     )
     return alignment, match
 
@@ -663,6 +677,7 @@ def solve_staged_alignment(
     ref_refine_stars: Optional[DetectedStars] = None,
     src_refine_stars: Optional[DetectedStars] = None,
     random_seed: int | None = None,
+    residual_space: str = "cross",
 ) -> StagedSolveResult:
     """Solve from explicit bootstrap and optional refine star sets.
 
@@ -695,6 +710,7 @@ def solve_staged_alignment(
         same_camera=same_camera,
         ref_policy=ref_candidate.optimization_policy,
         src_policy=src_candidate.optimization_policy,
+        residual_space=residual_space,
     )
     timings["first_optimization"] = perf_counter() - started
 
@@ -726,6 +742,7 @@ def solve_staged_alignment(
                 max_distance_px=guided_refine_radius_px,
                 ref_policy=ref_candidate.optimization_policy,
                 src_policy=src_candidate.optimization_policy,
+                residual_space=residual_space,
             )
             timings["guided_rematch"] = perf_counter() - started
         except Exception as exc:

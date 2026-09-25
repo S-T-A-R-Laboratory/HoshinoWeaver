@@ -7,7 +7,8 @@ from loguru import logger
 
 from ..component.calibration import (calibration_divide, calibration_subtract,
                                      crop_roi, natural_sort_key, resize_image)
-from ..component.data_container import DTYPE_MAX_VALUE, FloatImage
+from ..component.data_container import (DTYPE_MAX_VALUE, FloatImage,
+                                        align_dtype_pair)
 from ..component.image_io import load_img
 from ..component.queue import StreamExhausted
 from ..engine.registry import register_op
@@ -520,9 +521,11 @@ class ImageAddOp(BaseOp):
             return
         a_arr = a.data if isinstance(a, FloatImage) else a
         b_arr = b.data if isinstance(b, FloatImage) else b
+        a_arr, b_arr, result_dtype = align_dtype_pair(
+            a_arr, a.dtype, b_arr, b.dtype)
         result_arr = np.add(a_arr, b_arr)
-        if isinstance(a, FloatImage):
-            result = FloatImage(data=result_arr, dtype=a.dtype)
+        if isinstance(a, FloatImage) or isinstance(b, FloatImage):
+            result = FloatImage(data=result_arr, dtype=result_dtype)
         else:
             result = result_arr
         await self._broadcast_outputs({"result": result})

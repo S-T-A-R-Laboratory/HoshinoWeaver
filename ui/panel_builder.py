@@ -186,6 +186,8 @@ def _build_config_spec(key: str, meta_spec: dict, ui_spec: dict) -> ConfigSpec:
         accept=ui_spec.get("accept"),
         transform=ui_spec.get("transform"),
         visible_when=ui_spec.get("visible_when"),
+        nullable=bool(ui_spec.get("nullable", False)),
+        null_text=str(ui_spec.get("null_text", "自动")),
     )
 
 
@@ -252,9 +254,19 @@ class DynamicConfigPanel(QWidget):
         self._config_getters: dict[str, Callable] = {}
         self._route_getters: dict[str, Callable] = {}
         self._route_config_getters: dict[tuple[str, str], Callable] = {}
+        # Flat "route_key.param_key" view of _route_config_getters, for
+        # visible_when lookups. Only holds entries for the currently
+        # rendered (active) option of each route.
+        self._route_config_flat_getters: dict[str, Callable] = {}
         self._route_config_container: dict[str, QWidget] = {}
         self._bound_pairs: dict[str | tuple[str, str], str] = {}
         self._visibility_deps: dict[str, list[tuple[list[QWidget], dict]]] = {}
+        # Per-route-key record of (dep_keys, entry) added while rendering
+        # that route's current route_config section, so a later rebuild can
+        # remove exactly those entries instead of leaking stale widget refs.
+        self._route_config_visibility_entries: dict[
+            str, list[tuple[list[str], tuple]]] = {}
+        self._registered_hook_keys: set[str] = set()
         self._config_widgets: dict[str, QWidget] = {}
         self._config_on_change_hooks: dict[str, list[Callable]] = {}
 
@@ -263,9 +275,12 @@ class DynamicConfigPanel(QWidget):
         self._config_getters.clear()
         self._route_getters.clear()
         self._route_config_getters.clear()
+        self._route_config_flat_getters.clear()
         self._route_config_container.clear()
         self._bound_pairs.clear()
         self._visibility_deps.clear()
+        self._route_config_visibility_entries.clear()
+        self._registered_hook_keys.clear()
         self._config_widgets.clear()
         self._config_on_change_hooks.clear()
 
@@ -363,7 +378,7 @@ class DynamicConfigPanel(QWidget):
     def _on_route_changed(self, route_key: str, option: str):
         if route_key in self._route_config_container:
             self._rebuild_route_config_section(route_key, option)
-        self._evaluate_visibility(route_key)
+        self._evaluate_all_visibility()
         self.values_changed.emit()
 
     def _rebuild_route_config_section(self, route_key: str, option: str):
@@ -377,6 +392,8 @@ class DynamicConfigPanel(QWidget):
         for k in old_keys:
             del self._route_config_getters[k]
             self._bound_pairs.pop(k, None)
+            self._route_config_flat_getters.pop(f"{route_key}.{k[1]}", None)
+        self._unregister_route_config_visibility(route_key)
 
         specs = self._schema.route_configs.get(route_key, {}).get(option, [])
         bound_targets: set[str] = set()
@@ -388,6 +405,7 @@ class DynamicConfigPanel(QWidget):
             s for s in specs if not s.hidden and s.key not in bound_targets
         ]
         if not visible_specs:
+            self._evaluate_all_visibility()
             return
 
         route_spec = self._schema.routes.get(route_key)
@@ -406,16 +424,28 @@ class DynamicConfigPanel(QWidget):
         )
 
         for spec in visible_specs:
+            def _on_route_config_change(rk=route_key, pk=spec.key):
+                self.values_changed.emit()
+                for hook in self._config_on_change_hooks.get(
+                        f"{rk}.{pk}", []):
+                    hook()
+
             row, getter, setter = create_config_row(
                 spec,
                 parent=container,
-                on_change=self.values_changed.emit,
+                on_change=_on_route_config_change,
             )
             group_layout.addWidget(row)
             getter_key = (route_key, spec.key)
             self._route_config_getters[getter_key] = getter
+            self._route_config_flat_getters[f"{route_key}.{spec.key}"] = getter
             if spec.bind:
                 self._bound_pairs[getter_key] = spec.bind
+            if spec.visible_when:
+                self._register_visibility_dep(
+                    [row], spec.visible_when, owner_route_key=route_key)
+
+        self._evaluate_all_visibility()
 
     def _add_config_widget(self, spec: ConfigSpec, target_layout=None):
         if spec.widget == "range_slider" and spec.bind:
@@ -469,15 +499,45 @@ class DynamicConfigPanel(QWidget):
 
     # ── Conditional Visibility ────────────────────────────────────────────
 
-    def _register_visibility_dep(self, targets: list[QWidget], condition: dict):
+    def _register_visibility_dep(
+        self,
+        targets: list[QWidget],
+        condition: dict,
+        owner_route_key: str | None = None,
+    ):
+        """Register a visible_when dependency.
+
+        `owner_route_key` marks the entry as belonging to one route_config
+        section's currently rendered option, so a later rebuild of that
+        section can remove exactly these entries (see
+        `_unregister_route_config_visibility`) instead of leaking references
+        to widgets that are about to be deleted.
+        """
         dep_keys = self._visibility_dependency_keys(condition)
+        entry = (targets, condition)
         for dep_key in dep_keys:
-            if dep_key not in self._visibility_deps:
-                self._visibility_deps[dep_key] = []
-            self._visibility_deps[dep_key].append((targets, condition))
-            self._config_on_change_hooks.setdefault(dep_key, []).append(
-                lambda k=dep_key: self._evaluate_visibility(k)
-            )
+            self._visibility_deps.setdefault(dep_key, []).append(entry)
+            # One generic re-evaluation hook per dep_key is enough: it just
+            # re-scans _visibility_deps[dep_key] each time it fires, so it
+            # stays correct even as entries are added/removed by rebuilds.
+            if dep_key not in self._registered_hook_keys:
+                self._registered_hook_keys.add(dep_key)
+                self._config_on_change_hooks.setdefault(dep_key, []).append(
+                    lambda k=dep_key: self._evaluate_visibility(k)
+                )
+        if owner_route_key is not None:
+            self._route_config_visibility_entries.setdefault(
+                owner_route_key, []).append((list(dep_keys), entry))
+
+    def _unregister_route_config_visibility(self, route_key: str):
+        """Remove visibility entries previously registered for this route's
+        currently rendered route_config section, before it gets rebuilt."""
+        entries = self._route_config_visibility_entries.pop(route_key, [])
+        for dep_keys, entry in entries:
+            for dep_key in dep_keys:
+                deps = self._visibility_deps.get(dep_key)
+                if deps and entry in deps:
+                    deps.remove(entry)
 
     @staticmethod
     def _visibility_dependency_keys(condition: dict) -> set[str]:
@@ -519,6 +579,12 @@ class DynamicConfigPanel(QWidget):
             return self._route_getters[key]()
         if key in self._config_getters:
             return self._config_getters[key]()
+        # "route_key.param_key": value of a route_config parameter, only
+        # resolvable while that route's option is the one currently
+        # rendered (see _route_config_flat_getters upkeep in
+        # _rebuild_route_config_section).
+        if key in self._route_config_flat_getters:
+            return self._route_config_flat_getters[key]()
         return None
 
     # ── collect_configs override for range_slider bound pairs ─────────────

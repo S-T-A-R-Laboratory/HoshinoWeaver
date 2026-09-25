@@ -42,7 +42,9 @@ ALIGNMENT_OPTIONS = {
     "ref_optimize_distortion", "src_optimize_distortion",
     "optimize_principal_point", "ref_optimize_principal_point",
     "src_optimize_principal_point", "distortion", "ref_init_distortion",
-    "src_init_distortion", "ref_exif_json", "src_exif_json",
+    "src_init_distortion", "allow_large_principal_point_offset",
+    "ref_allow_large_principal_point_offset",
+    "src_allow_large_principal_point_offset", "ref_exif_json", "src_exif_json",
 }
 EVALUATION_OPTIONS = {
     "mask", "reference_mask", "source_mask", "mask_erode_px", "tile_size",
@@ -93,6 +95,8 @@ def _camera_policy(config: dict[str, Any], prefix: str,
         optimize_focal=setting("optimize_focal"),
         optimize_distortion=setting("optimize_distortion"),
         optimize_principal_point=setting("optimize_principal_point"),
+        allow_large_principal_point_offset=bool(
+            setting("allow_large_principal_point_offset") or False),
     )
 
 
@@ -461,6 +465,22 @@ def run_case(case: dict[str, Any], defaults: dict[str, Any], base_dir: Path,
                     final_alignment.ref_camera.intrinsics.focal_length_mm),
                 "source": float(
                     final_alignment.src_camera.intrinsics.focal_length_mm),
+            },
+            "optimized_camera": {
+                "reference": {
+                    "principal_point_px": list(
+                        final_alignment.ref_camera.intrinsics.principal_point_px),
+                    "distortion": (
+                        final_alignment.ref_camera.distortion.to_cv2()
+                        .astype(float).tolist()),
+                },
+                "source": {
+                    "principal_point_px": list(
+                        final_alignment.src_camera.intrinsics.principal_point_px),
+                    "distortion": (
+                        final_alignment.src_camera.distortion.to_cv2()
+                        .astype(float).tolist()),
+                },
             },
             "timing_seconds": {
                 "load": load_seconds,
