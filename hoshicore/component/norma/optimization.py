@@ -63,6 +63,16 @@ class CameraOptimizationPolicy:
     principal_point_offset_limit: float = DEFAULT_PRINCIPAL_POINT_OFFSET_LIMIT
 
 
+# Named reduced camera policies
+FOCAL_ONLY_POLICY = CameraOptimizationPolicy(True, False, False, 0)
+ROTATION_ONLY_POLICY = CameraOptimizationPolicy(False, False, False, 0)
+# Callers that derive a rung from an existing policy (which may legitimately 
+# differ per camera, e.g. fisheye vs perspective n_dist) freeze these flags 
+# instead of replacing the policy wholesale.
+FOCAL_ONLY_FROZEN_TERMS = ("optimize_principal_point", "optimize_distortion")
+ROTATION_ONLY_FROZEN_TERMS = FOCAL_ONLY_FROZEN_TERMS + ("optimize_focal",)
+
+
 @dataclasses.dataclass(frozen=True)
 class CameraOptimizationState:
     """Static per-camera optimization state used by the flexible solver."""

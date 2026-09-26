@@ -29,7 +29,8 @@ from scipy.spatial.transform import Rotation
 from .detection import DetectedStars
 from .frame_align import (DEFAULT_BOOTSTRAP_SCALES, AlignmentCameraCandidate,
                           solve_star_alignment)
-from .optimization import CameraOptimizationPolicy
+from .optimization import (FOCAL_ONLY_POLICY, ROTATION_ONLY_POLICY,
+                           CameraOptimizationPolicy)
 from .types import (BaseCameraModel, CameraModel, Distortion, FisheyeCameraModel,
                     FisheyeDistortion)
 
@@ -102,8 +103,10 @@ class _BundleEdge:
 
 
 _SCALE_PROBE_EDGE_COUNT = 3
-_ROTATION_ONLY_POLICY = CameraOptimizationPolicy(False, False, False, 0)
-_FOCAL_FALLBACK_POLICY = CameraOptimizationPolicy(True, False, False, 0)
+# Aliases for the shared reduced camera policies (defined in optimization.py so
+# the two-image ladder and the bundle fallback cannot drift apart).
+_ROTATION_ONLY_POLICY = ROTATION_ONLY_POLICY
+_FOCAL_FALLBACK_POLICY = FOCAL_ONLY_POLICY
 _FOCAL_SCALE_DELTA_LIMIT = 0.3
 _DISTORTION_ABS_LIMIT = 1.0
 _DEFAULT_MAX_PAIRS_PER_EDGE = 128

@@ -55,7 +55,7 @@ route_configs:
       crop_factor: { type: float, default: 1.0 }
       optimize_focal: { type: bool, default: true }
       optimize_distortion: { type: bool, default: true }
-      optimize_principal_point: { type: bool, default: null }
+      optimize_principal_point: { type: bool, default: true }
       pair_offsets: { type: list, default: [1, 2, 4] }
       max_pairs_per_edge: { type: int, default: 128 }
       edge_topology: { type: str, default: "multiscale" }

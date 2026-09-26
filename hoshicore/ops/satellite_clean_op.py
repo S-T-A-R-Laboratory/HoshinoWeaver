@@ -11,7 +11,8 @@ from ..component.data_container import FloatImage
 from ..component.norma.geometry_view import GeometryView, StarDetectionCache
 from ..component.norma.alignment import match_star_pairs_asterism, optimize_alignment
 from ..component.norma.frame_align import build_camera
-from ..component.norma.optimization import CameraOptimizationPolicy
+from ..component.norma.optimization import (ROTATION_ONLY_POLICY,
+                                            CameraOptimizationPolicy)
 from ..component.norma.types import CameraModel
 from ..component.queue import StreamExhausted
 from .._custom_op.ops.median import median_reduce_chunk
@@ -19,7 +20,9 @@ from ..engine.registry import register_op
 from .base import BaseOp
 
 
-_ROTATION_ONLY_POLICY = CameraOptimizationPolicy(False, False, False, 0)
+# Shared reduced camera policy (defined in norma/optimization.py so the
+# satellite-clean chain, the two-image ladder and the bundle fallback agree).
+_ROTATION_ONLY_POLICY = ROTATION_ONLY_POLICY
 
 
 @dataclasses.dataclass

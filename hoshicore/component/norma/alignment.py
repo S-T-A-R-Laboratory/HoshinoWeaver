@@ -19,7 +19,8 @@ from .matching import (DEFAULT_COVERAGE_REPAIR, FISHEYE_ROTATION_VALIDATION,
                        RotationValidationConfig, find_guided_mutual_match,
                        find_asterism_initial_match, find_initial_match,
                        fine_tune_rotation)
-from .optimization import (CameraOptimizationPolicy, CameraOptimizationState,
+from .optimization import (FOCAL_ONLY_FROZEN_TERMS, ROTATION_ONLY_FROZEN_TERMS,
+                           CameraOptimizationPolicy, CameraOptimizationState,
                            CameraSolvedParams, FlexibleOptimizationContext,
                            compute_flexible_residual_diagnostics,
                            iter_optimized_camera_param_slices,
@@ -33,6 +34,34 @@ class AlignmentOptimizationError(RuntimeError):
     """Raised when a two-image camera fit is unsuccessful or unsafe."""
 
 
+# When a camera parameter reaches its bound the pair is re-solved with fewer
+# camera degrees of freedom instead of dropping the frame. A rung is accepted
+# when its angular P90 is within this factor of the rotation-only floor, so the
+# extra camera freedom has to earn its place rather than being kept by default.
+RELAXED_POLICY_RESIDUAL_FACTOR = 1.25
+# 2 px keeps every measured rung (0.53-0.60 px P90) comfortable while refusing a
+# solution that would only be "successful" by having landed on a bound.
+RELAXED_POLICY_MAX_RESIDUAL_P90_PX = 2.0
+
+# The two-image ladder drops camera terms in one step and then falls back to
+# poses only:
+#
+#   camera_policy label   free camera terms           params (perspective)
+#   requested             focal + distortion + pp     1 + 4 + 2 = 7
+#   focal_only            focal                       1         = 1
+#   rotation_only         (none)                      0
+#
+# rotation_only leaves the EXIF focal in place without refining it: only the
+# rotation vector (3 variables) is optimized there.
+REQUESTED_POLICY_LABEL = "requested"
+FOCAL_ONLY_LABEL = "focal_only"
+ROTATION_ONLY_LABEL = "rotation_only"
+RELAXED_POLICY_RUNGS = (
+    (FOCAL_ONLY_LABEL, FOCAL_ONLY_FROZEN_TERMS),
+)
+ROTATION_ONLY_FROZEN = ROTATION_ONLY_FROZEN_TERMS
+
+
 @dataclasses.dataclass(frozen=True)
 class AlignmentResult:
     """Optimized ref-to-src transform and the corresponding camera models."""
@@ -41,6 +70,10 @@ class AlignmentResult:
     ref_camera: BaseCameraModel
     src_camera: BaseCameraModel
     pair_idx: Optional[NDArray[np.int32]] = None
+    # Which camera policy actually produced this result. ``"requested"`` means
+    # the caller's policy validated; anything else means the pair needed a
+    # relaxed rung (see RELAXED_POLICY_RUNGS) to avoid being dropped.
+    camera_policy: str = REQUESTED_POLICY_LABEL
 
     def compose(self, other: "AlignmentResult") -> "AlignmentResult":
         """Chain: self is A→B, other is B→C, returns A→C."""
@@ -49,6 +82,9 @@ class AlignmentResult:
                                  @ self.rotation_ref_to_src),
             ref_camera=self.ref_camera,
             src_camera=other.src_camera,
+            camera_policy=(self.camera_policy
+                           if self.camera_policy != REQUESTED_POLICY_LABEL
+                           else other.camera_policy),
         )
 
 
@@ -260,6 +296,64 @@ def guided_mutual_rematch(
     )
 
 
+def _relaxed_camera_policies(
+    ref_policy: CameraOptimizationPolicy,
+    src_policy: CameraOptimizationPolicy,
+    same_camera: bool,
+    frozen_terms: tuple[str, ...],
+) -> tuple[CameraOptimizationPolicy, CameraOptimizationPolicy]:
+    """Return the policy pair for one ladder rung.
+
+    ``frozen_terms`` names the ``CameraOptimizationPolicy`` flags to freeze; an
+    empty tuple returns the requested policies unchanged.
+    """
+
+    def relax(policy: CameraOptimizationPolicy) -> CameraOptimizationPolicy:
+        if not frozen_terms:
+            return policy
+        return dataclasses.replace(
+            policy, **{name: False for name in frozen_terms})
+
+    relaxed_ref = relax(ref_policy)
+    relaxed_src = relaxed_ref if same_camera else relax(src_policy)
+    return relaxed_ref, relaxed_src
+
+
+def _solve_camera_pair(
+    match: MatchResult,
+    camera1: BaseCameraModel,
+    camera2: BaseCameraModel,
+    same_camera: bool,
+    rvec: NDArray[np.float64],
+    ref_policy: CameraOptimizationPolicy,
+    src_policy: CameraOptimizationPolicy,
+    residual_space: str,
+    focal_regularization_weight: float,
+    max_nfev: int = 300,
+):
+    """Run one least-squares solve for an explicit camera policy pair."""
+    ctx = FlexibleOptimizationContext(
+        ref_pts=match.ref_pts,
+        src_pts=match.src_pts,
+        ref_state=_camera_optimization_state(camera1, ref_policy),
+        src_state=_camera_optimization_state(camera2, src_policy),
+        same_camera=same_camera,
+        residual_space=residual_space,
+    )
+    x0 = pack_flexible_initial_params(rvec, ctx)
+    ctx.params0 = x0.copy()
+    ctx.reg_weight = make_flexible_regularization_weights(
+        ctx, x0, fisheye_focal_weight=float(focal_regularization_weight))
+    res = run_flexible_optimization(x0, ctx, max_nfev=max_nfev)
+    return res, ctx
+
+
+def _residual_profile(res, ctx) -> tuple[float, float]:
+    """Return (angular P90 rad, angular P90 px) for a solved two-image model."""
+    diagnostics = compute_flexible_residual_diagnostics(res.x, ctx)
+    return diagnostics["raw_angle_p90_rad"], diagnostics["raw_angle_p90_px"]
+
+
 def optimize_alignment(
     match: MatchResult,
     camera1: BaseCameraModel,
@@ -273,6 +367,16 @@ def optimize_alignment(
 ) -> AlignmentResult:
     """Optimize rotation and camera parameters from matched points.
 
+    When a camera parameter reaches its optimization bound the pair is re-solved
+    with fewer camera degrees of freedom (principal point frozen, then
+    distortion, then the focal scale) instead of raising: at small rotation
+    baselines these parameters are nearly degenerate with the rotation, so the
+    bound hit says they are unidentifiable, not that the pair is unusable. A
+    rung is accepted only when its angular P90 is within
+    ``RELAXED_POLICY_RESIDUAL_FACTOR`` of the rotation-only floor and below
+    ``RELAXED_POLICY_MAX_ANGULAR_P90_RAD``; otherwise the original error is
+    raised and the caller still drops the frame.
+
     Args:
         match: MatchResult from match_star_pairs.
         camera1, camera2: initial camera models for ref and src images.
@@ -285,7 +389,8 @@ def optimize_alignment(
             production default is the directional ``"cross"`` residual.
 
     Returns:
-        AlignmentResult with optimized rotation and refined cameras.
+        AlignmentResult with optimized rotation and refined cameras, and the
+        ``camera_policy`` label that produced them.
     """
     ref_pts = match.ref_pts
     src_pts = match.src_pts
@@ -322,24 +427,72 @@ def optimize_alignment(
     rvec, _ = cv2.Rodrigues(R_init)
     rvec = rvec[:, 0]
 
-    ctx = FlexibleOptimizationContext(
-        ref_pts=ref_pts,
-        src_pts=src_pts,
-        ref_state=_camera_optimization_state(camera1, ref_policy),
-        src_state=_camera_optimization_state(camera2, src_policy),
-        same_camera=same_camera,
-        residual_space=residual_space,
-    )
-    x0 = pack_flexible_initial_params(rvec, ctx)
-    ctx.params0 = x0.copy()
-    ctx.reg_weight = make_flexible_regularization_weights(
-        ctx, x0, fisheye_focal_weight=float(focal_regularization_weight))
+    def solve(frozen_terms: tuple[str, ...]):
+        rung_ref, rung_src = _relaxed_camera_policies(
+            ref_policy, src_policy, same_camera, frozen_terms)
+        return _solve_camera_pair(match, camera1, camera2, same_camera, rvec,
+                                  rung_ref, rung_src, residual_space,
+                                  focal_regularization_weight)
 
-    # jointly optimize rotation and camera parameters, with optional regularization
-    res = run_flexible_optimization(x0, ctx, max_nfev=300)
-    _validate_flexible_optimization(res, ctx)
+    # Requested policy first; this is the only path taken when the camera
+    # parameters are identifiable.
+    try:
+        res, ctx = solve(())
+        _validate_flexible_optimization(res, ctx)
+    except AlignmentOptimizationError as exc:
+        requested_error = exc
+    else:
+        _log_flexible_optimization_summary(ctx, res.x)
+        return _build_flexible_result(res.x, ctx, camera1, camera2)
+
+    # Rotation-only is well posed (three variables, no camera bounds), so it
+    # defines both the residual floor and the last rung.
+    try:
+        rotation_res, rotation_ctx = solve(ROTATION_ONLY_FROZEN)
+        _validate_flexible_optimization(rotation_res, rotation_ctx)
+    except AlignmentOptimizationError as exc:
+        logger.warning(
+            "optimize_alignment: camera parameters reached their bounds "
+            f"({requested_error}); rotation-only re-solve also failed ({exc})")
+        raise requested_error
+    floor_p90, floor_px = _residual_profile(rotation_res, rotation_ctx)
+
+    accepted: Optional[tuple[str, object, object, float, float]] = None
+    for label, frozen_terms in RELAXED_POLICY_RUNGS:
+        try:
+            rung_res, rung_ctx = solve(frozen_terms)
+            _validate_flexible_optimization(rung_res, rung_ctx)
+        except AlignmentOptimizationError as exc:
+            logger.debug(f"optimize_alignment: rung {label} rejected: {exc}")
+            continue
+        p90, p90_px = _residual_profile(rung_res, rung_ctx)
+        if (p90 <= RELAXED_POLICY_RESIDUAL_FACTOR * floor_p90
+                and p90_px <= RELAXED_POLICY_MAX_RESIDUAL_P90_PX):
+            accepted = (label, rung_res, rung_ctx, p90, p90_px)
+            break
+        logger.debug(
+            f"optimize_alignment: rung {label} is "
+            f"{p90 / max(floor_p90, 1e-12):.2f}x the rotation-only residual "
+            f"({p90_px:.3f} px P90); keeping the simpler rung")
+
+    if accepted is None:
+        if floor_px > RELAXED_POLICY_MAX_RESIDUAL_P90_PX:
+            logger.warning(
+                "optimize_alignment: camera parameters reached their bounds "
+                f"({requested_error}) and even rotation-only leaves "
+                f"{floor_px:.2f} px angular P90; rejecting the pair")
+            raise requested_error
+        accepted = (ROTATION_ONLY_LABEL, rotation_res, rotation_ctx, floor_p90,
+                    floor_px)
+
+    label, res, ctx, p90, p90_px = accepted
+    logger.info(
+        "optimize_alignment: camera parameters reached their bounds "
+        f"({requested_error}); keeping the frame with camera_policy={label} "
+        f"(angular p90={np.rad2deg(p90):.4f} deg / {p90_px:.3f} px)")
     _log_flexible_optimization_summary(ctx, res.x)
-    return _build_flexible_result(res.x, ctx, camera1, camera2)
+    return _build_flexible_result(res.x, ctx, camera1, camera2,
+                                  camera_policy=label)
 
 
 def _validate_flexible_optimization(
@@ -601,7 +754,9 @@ def _camera_with_solved_params(
     return refined.with_distortion(Distortion.from_cv2(dist_arr))
 
 
-def _build_flexible_result(params_flat, ctx, camera1, camera2) -> AlignmentResult:
+def _build_flexible_result(params_flat, ctx, camera1, camera2,
+                           camera_policy: str = REQUESTED_POLICY_LABEL
+                           ) -> AlignmentResult:
     rvec, ref_params, src_params = unpack_flexible_params(params_flat, ctx)
     R, _ = cv2.Rodrigues(rvec.reshape(3, 1))
     cam1_refined = _camera_with_solved_params(camera1, ctx.ref_state,
@@ -617,4 +772,5 @@ def _build_flexible_result(params_flat, ctx, camera1, camera2) -> AlignmentResul
                                                   src_params)
     return AlignmentResult(rotation_ref_to_src=R,
                            ref_camera=cam1_refined,
-                           src_camera=cam2_refined)
+                           src_camera=cam2_refined,
+                           camera_policy=camera_policy)
