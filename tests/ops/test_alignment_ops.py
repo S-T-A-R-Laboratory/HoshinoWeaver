@@ -108,7 +108,9 @@ def _frame(index, status=FrameAlignmentStatus.SOLVED, rotation=None,
     ),
     [
         (1, 1, None, {"frame": 1}, 14.0),
-        (None, 2, "auto", {"frame": 2}, None),
+        # ``auto`` keeps EXIF as the primary source and passes the configured
+        # focal as its fallback for sequences whose EXIF has no usable value.
+        (None, 2, "auto", {"frame": 2}, 14.0),
         (None, 2, "manual", None, 14.0),
     ],
 )

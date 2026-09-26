@@ -1157,6 +1157,13 @@ def _solve_rotations_hierarchical(
             if edge.first_index in segment_component
             and edge.second_index in segment_component]
         segment_fixed = {lo: anchor_rotations[lo], hi: anchor_rotations[hi]}
+        if segment_component == set(segment_fixed):
+            # segment contains nothing but its two gauge-fixed ends. 
+            # There is no free pose to solve.
+            rotations.setdefault(lo, anchor_rotations[lo])
+            rotations.setdefault(hi, anchor_rotations[hi])
+            retained.extend(segment_edges)
+            continue
         segment_rotations, segment_retained, _ = _solve_rotations_only(
             segment_edges, segment_fixed, segment_component, camera, max_nfev)
         for index, rotation in segment_rotations.items():
@@ -1186,9 +1193,13 @@ def _solve_rotations_only(
     from scipy import sparse
     from scipy.optimize import least_squares
 
-    initial = _initial_rotations(edges, fixed_rotations, component)
     variable_indices = [
         index for index in sorted(component) if index not in fixed_rotations]
+    if not variable_indices:
+        # Every frame in the component is gauge-fixed, so the optimization
+        # vector would be empty.
+        return dict(fixed_rotations), list(edges), None
+    initial = _initial_rotations(edges, fixed_rotations, component)
     pose_column = {index: 3 * position
                    for position, index in enumerate(variable_indices)}
 
