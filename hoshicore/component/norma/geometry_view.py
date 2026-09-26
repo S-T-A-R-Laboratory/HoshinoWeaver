@@ -38,19 +38,22 @@ class StarDetectionCache:
     """
 
     def __init__(self, gray: NDArray[np.float64], mask: Optional[np.ndarray] = None,
-                 median_threshold_ratio: float = 1.0):
+                 median_threshold_ratio: float = 1.0,
+                 star_detection_mode: str = "auto"):
         self._gray = gray
         self._mask = mask
         self._median_threshold_ratio = median_threshold_ratio
+        self._star_detection_mode = star_detection_mode
 
     @classmethod
     def from_image(cls, image: np.ndarray, mask: Optional[np.ndarray] = None,
-                   median_threshold_ratio: float = 1.0) -> "StarDetectionCache":
-        return cls(to_gray_f64(image), mask, median_threshold_ratio)
+                   median_threshold_ratio: float = 1.0,
+                   star_detection_mode: str = "auto") -> "StarDetectionCache":
+        return cls(to_gray_f64(image), mask, median_threshold_ratio, star_detection_mode)
 
     @cached_property
     def pywt_stars(self) -> DetectedStars:
-        return detect_star_points(self._gray, self._mask)
+        return detect_star_points(self._gray, self._mask, mode=self._star_detection_mode)
 
     @cached_property
     def median_stars(self) -> DetectedStars:

@@ -33,6 +33,7 @@ route_configs:
       max_iter: { type: int, default: 5 }
 
 configs:
+  star_detection_mode: { type: str, default: "auto" }
   loader_type:              { type: str, default: "img_file_list" }
   loader_configs:           { type: dict, default: {} }
   reference_frame_index:    { type: int, default: null }
@@ -103,6 +104,7 @@ nodes:
     configs:
       mask: load_mask.result
       reference_frame_index: configs.reference_frame_index
+      star_detection_mode: configs.star_detection_mode
       camera_setup_mode: configs.camera_setup_mode
       lens_type: configs.lens_type
       distortion: configs.distortion

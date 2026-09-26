@@ -25,7 +25,7 @@ def test_detection_cache_keeps_pywt_and_median_results_lazy_and_separate(
 
     monkeypatch.setattr(
         geometry_module, "detect_star_points",
-        lambda gray, mask=None: calls.append("pywt") or stars(1.0))
+        lambda gray, mask=None, mode="auto": calls.append("pywt") or stars(1.0))
     monkeypatch.setattr(
         geometry_module, "detect_star_points_median",
         lambda gray, mask=None, threshold_ratio=1.0:

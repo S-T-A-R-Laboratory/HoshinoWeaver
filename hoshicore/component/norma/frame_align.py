@@ -785,7 +785,8 @@ def align_frame_homography(
         ref_geo: GeometryView,
         reference: np.ndarray,
         fallback_focal_equiv_mm: float = 20.0,
-        src_camera: BaseCameraModel | None = None) -> np.ndarray:
+        src_camera: BaseCameraModel | None = None,
+        star_detection_mode: str = "auto") -> np.ndarray:
     """Fixed-camera fast path: unit-ray match → rotation-derived H → warpPerspective。
 
     Args:
@@ -803,7 +804,7 @@ def align_frame_homography(
         src_camera = build_camera(
             None, frame.shape, "homography",
             fallback_focal_equiv_mm=fallback_focal_equiv_mm)
-    source_detection = StarDetectionCache.from_image(frame)
+    source_detection = StarDetectionCache.from_image(frame, star_detection_mode=star_detection_mode)
     src_geo = GeometryView(source_detection.median_stars, src_camera)
     _check_star_count(ref_geo, src_geo)
     if _has_identical_star_geometry(ref_geo, src_geo):
@@ -850,6 +851,7 @@ def align_frame_camera_model(
     guided_refine_radius_px: float = 8.0,
     matching_path: str = DEFAULT_MATCHING_PATH,
     ref_refine_geo: Optional[GeometryView] = None,
+    star_detection_mode: str = "auto",
 ) -> np.ndarray:
     """Camera-model alignment with explicit ref-to-src remap construction."""
     ref_camera = ref_candidate.camera
@@ -868,7 +870,7 @@ def align_frame_camera_model(
             f"Unknown matching_path {matching_path!r}; expected one of "
             f"{MATCHING_PATHS}")
 
-    source_detection = StarDetectionCache.from_image(frame)
+    source_detection = StarDetectionCache.from_image(frame, star_detection_mode=star_detection_mode)
     source_stars = (source_detection.pywt_stars
                     if matching_path in BOOTSTRAP_MATCHING_PATHS
                     else source_detection.median_stars)

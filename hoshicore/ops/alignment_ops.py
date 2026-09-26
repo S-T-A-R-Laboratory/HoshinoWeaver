@@ -45,6 +45,7 @@ class StarAlignmentOp(FilterBaseOp):
         "exifs": {"type": "sequence", "required": False},
     }
     CONFIGS: dict[str, Any] = {
+        "star_detection_mode": {"type": "str", "default": "auto"},
         "reference":        {"type": "image",  "required": True},
         "reference_exif":   {"type": "exif",   "default": None},
         "method":           {"type": "str",    "default": "distortion"},
@@ -174,7 +175,8 @@ class StarAlignmentOp(FilterBaseOp):
                 f"because camera_setup_mode='auto' infers the projection from "
                 f"EXIF; set camera_setup_mode='manual' to use them")
         ref_detection = await self._run_cpu(
-            StarDetectionCache.from_image, ref_arr)
+            StarDetectionCache.from_image, ref_arr,
+            star_detection_mode=configs.get("star_detection_mode", "auto"))
         if method == "homography" or matching_path == MATCHING_PATH_MEDIAN:
             ref_stars = await self._run_cpu(
                 lambda: ref_detection.median_stars)
@@ -240,7 +242,8 @@ class StarAlignmentOp(FilterBaseOp):
                          bootstrap_scales_tuple, remap_map_scale,
                          guided_refine=guided_refine,
                          matching_path=matching_path,
-                         ref_refine_geo=ref_refine_geo)
+                         ref_refine_geo=ref_refine_geo,
+                         star_detection_mode=configs.get("star_detection_mode", "auto"))
                 else:
                     aligned_arr = await self._run_cpu(
                         align_frame_homography,
@@ -249,6 +252,7 @@ class StarAlignmentOp(FilterBaseOp):
                         ref_arr,
                         float(fallback_focal_equiv_mm),
                         src_camera,
+                        star_detection_mode=configs.get("star_detection_mode", "auto"),
                     )
 
                 aligned = (FloatImage(data=aligned_arr, dtype=frame.dtype)

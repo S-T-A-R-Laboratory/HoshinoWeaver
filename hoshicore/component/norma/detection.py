@@ -21,6 +21,7 @@ FULL_GPU_COMPONENT_FILTER_PERCENTILE = 22.5
 NATIVE_CONTOUR_MISMATCH_RATIO = 0.001
 NATIVE_CONTOUR_MIN_MISMATCH_BUDGET = 5
 NATIVE_CONTOUR_MAX_DISTANCE_PX = 1.0
+NATIVE_CONTOUR_COUNT_MISMATCH_RATIO = 0.05
 
 
 @dataclasses.dataclass
@@ -352,6 +353,7 @@ def _measure_native_hybrid_contour_candidates(
     component_positions: NDArray[np.float64],
     component_intensities: NDArray[np.float64],
     binary_mask: NDArray[np.uint8],
+    mode: str = "auto",
 ) -> tuple[
     NDArray[np.float64],
     NDArray[np.float64],
@@ -382,16 +384,55 @@ def _measure_native_hybrid_contour_candidates(
         NATIVE_CONTOUR_MIN_MISMATCH_BUDGET,
         int(np.ceil(NATIVE_CONTOUR_MISMATCH_RATIO * len(positions))),
     )
-    if (count_difference > mismatch_budget
-            or duplicate_count > mismatch_budget
-            or distant_count > mismatch_budget):
+    areas = np.asarray([
+        cv2.contourArea(contour) + 0.5 * len(contour)
+        for contour in contours
+    ])
+    eccentricities = np.sqrt(np.asarray([
+        1 - (ellipse[1][0] / ellipse[1][1])**2
+        for ellipse in ellipses
+    ]))
+    # Mark candidates without removing them from percentile calculations.
+    eligible = (areas > MIN_STAR_AREA) & (eccentricities < .8)
+    duplicate = component_counts[component_indices] > 1
+    abnormal = distant | duplicate
+    eligible_count = int(np.count_nonzero(eligible))
+    eligible_abnormal = int(np.count_nonzero(abnormal & eligible))
+    eligible_budget = max(
+        NATIVE_CONTOUR_MIN_MISMATCH_BUDGET,
+        int(np.ceil(NATIVE_CONTOUR_MISMATCH_RATIO * eligible_count)))
+    # Separate gross structural discrepancies from candidate geometry.
+    count_budget = max(mismatch_budget, int(np.ceil(
+        NATIVE_CONTOUR_COUNT_MISMATCH_RATIO * len(positions))))
+    exceeded = (count_difference > count_budget
+                or eligible_abnormal > eligible_budget)
+    logger.debug(
+        "Native/contour diagnostics: mode={} components={} contours={} "
+        "count_difference={} count_budget={} duplicate_count={} "
+        "distant_all={} duplicate_affected_all={} abnormal_all={} "
+        "eligible={} distant_eligible={} duplicate_affected_eligible={} "
+        "abnormal_eligible={} eligible_budget={} abnormal_eligible_ratio={:.6f} "
+        "guard_exceeded={}",
+        mode, len(component_positions), len(positions), count_difference,
+        count_budget, duplicate_count, distant_count, np.count_nonzero(duplicate),
+        np.count_nonzero(abnormal), eligible_count,
+        np.count_nonzero(distant & eligible), np.count_nonzero(duplicate & eligible),
+        eligible_abnormal, eligible_budget,
+        eligible_abnormal / max(eligible_count, 1), exceeded)
+    if exceeded and mode != "native_relaxed":
         raise _NativeHybridGeometryMismatch(
             "Native/contour mapping exceeds tolerance "
             f"(count_difference={count_difference}, "
             f"duplicate_count={duplicate_count}, "
-            f"distant_count={distant_count}, budget={mismatch_budget})")
+            f"distant_count={distant_count}, count_budget={count_budget}, "
+            f"abnormal_eligible={eligible_abnormal}, "
+            f"eligible_budget={eligible_budget})")
+    if exceeded:
+        logger.warning("Native geometry guard bypassed: mode={} count_difference={} "
+                       "abnormal_eligible={} eligible_budget={}",
+                       mode, count_difference, eligible_abnormal, eligible_budget)
 
-    if count_difference or duplicate_count or distant_count:
+    if not exceeded and (count_difference or duplicate_count or distant_count):
         logger.debug(
             "Native/contour mapping accepted within tolerance: "
             "count_difference={} duplicate_count={} distant_count={} budget={}",
@@ -401,21 +442,8 @@ def _measure_native_hybrid_contour_candidates(
             mismatch_budget,
         )
 
-    # Within the small mismatch budget, preserve the nearest component's
-    # intensity. Dropping or down-weighting these rare candidates changes the
-    # percentile filter, while the full contour path produces the same values
-    # for candidates that survive it. Larger mismatches still reject the whole
-    # native result above.
-
-    areas = np.asarray([
-        cv2.contourArea(contour) + 0.5 * len(contour)
-        for contour in contours
-    ])
-    eccentricities = np.sqrt(
-        np.asarray([
-            1 - (ellipse[1][0] / ellipse[1][1])**2
-            for ellipse in ellipses
-        ]))
+    # Preserve all candidates and nearest-component intensities so that the
+    # percentile filter retains its existing inputs.
     intensities = component_intensities[component_indices]
     return positions, areas, intensities, eccentricities
 
@@ -661,6 +689,7 @@ def _detect_star_points_native_hybrid(
     gaussian_ksize: int = 9,
     sigma: float = 2,
     min_star_points: int = 400,
+    mode: str = "auto",
 ) -> DetectedStars:
     """Run fused native pixel processing with exact OpenCV contour geometry."""
     img_shape = img_gray.shape
@@ -681,7 +710,7 @@ def _detect_star_points_native_hybrid(
                 sigma=sigma,
             ))
         candidates = _measure_native_hybrid_contour_candidates(
-            component_positions, component_intensities, binary_mask)
+            component_positions, component_intensities, binary_mask, mode=mode)
         candidate_count = len(candidates[0])
         logger.debug(f"{candidate_count} native hybrid star candidates detected")
         if candidate_count < min_star_points and resize_factor < 1:
@@ -708,6 +737,7 @@ def detect_star_points(
     gaussian_ksize: int = 9,
     sigma: float = 2,
     min_star_points: int = 400,
+    mode: str = "auto",
 ) -> DetectedStars:
     """Detect stars with native pixel work plus exact host contour geometry."""
     kwargs = {
@@ -717,8 +747,13 @@ def detect_star_points(
         "sigma": sigma,
         "min_star_points": min_star_points,
     }
+    if mode not in {"auto", "native_relaxed", "contour"}:
+        raise ValueError(f"Invalid star_detection_mode: {mode!r}")
+    logger.debug("Star detection mode: {}", mode)
+    if mode == "contour":
+        return _detect_star_points_contour(img_gray, **kwargs)
     try:
-        return _detect_star_points_native_hybrid(img_gray, **kwargs)
+        return _detect_star_points_native_hybrid(img_gray, mode=mode, **kwargs)
     except CustomOpUnavailableError as exc:
         logger.debug(
             "Native star detector unavailable; using contour fallback: {}", exc)

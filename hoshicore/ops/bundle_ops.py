@@ -314,6 +314,7 @@ class BundleAdjustmentOp(BaseOp):
         "exifs": {"type": "sequence", "required": False},
     }
     CONFIGS: dict[str, Any] = {
+        "star_detection_mode": {"type": "str", "default": "auto"},
         "mask": {"type": "image", "default": None},
         "reference_frame_index": {"type": "int", "default": None},
         "method": {"type": "str", "default": "distortion"},
@@ -409,7 +410,8 @@ class BundleAdjustmentOp(BaseOp):
                     configured_mask, array.shape)
                 detection_mask_shape = array.shape[:2]
             detection = await self._run_cpu(
-                StarDetectionCache.from_image, array, detection_mask)
+                StarDetectionCache.from_image, array, detection_mask,
+                star_detection_mode=configs.get("star_detection_mode", "auto"))
             stars = await self._run_cpu(lambda: detection.pywt_stars)
             observations.append((index, stars, array.shape, tags))
             self.tracker.update(self.name)

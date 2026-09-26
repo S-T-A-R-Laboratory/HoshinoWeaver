@@ -201,3 +201,19 @@ python -m benchmarks.benchmark_norma_alignment `
   `--write-remap` 时输出的人工检查图。
 
 运行信息会记录 Git revision、Python、NumPy、OpenCV、平台和每个 case 的随机 seed。
+
+# 星点检测路径诊断
+
+工作流配置 `star_detection_mode` 支持（也可在 GUI 全局设置面板设置默认值）：
+
+- `auto`（默认）：原生检测，几何异常超预算时回退。主要预算为通过固定面积、偏心率条件的候选中，距离异常和重复关联涉及候选的并集，允许 `max(5, ceil(候选数 × 0.001))` 个。全局数量差仅在超过 `max(5, ceil(全部轮廓数 × 0.05))` 时触发结构保护；该 5% 是工程保护阈值，尚非质量保证。
+- `native_relaxed`：记录几何超预算，但继续使用原生强度关联结果，供性能与质量对照。GPU 不可用、容量或资源不足、空组件等保护仍保留。
+- `contour`：直接使用完整 OpenCV 检测路径，作为对照。
+
+可在 Benchmark 套件的 `defaults.configs` 或用例 `configs` 设置，例如：
+
+```json
+"configs": { "star_detection_mode": "native_relaxed" }
+```
+
+日志记录模式、组件/轮廓数、数量差、全部及固定条件候选的距离异常、重复关联涉及候选数、异常并集、比例、预算及是否超预算。`duplicate_count` 是多余关联数，`duplicate_affected_*` 包含共享关联的所有候选。固定条件仅用于校验，不删除候选，不改变百分位输入。宽松模式用于诊断。运行时显式配置覆盖全局默认；原环境变量入口已移除。此策略仅影响小波星点检测，局部中值检测不受影响。

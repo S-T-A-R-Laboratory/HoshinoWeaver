@@ -184,7 +184,7 @@ def test_asterism_entry_does_not_access_median_when_refine_is_disabled(
 
     monkeypatch.setattr(
         module.StarDetectionCache, "from_image",
-        staticmethod(lambda image: SourceDetection()))
+        staticmethod(lambda image, star_detection_mode="auto": SourceDetection()))
 
     seen = {}
 

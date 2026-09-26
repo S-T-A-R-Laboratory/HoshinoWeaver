@@ -817,6 +817,56 @@ class TestStarDetectCustomOps(unittest.TestCase):
                 binary_mask,
             )
 
+    def test_relaxed_mapping_accepts_excessive_geometry_mismatch(self) -> None:
+        binary_mask = np.zeros((160, 160), dtype=np.uint8)
+        for x in range(20, 150, 20):
+            cv2.circle(binary_mask, (x, 50), 4, 255, -1)
+        positions, _, intensities, _ = (
+            star_detection._measure_native_hybrid_contour_candidates(
+                np.array([[20., 50.]]), np.array([3.]), binary_mask,
+                mode="native_relaxed"))
+        self.assertEqual(len(positions), 7)
+        np.testing.assert_array_equal(intensities, np.full(7, 3.))
+
+    def test_ineligible_geometry_mismatch_does_not_reject_frame(self) -> None:
+        binary_mask = np.zeros((180, 180), dtype=np.uint8)
+        for y in range(20, 170, 20):
+            cv2.ellipse(binary_mask, (80, y), (12, 3), 0, 0, 360, 255, -1)
+        components = np.array([[82., float(y)] for y in range(20, 170, 20)])
+        positions, _, intensities, eccentricities = (
+            star_detection._measure_native_hybrid_contour_candidates(
+                components, np.full(8, 3.), binary_mask))
+        self.assertEqual(len(positions), 8)
+        self.assertTrue(np.all(eccentricities >= .8))
+        np.testing.assert_array_equal(intensities, np.full(8, 3.))
+
+    def test_contour_mode_skips_native(self) -> None:
+        with mock.patch.object(star_detection, "_detect_star_points_contour") as contour:
+            with mock.patch.object(star_detection, "_detect_star_points_native_hybrid") as native:
+                got = star_detection.detect_star_points(np.zeros((16, 16)), mode="contour")
+        native.assert_not_called()
+        self.assertIs(got, contour.return_value)
+
+    def test_relaxed_mode_keeps_empty_component_guard(self) -> None:
+        binary_mask = np.zeros((32, 32), dtype=np.uint8)
+        cv2.circle(binary_mask, (16, 16), 4, 255, -1)
+        with self.assertRaises(star_detection._NativeHybridGeometryMismatch):
+            star_detection._measure_native_hybrid_contour_candidates(
+                np.empty((0, 2)), np.empty(0), binary_mask,
+                mode="native_relaxed")
+
+    def test_invalid_detection_mode_is_reported(self) -> None:
+        with self.assertRaisesRegex(ValueError, "star_detection_mode"):
+            star_detection.detect_star_points(np.zeros((16, 16)), mode="invalid")
+
+    def test_detection_cache_passes_explicit_mode(self) -> None:
+        from hoshicore.component.norma.geometry_view import StarDetectionCache
+        with mock.patch("hoshicore.component.norma.geometry_view.detect_star_points") as detect:
+            cache = StarDetectionCache.from_image(
+                np.zeros((16, 16)), star_detection_mode="native_relaxed")
+            self.assertIs(cache.pywt_stars, detect.return_value)
+        self.assertEqual(detect.call_args.kwargs["mode"], "native_relaxed")
+
     def test_star_detect_cuda_external_empty_mask_is_not_relaxed(self) -> None:
         if not build_info().get("cuda"):
             self.skipTest("CUDA fused pixel-component backend is not built")
