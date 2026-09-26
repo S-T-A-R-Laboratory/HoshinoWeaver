@@ -18,7 +18,9 @@ When adding or modifying any feature, check whether the following need updating:
 - `hoshicore/` contains production implementations. Algorithm behavior tests
   should exercise these modules directly.
 - `bench/` contains the existing kernel microbenchmarks. `benchmarks/` contains
-  the tracked Norma alignment benchmark component; keep local datasets under
+  the tracked Norma alignment benchmark component and the CLI-level workflow
+  performance baseline harness (`benchmarks/benchmark_workflow.py`, core in
+  `benchmarks/workflow_bench.py`); keep local datasets and suites under
   `benchmarks/local/` and out of version control.
 - `tools/debug/` contains tracked developer diagnostics that may call private
   implementation APIs. Notebooks and local reference files remain independent
@@ -47,6 +49,10 @@ python "HoshinoWeaver desktop.py"
 
 # Run CLI pipeline
 python launcher.py <config.yaml> [image_dir] [--route KEY=VALUE] [--input KEY=VALUE] [--config KEY=VALUE]
+# --input VALUE forms: <dir> (sorted supported images), @<list file> (one path per line,
+# '#' comments allowed), or a JSON array. Use @<list file> for long/explicit input sets.
+# Automation flags: --preflight {ask,apply,ignore,abort} (ask = interactive default),
+# --log-path PATH (log path is also printed once on stdout), --no-progress.
 
 # Inspect a pipeline's parameter schema
 python launcher.py <config.yaml> --inspect
@@ -64,6 +70,11 @@ python csrc/build_ops.py --dry-run             # inspect config only
 
 # Run benchmarks (see bench/README.md for full options)
 python -m bench.cpu.kernels --frames 64 --height 2048 --width 3072 --dtype uint16 --input-mode synthetic
+
+# Workflow performance baseline (see benchmarks/README.md)
+python -m benchmarks.benchmark_workflow --dry-run    # validate suite + print commands
+python -m benchmarks.benchmark_workflow              # run benchmarks/local/workflow_baseline.json
+python -m benchmarks.benchmark_workflow --case <id> --repeat 3
 
 # Package for distribution (PyInstaller)
 python make_package.py                         # auto-build _C if missing, fail if build fails
@@ -187,6 +198,7 @@ See `csrc/README.md` "新增算子" section for the full checklist. Key steps: C
 - `csrc/README.md` — C++ custom-op 构建、平台策略、打包约定
 - `csrc/CMAKE_MIGRATION.md` — CMake 构建架构与多平台策略
 - `bench/README.md` — Benchmark 套件使用说明与运行建议
+- `benchmarks/README.md` — Norma 对齐基准 + 工作流性能基线（suite schema、指标口径、对标规范）
 
 ## Packaging
 

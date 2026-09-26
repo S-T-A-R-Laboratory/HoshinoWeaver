@@ -8,10 +8,12 @@ import json
 from loguru import logger as default_logger
 
 from hoshicore.component.runtime_diagnostics import log_runtime_components
-from hoshicore.component.utils import init_logger, is_support_format
+from hoshicore.component.utils import (_make_log_filename, init_logger,
+                                       is_support_format)
 from hoshicore.engine.executor import DAGExecutionError
 from hoshicore.engine.inspect import InspectResult, inspect_yaml
-from hoshicore.engine.preflight import PreflightAction, CheckResult
+from hoshicore.engine.preflight import (PreflightAbortError, PreflightAction,
+                                        CheckResult)
 from hoshicore.engine.wiring import _read_raw_settings, run_from_yaml
 
 
@@ -101,6 +103,43 @@ def _dir_to_file_list(dir_path: str) -> list[str]:
     entries = os.listdir(dir_path)
     entries.sort()
     return [os.path.join(dir_path, x) for x in entries if is_support_format(x)]
+
+
+def _read_input_list_file(list_path: str) -> list[str]:
+    """Read a newline-separated input path list (UTF-8; blank/# lines ignored)."""
+    with open(list_path, "r", encoding="utf-8-sig") as handle:
+        entries = []
+        for raw_line in handle:
+            line = raw_line.strip()
+            if line and not line.startswith("#"):
+                entries.append(line)
+    return entries
+
+
+def _resolve_input_value(value: str) -> object:
+    """Resolve a single --input VALUE into the launcher's input payload.
+
+    Supported forms, first match wins:
+        ``@<file>``    newline-separated path list, e.g. ``@E:/tmp/lights.txt``
+        ``<dir>``      existing directory expanded to sorted supported files
+        ``[...]``      JSON array of paths, e.g. ``["a.tif","b.tif"]``
+        anything else  passed through unchanged (backward compatible)
+    """
+    if value.startswith("@"):
+        list_path = value[1:]
+        if not os.path.isfile(list_path):
+            raise ValueError(f"输入清单文件不存在：{list_path}")
+        return _read_input_list_file(list_path)
+    if os.path.isdir(value):
+        return _dir_to_file_list(value)
+    if value.startswith("["):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    return value
 
 
 def _print_inspect(result: InspectResult) -> None:
@@ -209,6 +248,25 @@ def _cli_preflight_callback(result: CheckResult) -> PreflightAction:
         print(f"  无效输入，请输入 {hint}")
 
 
+def _make_preflight_callback(mode: str):
+    """Build the preflight callback for the requested ``--preflight`` mode.
+
+    ``ask`` keeps the interactive CLI prompt. The other modes answer every
+    preflight prompt deterministically so an automated run never blocks on
+    stdin; every issue is still logged so the decision stays auditable.
+    """
+    if mode == "ask":
+        return _cli_preflight_callback
+
+    def _fixed_callback(result: CheckResult) -> PreflightAction:
+        for issue in result.issues:
+            default_logger.warning(
+                f"[Preflight][--preflight={mode}] {issue.message}")
+        return mode  # type: ignore[return-value]
+
+    return _fixed_callback
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run the DAG-based image processing pipeline.")
@@ -233,7 +291,10 @@ def main():
         default=[],
         metavar="KEY=VALUE",
         dest="inputs",
-        help="Global input (repeatable), e.g. --input light_fnames=/path/dir")
+        help="Global input (repeatable). VALUE may be: a directory of images "
+             "(expanded and sorted), @<list file> (newline-separated paths, "
+             "'#' comments allowed), or a JSON array like '[\"a.tif\",\"b.tif\"]'. "
+             "Example: --input fnames=@lights.txt")
     parser.add_argument(
         "--config",
         action="append",
@@ -244,6 +305,20 @@ def main():
     parser.add_argument("--inspect",
                         action="store_true",
                         help="Show parameter schema and exit.")
+    parser.add_argument(
+        "--preflight",
+        choices=("ask", "apply", "ignore", "abort"),
+        default="ask",
+        help="Preflight policy: ask (interactive prompt, default), apply fixes, "
+        "ignore warnings and continue, or abort the run.")
+    parser.add_argument(
+        "--log-path",
+        default=None,
+        metavar="PATH",
+        help="Explicit log file path (default: logs/hnw_<ver>_<os>_<task>_<ts>.log).")
+    parser.add_argument("--no-progress",
+                        action="store_true",
+                        help="Disable tqdm progress bars (useful for automation).")
     log_group = parser.add_mutually_exclusive_group()
     log_group.add_argument("--debug",
                            action="store_true",
@@ -255,8 +330,15 @@ def main():
 
     args = parser.parse_args()
 
-    logger = init_logger(default_logger, args.debug, args.trace, None,
-                         task=os.path.splitext(os.path.basename(args.config))[0])
+    task = os.path.splitext(os.path.basename(args.config))[0]
+    log_path = (os.path.abspath(args.log_path) if args.log_path
+                else _make_log_filename(task))
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    logger = init_logger(default_logger, args.debug, args.trace, log_path,
+                         task=task)
+    # Printed exactly once so callers can discover the log file without guessing.
+    print(f"[Launcher] log file: {log_path}", flush=True)
+    logger.debug(f"[Launcher] log file: {log_path}")
     log_runtime_components(logger)
 
     yaml_path = args.config
@@ -285,10 +367,11 @@ def main():
         global_inputs["fnames"] = _dir_to_file_list(args.dir)
 
     for key, val in input_overrides.items():
-        if os.path.isdir(val):
-            global_inputs[key] = _dir_to_file_list(val)
-        else:
-            global_inputs[key] = val
+        try:
+            global_inputs[key] = _resolve_input_value(val)
+        except (OSError, ValueError) as exc:
+            logger.error(f"命令行输入无效：{exc}")
+            sys.exit(1)
 
     # Build global_configs from --config flags with type coercion
     config_overrides = _parse_kv_list(args.configs, "--config")
@@ -313,11 +396,16 @@ def main():
             run_from_yaml(yaml_path,
                           global_inputs,
                           global_configs,
+                          progress=not args.no_progress,
                           route_choices=route_choices,
-                          preflight_callback=_cli_preflight_callback))
+                          preflight_callback=_make_preflight_callback(
+                              args.preflight)))
     except KeyboardInterrupt:
         print("\n已中止", file=sys.stderr)
         sys.exit(130)
+    except PreflightAbortError as e:
+        logger.error(f"预检中止：{e}")
+        sys.exit(2)
     except DAGExecutionError as e:
         logger.error(
             f"节点 '{e.root_node}' 执行失败: "

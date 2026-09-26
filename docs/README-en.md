@@ -79,6 +79,22 @@ The current latest version is `v1.0.0-rc "Vega"`. Download it from the [official
 - Run `python "HoshinoWeaver desktop.py"` to launch the GUI, or run `python launcher.py --help` to view CLI options.
 - The project includes optional C++/CUDA accelerated operators. Build them with `python csrc/build_ops.py`. The system automatically falls back to NumPy implementations when no compiler is available.
 
+#### Command line (CLI)
+
+```powershell
+python launcher.py <pipeline.yaml> [image_dir] [--route KEY=VALUE] [--input KEY=VALUE] [--config KEY=VALUE]
+```
+
+For `--input KEY=VALUE`, `KEY` is an input declared in the pipeline YAML (e.g. `fnames`, `light_fnames`) and `VALUE` accepts three forms:
+
+| Form | Meaning |
+|------|---------|
+| `D:\lights` | Directory: expanded to its supported images, sorted by file name |
+| `@lights.txt` | List file: one path per line (UTF-8, blank and `#` lines ignored); file order is feed order |
+| `["a.tif","b.tif"]` | JSON array: explicit path list |
+
+`@<list file>` suits very long input sets (avoids the command-line length limit) and fixed "first N frames" runs. Relative paths inside the list resolve against the **current directory of the launcher process**, so prefer absolute paths. Use `--route` to pick a route (e.g. `--route stacker=sigma_clip`) and `--config` to override global configs (e.g. `--config output_filename=D:\out\stack.tif`). Run `python launcher.py --help` for the complete option list.
+
 
 ## Technical Highlights
 

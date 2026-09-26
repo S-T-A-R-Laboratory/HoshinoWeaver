@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "suite_id": "workflow_example",
+  "description": "Placeholder baseline suite: copy to benchmarks/local/workflow_baseline.json and point the inputs at real lights directories. Validate with `python -m benchmarks.benchmark_workflow <suite> --dry-run`.",
+  "defaults": {
+    "preflight": "ignore",
+    "timeout_seconds": 7200,
+    "repeats": 1
+  },
+  "cases": [
+    {
+      "id": "stack_sigma_clip_disk_50f",
+      "description": "50-frame sigma-clip stack with a disk frame buffer (HDD/SSD cache on temp_path)",
+      "pipeline": "hoshicore/dag/stack.meta.yaml",
+      "inputs": {
+        "fnames": "D:/path/to/lights"
+      },
+      "input_limit": 50,
+      "routes": {
+        "stacker": "sigma_clip"
+      },
+      "configs": {
+        "int_weight": true,
+        "output_dtype": "uint16",
+        "buffer_mode": "disk"
+      }
+    },
+    {
+      "id": "startrail_fifo_memory_30f",
+      "description": "30-frame fifo star-trail stack with an in-memory frame buffer",
+      "pipeline": "hoshicore/dag/startrail.meta.yaml",
+      "inputs": {
+        "fnames": "D:/path/to/startrail_lights"
+      },
+      "input_limit": 30,
+      "routes": {
+        "mode": "fifo"
+      },
+      "configs": {
+        "int_weight": true,
+        "output_dtype": "uint16",
+        "buffer_mode": "memory"
+      }
+    }
+  ]
+}
