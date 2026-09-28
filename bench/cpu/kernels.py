@@ -49,6 +49,7 @@ from hoshicore._custom_op._dispatch import is_cuda_runtime_unavailable_error
 import hoshicore._custom_op.ops.alignment as alignment_ops
 import hoshicore._custom_op.ops.calibration as calibration_ops
 import hoshicore._custom_op.ops.detection as detection_ops
+import hoshicore._custom_op.ops.gray as gray_ops
 import hoshicore._custom_op.ops.fgp as fgp_ops
 import hoshicore._custom_op.ops.filter as filter_ops
 import hoshicore._custom_op.ops.max as max_ops
@@ -184,6 +185,10 @@ CASE_NAMES = [
     "star_detect_fused_pixel_components_cuda",
     "star_detect_frame_cuda_host_gray",
     "star_detect_frame_cuda_device_gray",
+    "detection_gray_f64_numpy",
+    "detection_gray_f64_openmp",
+    "detection_gray_u16_numpy",
+    "detection_gray_u16_openmp",
     "sigma_clip_chunk_numpy",
     "sigma_clip_chunk_compiled",
     "sigma_clip_iterative_chunk_numpy",
@@ -975,6 +980,15 @@ def bench_star_detect_fused_pixel_components_backend(
     _ = fn(image, None, 1.0)
 
 
+def bench_detection_gray(frame: np.ndarray, *, output: str, backend: str) -> None:
+    fn = {
+        ("f64", "numpy"): gray_ops.detection_gray_f64_numpy,
+        ("f64", "openmp"): gray_ops.detection_gray_f64_compiled,
+        ("u16", "numpy"): gray_ops.detection_gray_u16_numpy,
+        ("u16", "openmp"): gray_ops.detection_gray_u16_compiled,
+    }[output, backend]
+    if fn(frame) is None:
+        raise ValueError("uint16 gray benchmark requires a uint16 frame with valid gray range")
 
 
 def bench_star_detect_frame_gray_backend(frame: np.ndarray, *, device_gray: bool) -> None:
@@ -1493,6 +1507,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "asterism_mutual_nearest_cuda": lambda: bench_asterism_backend(
             *get_asterism_inputs(), backend="cuda"
         ),
+        "detection_gray_f64_numpy": lambda: bench_detection_gray(frames[0], output="f64", backend="numpy"),
+        "detection_gray_f64_openmp": lambda: bench_detection_gray(frames[0], output="f64", backend="openmp"),
+        "detection_gray_u16_numpy": lambda: bench_detection_gray(frames[0], output="u16", backend="numpy"),
+        "detection_gray_u16_openmp": lambda: bench_detection_gray(frames[0], output="u16", backend="openmp"),
         "asterism_tokens_numpy": lambda: bench_asterism_tokens_backend(
             get_asterism_star_inputs()[0], backend="numpy"
         ),

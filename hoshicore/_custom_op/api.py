@@ -26,6 +26,7 @@ from hoshicore._custom_op.ops.fgp import (
     sigma_clip_fused_merge,
 )
 from hoshicore._custom_op.ops.filter import median_filter_2d
+from hoshicore._custom_op.ops.gray import detection_gray_f64, detection_gray_u16
 from hoshicore._custom_op.ops.max import (
     build_info,
     custom_ops_available,
@@ -52,6 +53,8 @@ from hoshicore._custom_op.ops.star_shrink import (
 from hoshicore._custom_op.ops.wavelet import wavelet_dec_rec
 
 __all__ = [
+    "detection_gray_f64",
+    "detection_gray_u16",
     "build_info",
     "calibration_divide",
     "calibration_subtract",

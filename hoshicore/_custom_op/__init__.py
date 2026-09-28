@@ -10,6 +10,8 @@ if sys.platform == "win32":
     os.add_dll_directory(os.path.dirname(os.path.abspath(__file__)))
 
 from hoshicore._custom_op.api import (
+    detection_gray_f64,
+    detection_gray_u16,
     build_info,
     calibration_divide,
     calibration_subtract,
@@ -47,6 +49,8 @@ from hoshicore._custom_op.api import (
 )
 
 __all__ = [
+    "detection_gray_f64",
+    "detection_gray_u16",
     "build_info",
     "calibration_divide",
     "calibration_subtract",

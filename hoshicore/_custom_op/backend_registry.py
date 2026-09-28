@@ -107,6 +107,7 @@ class BackendSelection:
 
 
 _CANDIDATES: tuple[BackendCandidate, ...] = (
+    BackendCandidate("detection_gray", "openmp_cpu", "detection_gray_cast_cpu"),
     BackendCandidate(
         "extract_point_features",
         "cuda_host_io",

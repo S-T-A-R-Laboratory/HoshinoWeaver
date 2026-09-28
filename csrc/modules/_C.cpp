@@ -5,6 +5,7 @@
 #include "ops/cpu/alignment/asterism_mutual_nearest_ops.h"
 #include "ops/cpu/alignment/matching_bidirectional_nearest_ops.h"
 #include "ops/cpu/calibration/calibration_ops.h"
+#include "ops/cpu/detection/gray_ops.h"
 #include "ops/cpu/detection/median_star_mask_ops.h"
 #include "ops/cpu/detection/star_detect_fused_pixel_components_ops.h"
 #include "ops/cpu/fgp/fgp_ops.h"
@@ -52,6 +53,7 @@ PYBIND11_MODULE(_C, m) {
     bind_asterism_mutual_nearest_cpu_ops(m);
     bind_matching_bidirectional_nearest_cpu_ops(m);
     bind_calibration_ops(m);
+    bind_detection_gray_cpu_ops(m);
     bind_median_star_mask_cpu_ops(m);
     bind_star_detect_fused_pixel_components_cpu_ops(m);
     bind_filter_ops(m);

@@ -2,11 +2,11 @@
 from functools import cached_property
 from typing import Optional
 
-import cv2
 import numpy as np
 from numpy.typing import NDArray
 
 from hoshicore._custom_op.ops.detection import GraySource
+from hoshicore._custom_op import detection_gray_f64, detection_gray_u16
 
 from .detection import DetectedStars, detect_star_points, detect_star_points_median
 from .matching import adaptive_k, extract_point_features
@@ -15,22 +15,18 @@ from .types import BaseCameraModel
 
 def to_gray_f64(arr: np.ndarray) -> NDArray[np.float64]:
     """Convert a project-convention BGR image to grayscale in ``[0, 1]``."""
-    if arr.ndim == 3:
-        gray = cv2.cvtColor(arr.astype(np.float32),
-                            cv2.COLOR_BGR2GRAY).astype(np.float64)
-    else:
-        gray = arr.astype(np.float64)
-
-    if np.issubdtype(arr.dtype, np.integer):
-        gray /= np.iinfo(arr.dtype).max
-    else:
-        max_val = gray.max()
-        if max_val > 1.0:
-            gray /= max_val
-
-    return gray
+    return detection_gray_f64(arr)
 
 
+def to_median_gray_u16(arr: np.ndarray) -> NDArray[np.uint16] | None:
+    """The median detector's uint16 gray of a uint16 frame, without float64.
+
+    Bitwise equal to quantizing :func:`to_gray_f64` back to uint16: for every
+    float32 gray ``g`` in ``[0, 65535]``, ``rint(float32(g / 65535) * 65535)``
+    equals ``rint(g)`` (checked over all such float32 values). Returns None for
+    other dtypes or a gray outside that range, which take the float64 path.
+    """
+    return detection_gray_u16(arr)
 
 
 class StarDetectionCache:
@@ -71,8 +67,9 @@ class StarDetectionCache:
 
     @cached_property
     def median_stars(self) -> DetectedStars:
+        gray = None if self._image is None else to_median_gray_u16(self._image)
         return detect_star_points_median(
-            self.gray, self._mask,
+            self.gray if gray is None else gray, self._mask,
             threshold_ratio=self._median_threshold_ratio)
 
 

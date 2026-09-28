@@ -34,6 +34,7 @@ add_library(hnw_ops_cpu_calibration STATIC
 )
 
 add_library(hnw_ops_cpu_detection STATIC
+    ops/cpu/detection/gray_ops.cpp
     ops/cpu/detection/median_star_mask_ops.cpp
     ops/cpu/detection/star_detect_fused_pixel_components_ops.cpp
 )
