@@ -162,6 +162,7 @@ CASE_NAMES = [
     "median_filter_2d_compiled",
     "extract_point_features_numpy",
     "extract_point_features_compiled",
+    "extract_point_features_cuda",
     "matching_cosine_bidirectional_nearest_numpy",
     "matching_cosine_bidirectional_nearest_openmp",
     "matching_cosine_bidirectional_nearest_cuda",
@@ -806,8 +807,10 @@ def bench_extract_point_features_backend(
     extract = {
         "numpy": alignment_ops.extract_point_features_numpy,
         "compiled": alignment_ops.extract_point_features_compiled,
+        "cuda": alignment_ops.extract_point_features_cuda,
     }[backend]
-    _ = extract(vec, vol, k)
+    if extract(vec, vol, k) is None:
+        raise RuntimeError("CUDA extract_point_features pool is too small for k")
 
 
 
@@ -1386,6 +1389,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         ),
         "extract_point_features_numpy": lambda: bench_alignment_extract("numpy"),
         "extract_point_features_compiled": lambda: bench_alignment_extract("compiled"),
+        "extract_point_features_cuda": lambda: bench_alignment_extract("cuda"),
         "matching_cosine_bidirectional_nearest_numpy": lambda: bench_matching_nearest_backend(
             *get_matching_nearest_inputs(), backend="numpy"
         ),

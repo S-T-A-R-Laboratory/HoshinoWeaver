@@ -720,6 +720,35 @@ class TestCudaMemoryEstimate(unittest.TestCase):
             cache_info["last_pinned_peak_bytes"], estimate.peak_pinned_bytes
         )
 
+    def test_extract_point_features_estimate_bounds_workspace_high_water(self) -> None:
+        if not build_info().get("cuda"):
+            self.skipTest("CUDA feature backend is not built")
+        module, error = alignment_ops._load_compiled_module_result()
+        if module is None:
+            self.skipTest(error or "compiled custom ops unavailable")
+        memory_info = module.cuda_memory_info()
+        if not memory_info.get("available"):
+            self.skipTest(memory_info.get("reason", "CUDA runtime unavailable"))
+
+        rng = np.random.default_rng(29)
+        k = 15
+        for n_points in (300, 2000):  # full scan, then direction grid
+            with self.subTest(n_points=n_points):
+                vec = rng.normal(size=(n_points, 3)) * [0.1, 0.1, 1.0] + [0.0, 0.0, 4.0]
+                vol = rng.uniform(0.1, 5.0, n_points)
+                estimate = cuda_memory.estimate_extract_point_features(
+                    n_points=n_points, k=k)
+                self.assertTrue(module.clear_cuda_host_io_cache())
+                module.extract_point_features_cuda(vec, vol, k)
+                cache_info = module.cuda_host_io_cache_info()
+
+                peak = cache_info["last_device_peak_bytes"]
+                self.assertLessEqual(peak, estimate.peak_device_bytes)
+                if n_points < 512:
+                    self.assertEqual(peak, n_points * (40 + k * 24 + 120 * 8) + 4)
+                self.assertEqual(
+                    cache_info["last_pinned_peak_bytes"], estimate.peak_pinned_bytes)
+
     def test_camera_model_remap_estimate_matches_workspace_high_water(self) -> None:
         if not build_info().get("cuda"):
             self.skipTest("CUDA remap backend is not built")

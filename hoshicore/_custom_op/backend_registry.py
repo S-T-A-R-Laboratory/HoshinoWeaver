@@ -107,6 +107,15 @@ class BackendSelection:
 
 
 _CANDIDATES: tuple[BackendCandidate, ...] = (
+    BackendCandidate(
+        "extract_point_features",
+        "cuda_host_io",
+        "extract_point_features_cuda",
+        priority=10,
+        fallback="openmp_cpu",
+        build_flag="cuda",
+        memory_model="static_estimator",
+    ),
     BackendCandidate("extract_point_features", "openmp_cpu", "extract_point_features"),
     BackendCandidate(
         "matching_cosine_bidirectional_nearest",

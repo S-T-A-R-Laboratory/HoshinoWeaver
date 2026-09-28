@@ -126,6 +126,9 @@ if(HNW_ENABLE_CUDA)
         # Alignment matching distance and bidirectional nearest-neighbor reduction.
         ops/cuda/alignment/matching_bidirectional_nearest_ops.cpp
         ops/cuda/alignment/matching_bidirectional_nearest_ops.cu
+        # Star-point angular-histogram descriptors.
+        ops/cuda/alignment/point_features_ops.cpp
+        ops/cuda/alignment/point_features_ops.cu
         # Fused camera-model remap.
         ops/cuda/remap/camera_model_remap_fused_ops.cpp
         ops/cuda/remap/camera_model_remap_fused_ops.cu

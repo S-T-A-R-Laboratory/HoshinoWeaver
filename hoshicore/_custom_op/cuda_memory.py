@@ -162,6 +162,33 @@ def estimate_matching_cosine_bidirectional_nearest(
 # Pinned double-buffer slot of the staged host transfers (cuda_host_staging.cuh).
 CUDA_STAGING_SLOT_BYTES = 8 * 1024 * 1024
 
+POINT_FEATURE_BINS = 120
+
+
+def estimate_extract_point_features(
+    *,
+    n_points: int,
+    k: int,
+) -> CudaMemoryEstimate:
+    if min(n_points, k) <= 0:
+        raise ValueError(
+            "extract_point_features CUDA memory estimate requires positive sizes")
+    max_cells = 8 * n_points + 64
+    points = n_points * (3 * 8 + 8 + 8)
+    grid = n_points * 3 * 8 + (max_cells + 1) * 8 + n_points * 8
+    return CudaMemoryEstimate(
+        logical_op="extract_point_features",
+        peak_device_bytes=(points + grid + n_points * k * 3 * 8
+                           + n_points * POINT_FEATURE_BINS * 8 + 4),
+        peak_pinned_bytes=2 * CUDA_STAGING_SLOT_BYTES,
+        confidence="bounded",
+        reason=(
+            "points, norms, per-neighbour parameters and descriptors are exact; "
+            "the direction grid uses its cell-count limit"
+        ),
+    )
+
+
 def _star_shrink_image_sizes(
     *,
     height: int,
@@ -575,6 +602,7 @@ _CUDA_STATIC_MEMORY_ESTIMATORS: dict[
     str, Callable[..., CudaMemoryEstimate]
 ] = {
     "camera_model_remap": estimate_camera_model_remap,
+    "extract_point_features": estimate_extract_point_features,
     "matching_cosine_bidirectional_nearest": (
         estimate_matching_cosine_bidirectional_nearest
     ),

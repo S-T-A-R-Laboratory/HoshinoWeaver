@@ -1,6 +1,7 @@
 #include "alignment_ops.h"
 
 #include "common/cpu_compat.h"
+#include "ops/cpu/alignment/direction_grid.h"
 
 #include <pybind11/numpy.h>
 
@@ -13,7 +14,7 @@
 
 namespace {
 
-constexpr ssize_t FEATURE_BINS = 120;
+constexpr ssize_t FEATURE_BINS = hnw::alignment::kFeatureBins;
 constexpr double FEATURE_STEP = 3.14159265358979323846 / 60.0;
 
 double clamp_unit(const double value) {
@@ -54,26 +55,14 @@ void normalize3(double* vec) {
     vec[2] /= norm;
 }
 
-py::array_t<double> extract_point_features_impl(
-    const py::array_t<double, py::array::c_style | py::array::forcecast>& vec,
-    const py::array_t<double, py::array::c_style | py::array::forcecast>& vol, const int k) {
-    if (vec.ndim() != 2 || vec.shape(1) != 3) {
-        throw std::invalid_argument("extract_point_features: vec must have shape (N, 3)");
-    }
-    if (vol.ndim() != 1 || vol.shape(0) != vec.shape(0)) {
-        throw std::invalid_argument("extract_point_features: vol must have shape (N,)");
-    }
-    if (k <= 0) {
-        throw std::invalid_argument("extract_point_features: k must be positive");
-    }
-    const ssize_t n_points = vec.shape(0);
-    if (n_points <= 0) {
+py::array_t<double> extract_point_features_impl(const hnw::alignment::PointArray& vec,
+                                                const hnw::alignment::PointArray& vol,
+                                                const int k) {
+    const ssize_t neighbor_count = hnw::alignment::point_feature_pool_size(vec, vol, k);
+    if (neighbor_count == 0) {
         return py::array_t<double>(std::vector<ssize_t>{0, FEATURE_BINS});
     }
-    const ssize_t neighbor_count = std::min<ssize_t>(2 * static_cast<ssize_t>(k), n_points);
-    if (neighbor_count < k) {
-        throw std::invalid_argument("extract_point_features: k exceeds available neighbor count");
-    }
+    const ssize_t n_points = vec.shape(0);
 
     py::array_t<double> out(std::vector<ssize_t>{n_points, FEATURE_BINS});
     const auto vec_info = vec.request();
@@ -85,6 +74,7 @@ py::array_t<double> extract_point_features_impl(
 
     {
         py::gil_scoped_release release;
+        const hnw::alignment::DirectionGrid grid(vec_ptr, n_points, neighbor_count);
 
 #if defined(_OPENMP)
 #pragma omp parallel
@@ -97,14 +87,23 @@ py::array_t<double> extract_point_features_impl(
             std::vector<double> similarities(static_cast<size_t>(n_points));
             std::vector<double> rho_pool(static_cast<size_t>(neighbor_count));
             std::vector<ssize_t> local_order(static_cast<size_t>(neighbor_count));
+            std::vector<double> grid_distances;
+            std::vector<double> grid_kth;
 
 #if defined(_OPENMP)
 #pragma omp for schedule(static)
 #endif
             for (ssize_t i = 0; i < n_points; ++i) {
-                std::iota(order.begin(), order.end(), 0);
+                ssize_t candidate_count = n_points;
+                if (grid.usable()) {
+                    candidate_count =
+                        grid.collect(i, neighbor_count, order.data(), &grid_distances, &grid_kth);
+                } else {
+                    std::iota(order.begin(), order.end(), 0);
+                }
                 const double* v0 = vec_ptr + i * 3;
-                for (ssize_t j = 0; j < n_points; ++j) {
+                for (ssize_t c = 0; c < candidate_count; ++c) {
+                    const ssize_t j = order[static_cast<size_t>(c)];
                     similarities[static_cast<size_t>(j)] =
                         clamp_unit(cosine_similarity3(v0, vec_ptr + j * 3));
                 }
@@ -112,8 +111,8 @@ py::array_t<double> extract_point_features_impl(
                 // below. The index tie-break makes this a total order whose
                 // sorted prefix is bit-identical to the previous full
                 // stable_sort for equal similarities.
-                std::partial_sort(order.begin(), order.begin() + neighbor_count, order.end(),
-                                  [&](ssize_t lhs, ssize_t rhs) {
+                std::partial_sort(order.begin(), order.begin() + neighbor_count,
+                                  order.begin() + candidate_count, [&](ssize_t lhs, ssize_t rhs) {
                                       const double lhs_sim = similarities[static_cast<size_t>(lhs)];
                                       const double rhs_sim = similarities[static_cast<size_t>(rhs)];
                                       if (lhs_sim != rhs_sim) {
@@ -202,6 +201,31 @@ py::array_t<double> extract_point_features_impl(
 }
 
 } // namespace
+
+namespace hnw::alignment {
+
+ssize_t point_feature_pool_size(const PointArray& vec, const PointArray& vol, const int k) {
+    if (vec.ndim() != 2 || vec.shape(1) != 3) {
+        throw std::invalid_argument("extract_point_features: vec must have shape (N, 3)");
+    }
+    if (vol.ndim() != 1 || vol.shape(0) != vec.shape(0)) {
+        throw std::invalid_argument("extract_point_features: vol must have shape (N,)");
+    }
+    if (k <= 0) {
+        throw std::invalid_argument("extract_point_features: k must be positive");
+    }
+    const ssize_t n_points = vec.shape(0);
+    if (n_points <= 0) {
+        return 0;
+    }
+    const ssize_t neighbor_count = std::min<ssize_t>(2 * static_cast<ssize_t>(k), n_points);
+    if (neighbor_count < k) {
+        throw std::invalid_argument("extract_point_features: k exceeds available neighbor count");
+    }
+    return neighbor_count;
+}
+
+} // namespace hnw::alignment
 
 void bind_alignment_ops(py::module_& m) {
     m.def("extract_point_features", &extract_point_features_impl, py::arg("vec"), py::arg("vol"),

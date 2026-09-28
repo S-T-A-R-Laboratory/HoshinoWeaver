@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 from functools import partial
 from typing import Callable
 
@@ -17,7 +16,6 @@ from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
 from hoshicore._custom_op.backend_registry import BackendSelection
-from hoshicore._custom_op.backend_registry import native_backend_available as _native_backend_available
 from hoshicore._custom_op.backend_registry import run_with_accelerator_fallback
 from hoshicore._custom_op.backend_registry import resolve_backend as _resolve_backend
 from hoshicore._custom_op.cuda_memory import cuda_memory_estimate
@@ -106,6 +104,30 @@ def extract_point_features_numpy(
     return np.ascontiguousarray(features)
 
 
+def _validate_point_feature_inputs(
+    vec: NDArray[np.float64],
+    vol: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    return (_as_float64_c("extract_point_features: vec", vec, 2, 3),
+            _as_float64_c("extract_point_features: vol", vol, 1))
+
+
+def _checked_feature_layout(
+    result: NDArray[np.float64] | None,
+    vec_arr: NDArray[np.float64],
+    vol_arr: NDArray[np.float64],
+    k: int,
+) -> NDArray[np.float64] | None:
+    # Reject stale or incompatible local extensions rather than silently
+    # mixing descriptor layouts.
+    if result is not None and (result.ndim != 2 or result.shape != (len(vec_arr), 120)):
+        _debug_log(
+            "compiled extract_point_features has an incompatible layout; "
+            "falling back to the canonical angular-histogram implementation")
+        return extract_point_features_numpy(vec_arr, vol_arr, k=k)
+    return result
+
+
 def extract_point_features_compiled(
     vec: NDArray[np.float64],
     vol: NDArray[np.float64],
@@ -114,36 +136,45 @@ def extract_point_features_compiled(
     module, _ = _load_compiled_module_result()
     if module is None or not hasattr(module, "extract_point_features"):
         raise RuntimeError("compiled custom op backend is unavailable")
-    vec_arr = _as_float64_c("extract_point_features: vec", vec, 2, 3)
-    vol_arr = _as_float64_c("extract_point_features: vol", vol, 1)
+    vec_arr, vol_arr = _validate_point_feature_inputs(vec, vol)
     _apply_compiled_threads("extract_point_features", vec_arr)
     result = module.extract_point_features(vec_arr, vol_arr, int(k))
-    # Reject stale or incompatible local extensions rather than silently
-    # mixing descriptor layouts.
-    if result.ndim != 2 or result.shape != (len(vec_arr), 120):
-        _debug_log(
-            "compiled extract_point_features has an incompatible layout; "
-            "falling back to the canonical angular-histogram implementation")
-        return extract_point_features_numpy(vec_arr, vol_arr, k=k)
-    return result
+    return _checked_feature_layout(result, vec_arr, vol_arr, k)
 
 
-@lru_cache(maxsize=2)
-def _select_extract_point_features_backend(
-    preference: str,
-) -> tuple[str, Callable[[NDArray[np.float64], NDArray[np.float64], int], NDArray[np.float64]]]:
-    available, compiled_error = _native_backend_available(
-        "extract_point_features",
-        preference,
-        load_module=_load_compiled_module_result,
-    )
-    if available:
-        return "compiled", extract_point_features_compiled
+def extract_point_features_cuda(
+    vec: NDArray[np.float64],
+    vol: NDArray[np.float64],
+    k: int = 15,
+) -> NDArray[np.float64] | None:
+    """CUDA descriptors; neighbour selection matches the CPU backend exactly
+    and values differ only by device acos/atan2/exp rounding. Returns None
+    when 2k exceeds the device neighbour pool or a near tie in the vol*rho
+    ordering could select differently from the CPU backend."""
+    module, _ = _load_compiled_module_result()
+    if module is None or not hasattr(module, "extract_point_features_cuda"):
+        raise RuntimeError("compiled custom op backend is unavailable")
+    vec_arr, vol_arr = _validate_point_feature_inputs(vec, vol)
+    if len(vec_arr) == 0:
+        return module.extract_point_features_cuda(vec_arr, vol_arr, int(k))
+    estimate = cuda_memory_estimate(
+        "extract_point_features", n_points=len(vec_arr), k=int(k))
+    result = _run_admitted_cuda(
+        estimate, module.extract_point_features_cuda, vec_arr, vol_arr, int(k))
+    return _checked_feature_layout(result, vec_arr, vol_arr, k)
 
-    if compiled_error:
-        _debug_log(f"compiled backend unavailable, reason: {compiled_error}")
 
-    return "numpy", extract_point_features_numpy
+def _extract_point_features_backend(
+    selection: BackendSelection,
+) -> tuple[str, Callable[..., NDArray[np.float64] | None]]:
+    if not selection.native or selection.candidate is None:
+        return "numpy", extract_point_features_numpy
+    if selection.candidate.kernel_name == "extract_point_features_cuda":
+        return "cuda", extract_point_features_cuda
+    if selection.candidate.kernel_name == "extract_point_features":
+        return "cpu", extract_point_features_compiled
+    raise RuntimeError(
+        f"unknown extract_point_features backend candidate: {selection.candidate}")
 
 
 def extract_point_features(
@@ -151,8 +182,27 @@ def extract_point_features(
     vol: NDArray[np.float64],
     k: int = 15,
 ) -> NDArray[np.float64]:
-    _, backend = _select_extract_point_features_backend(_fallback_preference())
-    return backend(vec, vol, k)
+    vec_arr, vol_arr = _validate_point_feature_inputs(vec, vol)
+    selection = _resolve_backend(
+        "extract_point_features",
+        _fallback_preference(),
+        load_module=_load_compiled_module_result,
+    )
+    if selection.reason:
+        _debug_log(f"compiled backend unavailable, reason: {selection.reason}")
+
+    result = run_with_accelerator_fallback(
+        "extract_point_features",
+        selection,
+        _extract_point_features_backend,
+        lambda entry: entry(vec_arr, vol_arr, k),
+        load_module=_load_compiled_module_result,
+        log=_debug_log,
+    )
+    if result is None:
+        _debug_log("CUDA extract_point_features declined the input; using OpenMP")
+        return extract_point_features_compiled(vec_arr, vol_arr, k)
+    return result
 
 
 MatchingNearestResult = tuple[
