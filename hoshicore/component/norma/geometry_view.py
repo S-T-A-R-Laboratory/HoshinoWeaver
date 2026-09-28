@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from hoshicore._custom_op.ops.detection import GraySource
+
 from .detection import DetectedStars, detect_star_points, detect_star_points_median
 from .matching import adaptive_k, extract_point_features
 from .types import BaseCameraModel
@@ -29,6 +31,8 @@ def to_gray_f64(arr: np.ndarray) -> NDArray[np.float64]:
     return gray
 
 
+
+
 class StarDetectionCache:
     """One grayscale image with separately cached detector results.
 
@@ -37,25 +41,38 @@ class StarDetectionCache:
     discarded after one alignment.
     """
 
-    def __init__(self, gray: NDArray[np.float64], mask: Optional[np.ndarray] = None,
-                 median_threshold_ratio: float = 1.0):
+    def __init__(self, gray: Optional[NDArray[np.float64]] = None,
+                 mask: Optional[np.ndarray] = None,
+                 median_threshold_ratio: float = 1.0, *,
+                 image: Optional[np.ndarray] = None):
+        if (gray is None) == (image is None):
+            raise ValueError("StarDetectionCache needs exactly one of gray or image")
         self._gray = gray
+        self._image = image
         self._mask = mask
         self._median_threshold_ratio = median_threshold_ratio
 
     @classmethod
     def from_image(cls, image: np.ndarray, mask: Optional[np.ndarray] = None,
                    median_threshold_ratio: float = 1.0) -> "StarDetectionCache":
-        return cls(to_gray_f64(image), mask, median_threshold_ratio)
+        return cls(mask=mask, median_threshold_ratio=median_threshold_ratio, image=image)
+
+    @cached_property
+    def gray(self) -> NDArray[np.float64]:
+        """Host gray, converted from the image only when a detector needs it."""
+        return self._gray if self._gray is not None else to_gray_f64(self._image)
 
     @cached_property
     def pywt_stars(self) -> DetectedStars:
-        return detect_star_points(self._gray, self._mask)
+        # From an image, the CUDA detector converts the gray on the device.
+        source = (self.gray if self._image is None
+                  else GraySource(self._image, to_gray_f64, host_gray=lambda: self.gray))
+        return detect_star_points(source, self._mask)
 
     @cached_property
     def median_stars(self) -> DetectedStars:
         return detect_star_points_median(
-            self._gray, self._mask,
+            self.gray, self._mask,
             threshold_ratio=self._median_threshold_ratio)
 
 

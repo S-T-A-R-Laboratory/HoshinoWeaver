@@ -556,13 +556,90 @@ double masked_percentile_995(const SelectWorkspace& select) {
     return lower + (upper - lower) * (rank - static_cast<double>(lower_index));
 }
 
+// to_gray_f64 on the device. OpenCV routes float BGR->GRAY to IPP, whose
+// AVX2/AVX-512 code computes fma(r, cr, fma(b, cb, g * cg)); the even lanes of
+// the 4-pixel block closing a row with 4..7 leftover pixels use
+// fma(r, cr, fma(g, cg, b * cb)). The host verifies this against OpenCV.
+template <typename T>
+__global__ void source_gray_kernel(const T* source, const int height, const int width,
+                                   const int channels, const double scale, double* gray) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= height * width) {
+        return;
+    }
+    if (channels == 1) {
+        gray[idx] = __ddiv_rn(static_cast<double>(source[idx]), scale);
+        return;
+    }
+    const T* pixel = source + static_cast<size_t>(idx) * 3;
+    const float b = pixel[0];
+    const float g = pixel[1];
+    const float r = pixel[2];
+    const int col = idx % width;
+    const int block = width / 8 * 8;
+    const bool tail_even = width % 8 >= 4 && (col == block || col == block + 2);
+    const float y = tail_even ? __fmaf_rn(r, 0.299f, __fmaf_rn(g, 0.587f, __fmul_rn(b, 0.114f)))
+                              : __fmaf_rn(r, 0.299f, __fmaf_rn(b, 0.114f, __fmul_rn(g, 0.587f)));
+    gray[idx] = __ddiv_rn(static_cast<double>(y), scale);
+}
+
+// Uploads `source` and writes its float64 gray into `gray`. A converted
+// source is staged in `scratch` (at least 8 bytes per pixel).
+void upload_source_gray(const StarDetectSource& source, const int height, const int width,
+                        double* gray, void* scratch, unsigned char* staging,
+                        hnw::cuda::StagingSlots* slots, const cudaStream_t stream) {
+    const size_t total = static_cast<size_t>(height) * static_cast<size_t>(width);
+    if (source.is_gray()) {
+        hnw::cuda::staged_upload(gray, source.data, total * sizeof(double), staging, slots, stream);
+        return;
+    }
+    const size_t bytes = total * static_cast<size_t>(source.channels * source.sample_bytes);
+    hnw::cuda::staged_upload(scratch, source.data, bytes, staging, slots, stream);
+    const int threads = 256;
+    const int blocks = static_cast<int>((total + threads - 1) / threads);
+    if (source.sample_bytes == 1) {
+        source_gray_kernel<<<blocks, threads, 0, stream>>>(
+            static_cast<const uint8_t*>(scratch), height, width, source.channels, 255.0, gray);
+    } else {
+        source_gray_kernel<<<blocks, threads, 0, stream>>>(
+            static_cast<const uint16_t*>(scratch), height, width, source.channels, 65535.0, gray);
+    }
+    throw_if_cuda_failed(cudaGetLastError(), "star_detect_fused_pixel_components gray launch");
+}
+
 } // namespace
 
-void launch_star_detect_fused_pixel_components(
-    const double* image_host, const uint8_t* external_mask_host, const double* gaussian_kernel_host,
-    std::vector<double>* positions_xy_host, std::vector<double>* intensities_host,
-    uint8_t* binary_mask_host, const int height, const int width, const int small_height,
-    const int small_width, const int level, const int gaussian_ksize) {
+void launch_star_detect_source_gray(const StarDetectSource& source, const int height,
+                                    const int width, double* gray_host) {
+    const size_t total = static_cast<size_t>(height) * static_cast<size_t>(width);
+    auto workspace = hnw::cuda::acquire_host_io_workspace("star_detect_source_gray cudaGetDevice");
+    try {
+        const cudaStream_t stream = workspace.stream();
+        auto* staging = static_cast<unsigned char*>(workspace.pinned_buffer(
+            2 * hnw::cuda::kStagingSlotBytes, "star_detect_source_gray cudaMallocHost staging"));
+        hnw::cuda::StagingSlots slots;
+        void* scratch = workspace.device_buffer(total * sizeof(double),
+                                                "star_detect_source_gray cudaMalloc source");
+        auto* gray = static_cast<double*>(workspace.device_buffer(
+            total * sizeof(double), "star_detect_source_gray cudaMalloc gray"));
+        upload_source_gray(source, height, width, gray, scratch, staging, &slots, stream);
+        throw_if_cuda_failed(cudaMemcpyAsync(gray_host, gray, total * sizeof(double),
+                                             cudaMemcpyDeviceToHost, stream),
+                             "star_detect_source_gray cudaMemcpy gray");
+        throw_if_cuda_failed(cudaStreamSynchronize(stream),
+                             "star_detect_source_gray cudaStreamSynchronize");
+    } catch (...) {
+        workspace.reset_after_error();
+        throw;
+    }
+}
+
+bool launch_star_detect_fused_pixel_components(
+    const StarDetectSource& source, const uint8_t* external_mask_host,
+    const double* gaussian_kernel_host, std::vector<double>* positions_xy_host,
+    std::vector<double>* intensities_host, uint8_t* binary_mask_host, const int height,
+    const int width, const int small_height, const int small_width, const int level,
+    const int gaussian_ksize) {
     const int threads = 256;
     const int total = height * width;
     const int small_total = small_height * small_width;
@@ -623,8 +700,31 @@ void launch_star_detect_fused_pixel_components(
         mask.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc mask", &workspace);
         count.allocate(1, "star_detect_fused_pixel_components cudaMalloc count", &workspace);
 
-        hnw::cuda::staged_upload(image.get(), image_host, plane_size * sizeof(double), staging,
-                                 &staging_slots, stream);
+        // A converted source is staged in the blur-row buffer, which the
+        // gaussian row pass overwrites only after the conversion.
+        upload_source_gray(source, height, width, image.get(), blur_rows.get(), staging,
+                           &staging_slots, stream);
+        if (!source.is_gray()) {
+            thrust::device_ptr<double> gray_ptr(image.get());
+            const auto extrema =
+                run_thrust_with_resource_translation("star_detect thrust minmax allocation", [&] {
+                    return thrust::minmax_element(thrust::cuda::par.on(stream), gray_ptr,
+                                                  gray_ptr + total);
+                });
+            throw_if_cuda_failed(cudaMemcpyAsync(scalar_doubles,
+                                                 thrust::raw_pointer_cast(extrema.first),
+                                                 sizeof(double), cudaMemcpyDeviceToHost, stream),
+                                 "star_detect_fused_pixel_components cudaMemcpy gray min");
+            throw_if_cuda_failed(cudaMemcpyAsync(scalar_doubles + 1,
+                                                 thrust::raw_pointer_cast(extrema.second),
+                                                 sizeof(double), cudaMemcpyDeviceToHost, stream),
+                                 "star_detect_fused_pixel_components cudaMemcpy gray max");
+            throw_if_cuda_failed(cudaStreamSynchronize(stream),
+                                 "star_detect_fused_pixel_components gray extrema sync");
+            if (scalar_doubles[0] == scalar_doubles[1]) {
+                return false;
+            }
+        }
         throw_if_cuda_failed(cudaMemcpyAsync(gaussian_kernel.get(), gaussian_kernel_host,
                                              gaussian_kernel_bytes, cudaMemcpyHostToDevice, stream),
                              "star_detect_fused_pixel_components cudaMemcpy gaussian kernel");
@@ -762,7 +862,7 @@ void launch_star_detect_fused_pixel_components(
                              "star_detect_fused_pixel_components foreground total sync");
         const int foreground_count = *scalar_int;
         if (foreground_count <= 0) {
-            return;
+            return true;
         }
         if (foreground_count > total / hnw::star_detect::kMaxForegroundDivisor) {
             throw hnw::StarDetectCapacityError("star_detect_fused_pixel_components: "
@@ -894,7 +994,7 @@ void launch_star_detect_fused_pixel_components(
                              "star_detect_fused_pixel_components output count sync");
         const int output_count = *scalar_int;
         if (output_count <= 0) {
-            return;
+            return true;
         }
 
         out_positions.allocate(static_cast<size_t>(output_count) * 2,
@@ -924,7 +1024,7 @@ void launch_star_detect_fused_pixel_components(
                              "star_detect_fused_pixel_components cudaMemcpy intensities");
         throw_if_cuda_failed(cudaStreamSynchronize(stream),
                              "star_detect_fused_pixel_components final sync");
-        return;
+        return true;
     } catch (...) {
         workspace.reset_after_error();
         throw;

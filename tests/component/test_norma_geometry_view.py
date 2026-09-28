@@ -1,6 +1,8 @@
 import numpy as np
+import pytest
 
 import hoshicore.component.norma.geometry_view as geometry_module
+from hoshicore._custom_op.ops.detection import GraySource
 from hoshicore.component.norma.detection import DetectedStars
 from hoshicore.component.norma.geometry_view import (GeometryView,
                                                       StarDetectionCache,
@@ -45,3 +47,38 @@ def test_detection_cache_keeps_pywt_and_median_results_lazy_and_separate(
     assert pywt_view.stars is pywt
     assert median_view.stars is median
     assert not hasattr(pywt_view, "image_gray")
+
+
+def test_detection_cache_from_image_converts_gray_only_on_demand(monkeypatch):
+    sources = []
+    conversions = []
+    real_to_gray = geometry_module.to_gray_f64
+
+    def counting_to_gray(image):
+        conversions.append(image.shape)
+        return real_to_gray(image)
+
+    def stars():
+        return DetectedStars(np.array([[1.0, 1.0]]), np.ones(1))
+
+    monkeypatch.setattr(geometry_module, "to_gray_f64", counting_to_gray)
+    monkeypatch.setattr(geometry_module, "detect_star_points",
+                        lambda source, mask=None: sources.append(source) or stars())
+    monkeypatch.setattr(geometry_module, "detect_star_points_median",
+                        lambda gray, mask=None, threshold_ratio=1.0: stars())
+    image = np.full((8, 12, 3), 1000, dtype=np.uint16)
+    cache = StarDetectionCache.from_image(image)
+    cache.pywt_stars
+    assert isinstance(sources[0], GraySource) and sources[0].raw is image
+    assert conversions == []
+    cache.median_stars
+    assert conversions == [(8, 12, 3)]
+    assert sources[0].host_gray() is cache.gray
+    assert conversions == [(8, 12, 3)]
+
+
+def test_detection_cache_requires_exactly_one_input():
+    with pytest.raises(ValueError):
+        StarDetectionCache()
+    with pytest.raises(ValueError):
+        StarDetectionCache(np.zeros((4, 4)), image=np.zeros((4, 4), dtype=np.uint16))

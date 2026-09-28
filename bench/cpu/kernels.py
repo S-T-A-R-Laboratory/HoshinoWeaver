@@ -58,6 +58,7 @@ import hoshicore._custom_op.ops.sigma_clip as sigma_clip_chunk_ops
 import hoshicore._custom_op.ops.star_shrink as star_shrink_ops
 import hoshicore._custom_op.ops.wavelet as wavelet_ops
 from hoshicore.component.data_container import DTYPE_MAX_VALUE
+from hoshicore.component.norma.geometry_view import to_gray_f64
 
 
 FRAME_STREAM_CASE_NAMES = {
@@ -181,6 +182,8 @@ CASE_NAMES = [
     "wavelet_dec_rec_auto",
     "star_detect_fused_pixel_components_compiled",
     "star_detect_fused_pixel_components_cuda",
+    "star_detect_frame_cuda_host_gray",
+    "star_detect_frame_cuda_device_gray",
     "sigma_clip_chunk_numpy",
     "sigma_clip_chunk_compiled",
     "sigma_clip_iterative_chunk_numpy",
@@ -974,6 +977,18 @@ def bench_star_detect_fused_pixel_components_backend(
 
 
 
+def bench_star_detect_frame_gray_backend(frame: np.ndarray, *, device_gray: bool) -> None:
+    """CUDA detection of a frame including its gray conversion: host
+    to_gray_f64 plus a float64 upload, or the frame uploaded as a GraySource
+    and converted on the device."""
+    if device_gray:
+        result = detection_ops.star_detect_fused_pixel_components_compiled_source(
+            detection_ops.GraySource(frame, to_gray_f64), None, 1.0)
+    else:
+        result = detection_ops.star_detect_fused_pixel_components_compiled(
+            to_gray_f64(frame), None, 1.0)
+    if result is None:
+        raise RuntimeError("benchmark frame has a constant gray")
 
 
 def build_sigma_clip_chunk_stack(
@@ -1533,6 +1548,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "star_detect_fused_pixel_components_cuda": lambda: (
             bench_star_detect_fused_pixel_components_backend(
                 get_wavelet_input(), backend="cuda")),
+        "star_detect_frame_cuda_host_gray": lambda: bench_star_detect_frame_gray_backend(
+            frames[0], device_gray=False),
+        "star_detect_frame_cuda_device_gray": lambda: bench_star_detect_frame_gray_backend(
+            frames[0], device_gray=True),
         "sigma_clip_chunk_numpy": lambda: bench_sigma_clip_chunk_backend(
             get_sc_chunk_stack()[0],
             get_sc_chunk_stack()[1],
