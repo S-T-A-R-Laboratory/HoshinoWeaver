@@ -290,11 +290,17 @@ device probe、kernel 对拍、workspace high-water 校验与 frozen-package smo
 | 方向 | 状态 |
 |------|------|
 | AMD (ROCm/HIP) | 待评估 |
-| macOS (Metal) | v0：`star_shrink_process` |
+| macOS (Metal) | 已实现 `star_shrink_process`、`star_mask_dog`、`star_shrink_dog_process` |
 | macOS (MPS) | 后续按热点评估 |
 | Vulkan (compute shader) | 待评估 |
 
 所有 GPU 后端保持 CPU fallback 语义不变。
+
+CPU 检测灰度的 `detection_gray` candidate 只并行化 OpenCV 前后的类型转换、
+归一化和 uint16 最近偶数取整；颜色计算仍由 Python wrapper 调用当前 OpenCV，
+因此无需链接 C++ OpenCV 或假设特定 IPP/SIMD 实现。该路径面向 uint8/uint16
+图像；其他 dtype 沿用 NumPy 参考实现。转换循环按现有线程设置取最多 8 线程，
+小数组串行执行。
 
 运行时可通过 `HNW_CUSTOM_OPS_FALLBACK=cpu` 禁用 Metal/CUDA 并保留 OpenMP，或在
 pipeline 启动前调用 `hoshicore._custom_op.set_backend_preference("cpu")`。传入

@@ -190,6 +190,18 @@ synthetic starfield。
   星点 descriptor 双向最近邻可用
   `--cases matching_cosine_bidirectional_nearest_numpy,matching_cosine_bidirectional_nearest_openmp,matching_cosine_bidirectional_nearest_cuda,matching_cosine_bidirectional_nearest_auto`
   对比完整 host-in/out 路径，并用 `--alignment-points` 设置每侧星点规模。
+  星点 descriptor 提取用 `extract_point_features_numpy,extract_point_features_compiled,extract_point_features_cuda`；
+  asterism token 互为最近邻用 `asterism_mutual_nearest_numpy,asterism_mutual_nearest_openmp,asterism_mutual_nearest_cuda`
+  （每侧 `28 × --alignment-points` 个聚簇 token：每星与 8 近邻两两组成 28 个三角形；
+  真实帧约 3000 星 / 8.5 万 token，可用 `--alignment-points 3000` 对齐该规模）。
+  asterism token 提取和锚点投票用 `asterism_tokens_numpy,asterism_tokens_openmp,asterism_anchor_votes_numpy,asterism_anchor_votes_openmp`
+  （两帧 `--alignment-points` 颗视场内星点，第二帧为旋转、打乱的 90% 子集；投票输入是两帧 token 的互为最近邻配对）。
+  星点检测含灰度转换的整帧对比用 `star_detect_frame_cuda_host_gray,star_detect_frame_cuda_device_gray`
+  （主机 `to_gray_f64` + float64 上传 vs 原图上传 + 设备端转换）。
+  CPU 灰度转换用 `detection_gray_f64_numpy,detection_gray_f64_openmp` 和
+  `detection_gray_u16_numpy,detection_gray_u16_openmp`（后两项须 `--dtype uint16`）。
+  两端都使用当前 OpenCV 的颜色转换，比较的是前后类型转换、归一化和取整。
+  大图计时每个 backend 单独进程运行，保持线程数、输入和 warmup/repeat 相同。
 - `python -m bench.cpu.max_stack`
   大尺寸 `max` 专项 benchmark。比较单进程 `NumPy in-place stream`、多进程 `NumPy local-reduce`、`custom op OpenMP stream`。
 - `python -m bench.cpu.fgp_accumulate`
