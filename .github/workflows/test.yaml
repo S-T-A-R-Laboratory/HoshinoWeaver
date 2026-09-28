@@ -200,6 +200,26 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest tests/ -v --tb=short
 
+      - name: Profile median detection stages on the macOS experiment branch
+        if: github.ref == 'refs/heads/feature/macos-test'
+        timeout-minutes: 10
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          HNW_CUSTOM_OPS_THREADS: auto
+        run: |
+          python -m bench.cpu.detection_profile --sizes 1024x1280 4160x6240 \
+            --warmup 1 --repeat 5 --require-metal \
+            --output-json benchmark_results/macos-detection/profile.json
+          cat benchmark_results/macos-detection/profile.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS detection profile
+        if: always() && github.ref == 'refs/heads/feature/macos-test'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-detection-${{ github.sha }}
+          path: benchmark_results/macos-detection/
+          if-no-files-found: warn
+
       - name: Verify Metal in clean PyInstaller package
         run: python csrc/tools/verify_packaged_custom_ops.py --require-metal
 

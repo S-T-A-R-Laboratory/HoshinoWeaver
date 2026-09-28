@@ -18,6 +18,23 @@
 
 ## 当前主入口
 
+### macOS 实验分支：median 检测剖析
+
+`feature/macos-test` 的 Metal CI job 额外运行：
+
+```bash
+python -m bench.cpu.detection_profile --sizes 1024x1280 4160x6240 \
+  --warmup 1 --repeat 5 --require-metal --output-json benchmark_results/macos-detection/profile.json
+```
+
+固定种子的 uint16 BGR 星场包含噪声、亮星、边界星及天空 mask。计时直接调用
+`StarDetectionCache.median_stars`，记录灰度、融合像素处理、轮廓提取与其余几何/
+亮度/筛选阶段；每次结果须与未插桩的生产调用逐位相等。独立 `13×13` median
+滤波只作 microbenchmark，不与融合像素耗时相加。
+JSON 包含全部样本、星点数、提交、CPU/OpenCV/Metal 设备信息，Markdown 表写入
+Actions summary，两者作为 artifact 保存。耗时不设通过阈值，也不代表 Metal median
+加速结果（尚无该 kernel）。本地 Linux smoke 可省略 `--require-metal` 并缩小尺寸。
+
 ### 统一入口
 
 - `python -m bench.cli list`
