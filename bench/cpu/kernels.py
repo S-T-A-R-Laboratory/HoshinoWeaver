@@ -163,6 +163,13 @@ CASE_NAMES = [
     "extract_point_features_numpy",
     "extract_point_features_compiled",
     "extract_point_features_cuda",
+    "asterism_mutual_nearest_numpy",
+    "asterism_mutual_nearest_openmp",
+    "asterism_mutual_nearest_cuda",
+    "asterism_tokens_numpy",
+    "asterism_tokens_openmp",
+    "asterism_anchor_votes_numpy",
+    "asterism_anchor_votes_openmp",
     "matching_cosine_bidirectional_nearest_numpy",
     "matching_cosine_bidirectional_nearest_openmp",
     "matching_cosine_bidirectional_nearest_cuda",
@@ -813,16 +820,70 @@ def bench_extract_point_features_backend(
         raise RuntimeError("CUDA extract_point_features pool is too small for k")
 
 
+def build_asterism_inputs(n_points: int, *, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """Scaled asterism tokens of two frames: 28 tokens per star (pairs of its
+    8 nearest neighbours), clustered like real (edge ratio, edge ratio, log
+    scale) triples, most with a partner."""
+    rng = np.random.default_rng(seed)
+    n_tokens = 28 * n_points
+    centers = rng.uniform(-20.0, 20.0, size=(40, 3))
+    values1 = centers[rng.integers(0, len(centers), n_tokens)]
+    values1 = values1 + rng.normal(scale=3.0, size=(n_tokens, 3))
+    values2 = values1[rng.permutation(n_tokens)] + rng.normal(scale=0.3, size=(n_tokens, 3))
+    return values1, values2
 
 
+def bench_asterism_backend(values1: np.ndarray, values2: np.ndarray, *, backend: str) -> None:
+    nearest = {
+        "numpy": alignment_ops.asterism_mutual_nearest_numpy,
+        "openmp": alignment_ops.asterism_mutual_nearest_cpu_compiled,
+        "cuda": alignment_ops.asterism_mutual_nearest_cuda,
+    }[backend]
+    if nearest(values1, values2, 1.0) is None:
+        raise RuntimeError("asterism benchmark tokens cannot be gridded")
 
 
+def build_asterism_star_inputs(n_points: int, *, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """Star directions of two overlapping frames over one ~25 degree field;
+    the second is a rotated, shuffled 90% subset of the first."""
+    rng = np.random.default_rng(seed)
+    vectors1 = np.column_stack((rng.normal(scale=0.2, size=(n_points, 2)), np.ones(n_points)))
+    vectors1 /= np.linalg.norm(vectors1, axis=1, keepdims=True)
+    angle = np.deg2rad(0.5)
+    rotation = np.array([
+        [np.cos(angle), -np.sin(angle), 0.0],
+        [np.sin(angle), np.cos(angle), 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+    kept = rng.permutation(n_points)[: int(0.9 * n_points)]
+    return vectors1, vectors1[kept] @ rotation.T
 
 
+def bench_asterism_tokens_backend(vectors: np.ndarray, *, backend: str) -> None:
+    tokens = {
+        "numpy": alignment_ops.asterism_tokens_numpy,
+        "openmp": alignment_ops.asterism_tokens_cpu_compiled,
+    }[backend]
+    if tokens(vectors, 8) is None:
+        raise RuntimeError("asterism benchmark stars have tied neighbour distances")
 
 
+def build_asterism_vote_inputs(vectors1: np.ndarray, vectors2: np.ndarray) -> tuple:
+    """Token pairs of the two frames as matched in production, ready to vote."""
+    tokens1 = alignment_ops.asterism_tokens(vectors1, 8)
+    tokens2 = alignment_ops.asterism_tokens(vectors2, 8)
+    scale = np.array([0.025, 0.025, 0.04])
+    pairs1, pairs2 = alignment_ops.asterism_mutual_nearest(
+        tokens1[0] / scale, tokens2[0] / scale, 1.0)
+    return pairs1, pairs2, tokens1[1], tokens2[1], len(vectors1), len(vectors2), 5, 1
 
 
+def bench_asterism_votes_backend(vote_args: tuple, *, backend: str) -> None:
+    votes = {
+        "numpy": alignment_ops.asterism_anchor_votes_numpy,
+        "openmp": alignment_ops.asterism_anchor_votes_cpu_compiled,
+    }[backend]
+    votes(*vote_args)
 
 
 def build_matching_nearest_inputs(
@@ -1097,6 +1158,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     median_chunk_stacks = None
     alignment_inputs = None
     matching_nearest_inputs = None
+    asterism_inputs = None
+    asterism_star_inputs = None
+    asterism_vote_inputs = None
     wavelet_input = None
     sc_chunk_stack = None
     calibration_subtract_ref = None
@@ -1222,8 +1286,23 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             )
         return matching_nearest_inputs
 
+    def get_asterism_inputs():
+        nonlocal asterism_inputs
+        if asterism_inputs is None:
+            asterism_inputs = build_asterism_inputs(args.alignment_points, seed=args.seed)
+        return asterism_inputs
 
+    def get_asterism_star_inputs():
+        nonlocal asterism_star_inputs
+        if asterism_star_inputs is None:
+            asterism_star_inputs = build_asterism_star_inputs(args.alignment_points, seed=args.seed)
+        return asterism_star_inputs
 
+    def get_asterism_vote_inputs():
+        nonlocal asterism_vote_inputs
+        if asterism_vote_inputs is None:
+            asterism_vote_inputs = build_asterism_vote_inputs(*get_asterism_star_inputs())
+        return asterism_vote_inputs
 
     def bench_alignment_extract(backend: str) -> None:
         vec, _, vol, _, _, _, k = get_alignment_inputs()
@@ -1390,6 +1469,27 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "extract_point_features_numpy": lambda: bench_alignment_extract("numpy"),
         "extract_point_features_compiled": lambda: bench_alignment_extract("compiled"),
         "extract_point_features_cuda": lambda: bench_alignment_extract("cuda"),
+        "asterism_mutual_nearest_numpy": lambda: bench_asterism_backend(
+            *get_asterism_inputs(), backend="numpy"
+        ),
+        "asterism_mutual_nearest_openmp": lambda: bench_asterism_backend(
+            *get_asterism_inputs(), backend="openmp"
+        ),
+        "asterism_mutual_nearest_cuda": lambda: bench_asterism_backend(
+            *get_asterism_inputs(), backend="cuda"
+        ),
+        "asterism_tokens_numpy": lambda: bench_asterism_tokens_backend(
+            get_asterism_star_inputs()[0], backend="numpy"
+        ),
+        "asterism_tokens_openmp": lambda: bench_asterism_tokens_backend(
+            get_asterism_star_inputs()[0], backend="openmp"
+        ),
+        "asterism_anchor_votes_numpy": lambda: bench_asterism_votes_backend(
+            get_asterism_vote_inputs(), backend="numpy"
+        ),
+        "asterism_anchor_votes_openmp": lambda: bench_asterism_votes_backend(
+            get_asterism_vote_inputs(), backend="openmp"
+        ),
         "matching_cosine_bidirectional_nearest_numpy": lambda: bench_matching_nearest_backend(
             *get_matching_nearest_inputs(), backend="numpy"
         ),

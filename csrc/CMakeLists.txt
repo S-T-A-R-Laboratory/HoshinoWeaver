@@ -40,7 +40,14 @@ add_library(hnw_ops_cpu_detection STATIC
 
 add_library(hnw_ops_cpu_alignment STATIC
     ops/cpu/alignment/alignment_ops.cpp
+    ops/cpu/alignment/asterism_match_ops.cpp
+    ops/cpu/alignment/asterism_mutual_nearest_ops.cpp
     ops/cpu/alignment/matching_bidirectional_nearest_ops.cpp
+)
+
+# Token arithmetic must round like NumPy even on targets with FMA.
+set_property(SOURCE ops/cpu/alignment/asterism_match_ops.cpp APPEND PROPERTY
+    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>"
 )
 
 add_library(hnw_ops_cpu_fgp STATIC
@@ -126,6 +133,9 @@ if(HNW_ENABLE_CUDA)
         # Alignment matching distance and bidirectional nearest-neighbor reduction.
         ops/cuda/alignment/matching_bidirectional_nearest_ops.cpp
         ops/cuda/alignment/matching_bidirectional_nearest_ops.cu
+        # Asterism-token mutual nearest pairs within a threshold.
+        ops/cuda/alignment/asterism_mutual_nearest_ops.cpp
+        ops/cuda/alignment/asterism_mutual_nearest_ops.cu
         # Star-point angular-histogram descriptors.
         ops/cuda/alignment/point_features_ops.cpp
         ops/cuda/alignment/point_features_ops.cu

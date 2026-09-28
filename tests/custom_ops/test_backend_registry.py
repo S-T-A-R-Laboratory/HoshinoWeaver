@@ -70,6 +70,17 @@ class TestBackendRegistry(CustomOpsTestCase):
             },
         )
 
+        asterism_candidates = backend_registry.registered_backend_candidates(
+            "asterism_mutual_nearest"
+        )
+        self.assertEqual(
+            {(candidate.backend, candidate.kernel_name) for candidate in asterism_candidates},
+            {
+                ("cuda_host_io", "asterism_mutual_nearest_cuda"),
+                ("openmp_cpu", "asterism_mutual_nearest_cpu"),
+            },
+        )
+
         matching_candidates = backend_registry.registered_backend_candidates(
             "matching_cosine_bidirectional_nearest"
         )
@@ -169,6 +180,7 @@ class TestBackendRegistry(CustomOpsTestCase):
         self.assertEqual(
             {candidate.logical_op for candidate in cuda_candidates},
             {
+                "asterism_mutual_nearest",
                 "camera_model_remap",
                 "extract_point_features",
                 "huber_weighted_chunk",
@@ -241,6 +253,7 @@ class TestBackendRegistry(CustomOpsTestCase):
 
     def test_registered_cuda_non_chunk_models_are_consumable(self) -> None:
         sample_args = {
+            "asterism_mutual_nearest": {"n1": 17, "n2": 19},
             "camera_model_remap": {
                 "source_height": 8,
                 "source_width": 10,

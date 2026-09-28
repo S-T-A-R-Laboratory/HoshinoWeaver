@@ -1,6 +1,8 @@
 #include "common/backend_info.h"
 #include "common/cuda_error.h"
 #include "ops/cpu/alignment/alignment_ops.h"
+#include "ops/cpu/alignment/asterism_match_ops.h"
+#include "ops/cpu/alignment/asterism_mutual_nearest_ops.h"
 #include "ops/cpu/alignment/matching_bidirectional_nearest_ops.h"
 #include "ops/cpu/calibration/calibration_ops.h"
 #include "ops/cpu/detection/median_star_mask_ops.h"
@@ -18,6 +20,7 @@
 
 #include <pybind11/pybind11.h>
 #if HNW_ENABLE_CUDA
+#include "ops/cuda/alignment/asterism_mutual_nearest_ops.h"
 #include "ops/cuda/alignment/matching_bidirectional_nearest_ops.h"
 #include "ops/cuda/alignment/point_features_ops.h"
 #include "ops/cuda/detection/star_detect_fused_pixel_components_ops.h"
@@ -45,6 +48,8 @@ PYBIND11_MODULE(_C, m) {
 
     bind_backend_info(m);
     bind_alignment_ops(m);
+    bind_asterism_match_cpu_ops(m);
+    bind_asterism_mutual_nearest_cpu_ops(m);
     bind_matching_bidirectional_nearest_cpu_ops(m);
     bind_calibration_ops(m);
     bind_median_star_mask_cpu_ops(m);
@@ -60,6 +65,7 @@ PYBIND11_MODULE(_C, m) {
     bind_star_shrink_ops(m);
     bind_wavelet_ops(m);
 #if HNW_ENABLE_CUDA
+    bind_asterism_mutual_nearest_cuda_ops(m);
     bind_point_features_cuda_ops(m);
     bind_matching_bidirectional_nearest_cuda_ops(m);
     bind_camera_model_remap_fused_ops(m);

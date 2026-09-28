@@ -162,6 +162,40 @@ def estimate_matching_cosine_bidirectional_nearest(
 # Pinned double-buffer slot of the staged host transfers (cuda_host_staging.cuh).
 CUDA_STAGING_SLOT_BYTES = 8 * 1024 * 1024
 
+ASTERISM_MAX_GRID_CELLS = 1 << 22
+_ASTERISM_EXTENT_BYTES = 2 * 64 * 7 * 8
+_ASTERISM_SCAN_TILE = 4096
+
+
+def asterism_device_bytes(n1: int, n2: int, cells: int) -> int:
+    """Device bytes of the native asterism op for a grid of ``cells`` cells:
+    token values, block extents, two cell-offset grids with slot-ordered
+    indices and coordinates, scan tile sums, both nearest outputs and the
+    tie flag."""
+    tiles = -(-cells // _ASTERISM_SCAN_TILE)
+    return ((n1 + n2) * (3 * 8 + 4 + 3 * 8 + 4) + _ASTERISM_EXTENT_BYTES
+            + 2 * (cells + 1) * 4 + tiles * 4 + 4)
+
+
+def estimate_asterism_mutual_nearest(
+    *,
+    n1: int,
+    n2: int,
+) -> CudaMemoryEstimate:
+    if min(n1, n2) <= 0:
+        raise ValueError(
+            "asterism mutual nearest CUDA memory estimate requires positive sizes")
+    return CudaMemoryEstimate(
+        logical_op="asterism_mutual_nearest",
+        peak_device_bytes=asterism_device_bytes(n1, n2, ASTERISM_MAX_GRID_CELLS),
+        confidence="bounded",
+        reason=(
+            "token buffers are exact; the device-built cell grid is bounded by "
+            "the largest grid the kernel accepts"
+        ),
+    )
+
+
 POINT_FEATURE_BINS = 120
 
 
@@ -601,6 +635,7 @@ def estimate_star_detect_fused_pixel_components(
 _CUDA_STATIC_MEMORY_ESTIMATORS: dict[
     str, Callable[..., CudaMemoryEstimate]
 ] = {
+    "asterism_mutual_nearest": estimate_asterism_mutual_nearest,
     "camera_model_remap": estimate_camera_model_remap,
     "extract_point_features": estimate_extract_point_features,
     "matching_cosine_bidirectional_nearest": (

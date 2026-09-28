@@ -118,6 +118,18 @@ _CANDIDATES: tuple[BackendCandidate, ...] = (
     ),
     BackendCandidate("extract_point_features", "openmp_cpu", "extract_point_features"),
     BackendCandidate(
+        "asterism_mutual_nearest",
+        "cuda_host_io",
+        "asterism_mutual_nearest_cuda",
+        priority=10,
+        fallback="openmp_cpu",
+        build_flag="cuda",
+        memory_model="static_estimator",
+    ),
+    BackendCandidate("asterism_mutual_nearest", "openmp_cpu", "asterism_mutual_nearest_cpu"),
+    BackendCandidate("asterism_tokens", "openmp_cpu", "asterism_tokens_cpu"),
+    BackendCandidate("asterism_anchor_votes", "openmp_cpu", "asterism_anchor_votes_cpu"),
+    BackendCandidate(
         "matching_cosine_bidirectional_nearest",
         "cuda_host_io",
         "matching_cosine_bidirectional_nearest_cuda",
