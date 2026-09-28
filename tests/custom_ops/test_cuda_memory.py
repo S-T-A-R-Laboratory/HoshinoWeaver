@@ -76,7 +76,7 @@ class TestCudaMemoryEstimate(unittest.TestCase):
         self.assertGreater(small.peak_device_bytes, 0)
         self.assertGreater(large.peak_device_bytes, small.peak_device_bytes)
         self.assertGreater(small.peak_pinned_bytes, 0)
-        self.assertEqual(small.confidence, "estimated")
+        self.assertEqual(small.confidence, "bounded")
 
     def test_camera_model_remap_estimate_is_exact(self) -> None:
         for source_shape, output_shape in (

@@ -4,13 +4,13 @@
 #include "common/compat.h"
 #include "common/cuda_error.h"
 #include "common/cuda_host_io_workspace.cuh"
+#include "common/cuda_host_staging.cuh"
 #include "common/star_detect_capacity.h"
 
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/extrema.h>
 #include <thrust/reduce.h>
-#include <thrust/sort.h>
 #include <thrust/system/cuda/execution_policy.h>
 
 #include <algorithm>
@@ -174,14 +174,72 @@ __global__ void normalize_kernel(const double* input, double* output, const doub
     output[idx] = (input[idx] - mean) / range;
 }
 
-__global__ void compact_masked_values_kernel(const double* image, const uint8_t* mask,
-                                             double* values, int* count, const int total) {
+__global__ void apply_mask_in_place_kernel(double* image, const uint8_t* mask, const int total) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total || mask[idx] == 0) {
-        return;
+    if (idx < total && mask[idx] == 0) {
+        image[idx] = 0.0;
     }
-    const int pos = atomicAdd(count, 1);
-    values[pos] = image[idx];
+}
+
+__global__ void count_foreground_kernel(const uint8_t* bw, int* count, const int total) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const bool set = idx < total && bw[idx] != 0;
+    const unsigned int votes = __ballot_sync(0xffffffffU, set);
+    if ((threadIdx.x & 31) == 0 && votes != 0) {
+        atomicAdd(count, __popc(votes));
+    }
+}
+
+// Exact order statistics by radix selection over an order-preserving key: each
+// pass histograms one 11-bit digit of the keys that match the digits already
+// chosen, so only a tiny candidate set is gathered for the final nth_element.
+constexpr int kSelectDigitBits = 11;
+constexpr int kSelectBins = 1 << kSelectDigitBits;
+constexpr int kSelectShifts[] = {53, 42, 31};
+
+__device__ inline unsigned long long order_key(const double value) {
+    const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(value));
+    return (bits >> 63) != 0 ? ~bits : bits | (1ULL << 63);
+}
+
+__global__ void masked_digit_histogram_kernel(const double* values, const uint8_t* mask,
+                                              unsigned int* histogram, const int total,
+                                              const int digit_shift, const int prefix_shift,
+                                              const unsigned long long prefix) {
+    __shared__ unsigned int local[kSelectBins];
+    for (int bin = threadIdx.x; bin < kSelectBins; bin += blockDim.x) {
+        local[bin] = 0;
+    }
+    __syncthreads();
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total;
+         idx += gridDim.x * blockDim.x) {
+        if (mask[idx] == 0) {
+            continue;
+        }
+        const unsigned long long key = order_key(values[idx]);
+        if (prefix_shift < 64 && (key >> prefix_shift) != prefix) {
+            continue;
+        }
+        atomicAdd(&local[(key >> digit_shift) & (kSelectBins - 1)], 1U);
+    }
+    __syncthreads();
+    for (int bin = threadIdx.x; bin < kSelectBins; bin += blockDim.x) {
+        if (local[bin] != 0) {
+            atomicAdd(&histogram[bin], local[bin]);
+        }
+    }
+}
+
+__global__ void gather_masked_prefix_kernel(const double* values, const uint8_t* mask,
+                                            double* candidates, int* count, const int total,
+                                            const int prefix_shift,
+                                            const unsigned long long prefix) {
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total;
+         idx += gridDim.x * blockDim.x) {
+        if (mask[idx] != 0 && (order_key(values[idx]) >> prefix_shift) == prefix) {
+            candidates[atomicAdd(count, 1)] = values[idx];
+        }
+    }
 }
 
 __device__ inline uint8_t threshold_pixel(const double value, const uint8_t mask,
@@ -383,21 +441,119 @@ __global__ void fill_component_outputs_kernel(const int* keys, const int* counts
     intensities[out] = sum_intensity[idx] * inv_count;
 }
 
-double percentile_995_sorted(const double* values, const int count, const cudaStream_t stream,
-                             double* host_values) {
+struct SelectWorkspace {
+    const double* values = nullptr;
+    const uint8_t* mask = nullptr;
+    int total = 0;
+    unsigned int* histogram_device = nullptr;
+    unsigned int* histogram_host = nullptr;
+    int* count_device = nullptr;
+    hnw::cuda::HostIoWorkspaceSession* workspace = nullptr;
+    cudaStream_t stream = nullptr;
+    int grid = 0;
+    int threads = 0;
+};
+
+// Host copy of the digit histogram at digit_shift for keys matching prefix.
+std::vector<unsigned int> masked_digit_histogram(const SelectWorkspace& select,
+                                                 const int digit_shift, const int prefix_shift,
+                                                 const unsigned long long prefix) {
+    const size_t histogram_bytes = kSelectBins * sizeof(unsigned int);
+    throw_if_cuda_failed(
+        cudaMemsetAsync(select.histogram_device, 0, histogram_bytes, select.stream),
+        "star_detect_fused_pixel_components cudaMemset select histogram");
+    masked_digit_histogram_kernel<<<select.grid, select.threads, 0, select.stream>>>(
+        select.values, select.mask, select.histogram_device, select.total, digit_shift,
+        prefix_shift, prefix);
+    throw_if_cuda_failed(cudaGetLastError(),
+                         "star_detect_fused_pixel_components select histogram launch");
+    throw_if_cuda_failed(cudaMemcpyAsync(select.histogram_host, select.histogram_device,
+                                         histogram_bytes, cudaMemcpyDeviceToHost, select.stream),
+                         "star_detect_fused_pixel_components cudaMemcpy select histogram");
+    throw_if_cuda_failed(cudaStreamSynchronize(select.stream),
+                         "star_detect_fused_pixel_components select histogram sync");
+    return std::vector<unsigned int>(select.histogram_host, select.histogram_host + kSelectBins);
+}
+
+// Masked values sharing the 33-bit key prefix that contains sorted position
+// `*rank` (0-based); on return `*rank` indexes into them.
+std::vector<double> masked_rank_candidates(const SelectWorkspace& select,
+                                           const std::vector<unsigned int>& top_histogram,
+                                           uint64_t* rank) {
+    std::vector<unsigned int> histogram = top_histogram;
+    unsigned long long prefix = 0;
+    int prefix_shift = 64;
+    for (const int digit_shift : kSelectShifts) {
+        if (digit_shift != kSelectShifts[0]) {
+            histogram = masked_digit_histogram(select, digit_shift, prefix_shift, prefix);
+        }
+        int bin = 0;
+        while (*rank >= histogram[bin]) {
+            *rank -= histogram[bin];
+            ++bin;
+        }
+        prefix = (prefix << kSelectDigitBits) | static_cast<unsigned long long>(bin);
+        prefix_shift = digit_shift;
+    }
+    const int candidate_count = static_cast<int>(histogram[prefix & (kSelectBins - 1)]);
+
+    DeviceBuffer candidates;
+    candidates.allocate(static_cast<size_t>(candidate_count),
+                        "star_detect_fused_pixel_components cudaMalloc select candidates",
+                        select.workspace);
+    throw_if_cuda_failed(cudaMemsetAsync(select.count_device, 0, sizeof(int), select.stream),
+                         "star_detect_fused_pixel_components cudaMemset select count");
+    gather_masked_prefix_kernel<<<select.grid, select.threads, 0, select.stream>>>(
+        select.values, select.mask, candidates.get(), select.count_device, select.total,
+        prefix_shift, prefix);
+    throw_if_cuda_failed(cudaGetLastError(),
+                         "star_detect_fused_pixel_components select gather launch");
+    std::vector<double> host(static_cast<size_t>(candidate_count));
+    throw_if_cuda_failed(cudaMemcpyAsync(host.data(), candidates.get(),
+                                         host.size() * sizeof(double), cudaMemcpyDeviceToHost,
+                                         select.stream),
+                         "star_detect_fused_pixel_components cudaMemcpy select candidates");
+    throw_if_cuda_failed(cudaStreamSynchronize(select.stream),
+                         "star_detect_fused_pixel_components select gather sync");
+    return host;
+}
+
+// np.percentile(values[mask], 99.5): the same order statistics the former
+// full sort produced, selected without materializing the masked values.
+double masked_percentile_995(const SelectWorkspace& select) {
+    const std::vector<unsigned int> top_histogram =
+        masked_digit_histogram(select, kSelectShifts[0], 64, 0);
+    uint64_t count = 0;
+    for (const unsigned int bin_count : top_histogram) {
+        count += bin_count;
+    }
+    if (count == 0) {
+        throw std::runtime_error("star_detect_fused_pixel_components: mask selects no pixels");
+    }
     const double rank = 0.995 * static_cast<double>(count - 1);
-    const int lower_idx = static_cast<int>(floor(rank));
-    const int upper_idx = static_cast<int>(ceil(rank));
-    const double weight = rank - static_cast<double>(lower_idx);
-    throw_if_cuda_failed(cudaMemcpyAsync(host_values, values + lower_idx, sizeof(double),
-                                         cudaMemcpyDeviceToHost, stream),
-                         "star_detect percentile cudaMemcpy lower percentile");
-    throw_if_cuda_failed(cudaMemcpyAsync(host_values + 1, values + upper_idx, sizeof(double),
-                                         cudaMemcpyDeviceToHost, stream),
-                         "star_detect percentile cudaMemcpy upper percentile");
-    throw_if_cuda_failed(cudaStreamSynchronize(stream),
-                         "star_detect percentile cudaStreamSynchronize");
-    return host_values[0] + (host_values[1] - host_values[0]) * weight;
+    const uint64_t lower_index = static_cast<uint64_t>(floor(rank));
+    const uint64_t upper_index = static_cast<uint64_t>(ceil(rank));
+
+    uint64_t local_rank = lower_index;
+    std::vector<double> candidates = masked_rank_candidates(select, top_histogram, &local_rank);
+    const auto lower_it = candidates.begin() + static_cast<ptrdiff_t>(local_rank);
+    std::nth_element(candidates.begin(), lower_it, candidates.end());
+    const double lower = *lower_it;
+    if (lower_index == upper_index) {
+        return lower;
+    }
+    double upper = 0.0;
+    if (local_rank + 1 < candidates.size()) {
+        std::nth_element(lower_it + 1, lower_it + 1, candidates.end());
+        upper = *(lower_it + 1);
+    } else {
+        uint64_t upper_rank = upper_index;
+        std::vector<double> next = masked_rank_candidates(select, top_histogram, &upper_rank);
+        const auto upper_it = next.begin() + static_cast<ptrdiff_t>(upper_rank);
+        std::nth_element(next.begin(), upper_it, next.end());
+        upper = *upper_it;
+    }
+    return lower + (upper - lower) * (rank - static_cast<double>(lower_index));
 }
 
 } // namespace
@@ -416,7 +572,6 @@ void launch_star_detect_fused_pixel_components(
     auto workspace =
         hnw::cuda::acquire_host_io_workspace("star_detect_fused_pixel_components cudaGetDevice");
     try {
-        const size_t image_bytes = plane_size * sizeof(double);
         const size_t mask_bytes = plane_size * sizeof(uint8_t);
         const size_t gaussian_kernel_bytes = static_cast<size_t>(gaussian_ksize) * sizeof(double);
         const cudaStream_t stream = workspace.stream();
@@ -425,18 +580,23 @@ void launch_star_detect_fused_pixel_components(
             "star_detect_fused_pixel_components cudaMallocHost scalar doubles"));
         auto* scalar_int = static_cast<int*>(workspace.pinned_buffer(
             sizeof(int), "star_detect_fused_pixel_components cudaMallocHost scalar int"));
+        auto* staging = static_cast<unsigned char*>(
+            workspace.pinned_buffer(2 * hnw::cuda::kStagingSlotBytes,
+                                    "star_detect_fused_pixel_components cudaMallocHost staging"));
+        auto* histogram_host = static_cast<unsigned int*>(workspace.pinned_buffer(
+            kSelectBins * sizeof(unsigned int),
+            "star_detect_fused_pixel_components cudaMallocHost select histogram"));
+        hnw::cuda::StagingSlots staging_slots;
         DeviceBuffer image;
         DeviceBuffer gaussian_kernel;
         DeviceBuffer blur_rows;
-        DeviceBuffer blur;
-        DeviceBuffer normalized;
         DeviceBuffer small_blur;
         DeviceBuffer img_rec;
-        DeviceBuffer values;
         DeviceTypedBuffer<uint8_t> mask;
         DeviceTypedBuffer<uint8_t> eroded;
         DeviceTypedBuffer<uint8_t> bw;
         DeviceTypedBuffer<int> count;
+        DeviceTypedBuffer<unsigned int> select_histogram;
         DeviceTypedBuffer<int> foreground_indices;
         DeviceTypedBuffer<int> labels_a;
         DeviceTypedBuffer<int> labels_b;
@@ -460,31 +620,17 @@ void launch_star_detect_fused_pixel_components(
                                  &workspace);
         blur_rows.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc blur rows",
                            &workspace);
-        blur.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc blur", &workspace);
-        normalized.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc normalized",
-                            &workspace);
-        small_blur.allocate(small_size, "star_detect_fused_pixel_components cudaMalloc small blur",
-                            &workspace);
-        img_rec.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc img_rec",
-                         &workspace);
-        values.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc values",
-                        &workspace);
         mask.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc mask", &workspace);
-        eroded.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc eroded",
-                        &workspace);
-        bw.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc bw", &workspace);
         count.allocate(1, "star_detect_fused_pixel_components cudaMalloc count", &workspace);
 
-        throw_if_cuda_failed(
-            cudaMemcpyAsync(image.get(), image_host, image_bytes, cudaMemcpyHostToDevice, stream),
-            "star_detect_fused_pixel_components cudaMemcpy image");
+        hnw::cuda::staged_upload(image.get(), image_host, plane_size * sizeof(double), staging,
+                                 &staging_slots, stream);
         throw_if_cuda_failed(cudaMemcpyAsync(gaussian_kernel.get(), gaussian_kernel_host,
                                              gaussian_kernel_bytes, cudaMemcpyHostToDevice, stream),
                              "star_detect_fused_pixel_components cudaMemcpy gaussian kernel");
         if (external_mask_host != nullptr) {
-            throw_if_cuda_failed(cudaMemcpyAsync(mask.get(), external_mask_host, mask_bytes,
-                                                 cudaMemcpyHostToDevice, stream),
-                                 "star_detect_fused_pixel_components cudaMemcpy external mask");
+            hnw::cuda::staged_upload(mask.get(), external_mask_host, mask_bytes, staging,
+                                     &staging_slots, stream);
         } else {
             throw_if_cuda_failed(cudaMemsetAsync(mask.get(), 1, mask_bytes, stream),
                                  "star_detect_fused_pixel_components cudaMemset full mask");
@@ -493,18 +639,20 @@ void launch_star_detect_fused_pixel_components(
         const int blocks = (total + threads - 1) / threads;
         const int small_blocks = (small_total + threads - 1) / threads;
 
+        // The column pass writes the blur back into the image buffer, which
+        // the row pass no longer needs.
         gaussian_rows_kernel<<<blocks, threads, 0, stream>>>(
             image.get(), gaussian_kernel.get(), blur_rows.get(), height, width, gaussian_ksize);
         throw_if_cuda_failed(cudaGetLastError(),
                              "star_detect_fused_pixel_components gaussian rows launch");
         gaussian_cols_kernel<<<blocks, threads, 0, stream>>>(
-            blur_rows.get(), gaussian_kernel.get(), blur.get(), height, width, gaussian_ksize);
+            blur_rows.get(), gaussian_kernel.get(), image.get(), height, width, gaussian_ksize);
         throw_if_cuda_failed(cudaGetLastError(),
                              "star_detect_fused_pixel_components gaussian cols launch");
         blur_rows.reset();
         gaussian_kernel.reset();
 
-        thrust::device_ptr<double> blur_ptr(blur.get());
+        thrust::device_ptr<double> blur_ptr(image.get());
         const double blur_sum =
             run_thrust_with_resource_translation("star_detect thrust reduce allocation", [&] {
                 return thrust::reduce(thrust::cuda::par.on(stream), blur_ptr, blur_ptr + total,
@@ -532,56 +680,65 @@ void launch_star_detect_fused_pixel_components(
                 "star_detect_fused_pixel_components: blurred image has zero range");
         }
         const double blur_mean = blur_sum / static_cast<double>(total);
-        normalize_kernel<<<blocks, threads, 0, stream>>>(blur.get(), normalized.get(), blur_mean,
+        normalize_kernel<<<blocks, threads, 0, stream>>>(image.get(), image.get(), blur_mean,
                                                          blur_range, total);
         throw_if_cuda_failed(cudaGetLastError(),
                              "star_detect_fused_pixel_components normalize launch");
-        blur.reset();
-        image.reset();
 
-        resize_linear_kernel<<<small_blocks, threads, 0, stream>>>(
-            normalized.get(), small_blur.get(), height, width, small_height, small_width);
-        throw_if_cuda_failed(cudaGetLastError(),
-                             "star_detect_fused_pixel_components blur resize launch");
-        normalized.reset();
+        // Linear resizing between equal shapes samples every pixel centre with
+        // zero weight, so it is an exact copy and is skipped in both directions.
+        if (small_height == height && small_width == width) {
+            small_blur = std::move(image);
+        } else {
+            small_blur.allocate(
+                small_size, "star_detect_fused_pixel_components cudaMalloc small blur", &workspace);
+            resize_linear_kernel<<<small_blocks, threads, 0, stream>>>(
+                image.get(), small_blur.get(), height, width, small_height, small_width);
+            throw_if_cuda_failed(cudaGetLastError(),
+                                 "star_detect_fused_pixel_components blur resize launch");
+            image.reset();
+        }
 
         DeviceImage rec_small = wavelet_dec_rec_device(
             std::move(small_blur), small_height, small_width, level, threads, &workspace, stream);
 
-        resize_linear_mask_kernel<<<blocks, threads, 0, stream>>>(rec_small.data.get(), mask.get(),
-                                                                  img_rec.get(), rec_small.h,
-                                                                  rec_small.w, height, width);
-        throw_if_cuda_failed(cudaGetLastError(),
-                             "star_detect_fused_pixel_components resize up launch");
-
-        throw_if_cuda_failed(cudaMemsetAsync(count.get(), 0, sizeof(int), stream),
-                             "star_detect_fused_pixel_components cudaMemset count");
-        compact_masked_values_kernel<<<blocks, threads, 0, stream>>>(
-            img_rec.get(), mask.get(), values.get(), count.get(), total);
-        throw_if_cuda_failed(cudaGetLastError(),
-                             "star_detect_fused_pixel_components compact launch");
-
-        throw_if_cuda_failed(
-            cudaMemcpyAsync(scalar_int, count.get(), sizeof(int), cudaMemcpyDeviceToHost, stream),
-            "star_detect_fused_pixel_components cudaMemcpy count");
-        throw_if_cuda_failed(cudaStreamSynchronize(stream),
-                             "star_detect_fused_pixel_components compact sync");
-        const int masked_count = *scalar_int;
-        rec_small.data.reset();
-        if (masked_count <= 0) {
-            throw std::runtime_error("star_detect_fused_pixel_components: mask selects no pixels");
+        if (rec_small.h == height && rec_small.w == width) {
+            img_rec = std::move(rec_small.data);
+            apply_mask_in_place_kernel<<<blocks, threads, 0, stream>>>(img_rec.get(), mask.get(),
+                                                                       total);
+            throw_if_cuda_failed(cudaGetLastError(),
+                                 "star_detect_fused_pixel_components mask apply launch");
+        } else {
+            img_rec.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc img_rec",
+                             &workspace);
+            resize_linear_mask_kernel<<<blocks, threads, 0, stream>>>(
+                rec_small.data.get(), mask.get(), img_rec.get(), rec_small.h, rec_small.w, height,
+                width);
+            throw_if_cuda_failed(cudaGetLastError(),
+                                 "star_detect_fused_pixel_components resize up launch");
+            rec_small.data.reset();
         }
 
-        thrust::device_ptr<double> values_ptr(values.get());
-        run_thrust_with_resource_translation("star_detect thrust sort allocation", [&] {
-            thrust::sort(thrust::cuda::par.on(stream), values_ptr, values_ptr + masked_count);
-        });
-        throw_if_cuda_failed(cudaStreamSynchronize(stream),
-                             "star_detect_fused_pixel_components sort sync");
-        const double threshold =
-            percentile_995_sorted(values.get(), masked_count, stream, scalar_doubles);
-        values.reset();
+        select_histogram.allocate(kSelectBins,
+                                  "star_detect_fused_pixel_components cudaMalloc select histogram",
+                                  &workspace);
+        SelectWorkspace select;
+        select.values = img_rec.get();
+        select.mask = mask.get();
+        select.total = total;
+        select.histogram_device = select_histogram.get();
+        select.histogram_host = histogram_host;
+        select.count_device = count.get();
+        select.workspace = &workspace;
+        select.stream = stream;
+        select.threads = threads;
+        select.grid = std::max(1, std::min(blocks, 4096));
+        const double threshold = masked_percentile_995(select);
+        select_histogram.reset();
 
+        eroded.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc eroded",
+                        &workspace);
+        bw.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc bw", &workspace);
         erode_threshold_kernel<<<blocks, threads, 0, stream>>>(
             img_rec.get(), mask.get(), eroded.get(), height, width, threshold);
         throw_if_cuda_failed(cudaGetLastError(), "star_detect_fused_pixel_components erode launch");
@@ -590,25 +747,19 @@ void launch_star_detect_fused_pixel_components(
                              "star_detect_fused_pixel_components dilate launch");
         eroded.reset();
         mask.reset();
-        throw_if_cuda_failed(
-            cudaMemcpyAsync(binary_mask_host, bw.get(), mask_bytes, cudaMemcpyDeviceToHost, stream),
-            "star_detect_fused_pixel_components cudaMemcpy binary mask");
+        hnw::cuda::staged_download(binary_mask_host, bw.get(), mask_bytes, staging, &staging_slots,
+                                   stream);
 
-        foreground_indices.allocate(
-            plane_size, "star_detect_fused_pixel_components cudaMalloc foreground indices",
-            &workspace);
         throw_if_cuda_failed(cudaMemsetAsync(count.get(), 0, sizeof(int), stream),
-                             "star_detect_fused_pixel_components cudaMemset foreground count");
-        compact_foreground_indices_kernel<<<blocks, threads, 0, stream>>>(
-            bw.get(), foreground_indices.get(), count.get(), total);
+                             "star_detect_fused_pixel_components cudaMemset foreground total");
+        count_foreground_kernel<<<blocks, threads, 0, stream>>>(bw.get(), count.get(), total);
         throw_if_cuda_failed(cudaGetLastError(),
-                             "star_detect_fused_pixel_components foreground compact launch");
-
+                             "star_detect_fused_pixel_components foreground count launch");
         throw_if_cuda_failed(
             cudaMemcpyAsync(scalar_int, count.get(), sizeof(int), cudaMemcpyDeviceToHost, stream),
-            "star_detect_fused_pixel_components cudaMemcpy foreground count");
+            "star_detect_fused_pixel_components cudaMemcpy foreground total");
         throw_if_cuda_failed(cudaStreamSynchronize(stream),
-                             "star_detect_fused_pixel_components foreground sync");
+                             "star_detect_fused_pixel_components foreground total sync");
         const int foreground_count = *scalar_int;
         if (foreground_count <= 0) {
             return;
@@ -617,6 +768,16 @@ void launch_star_detect_fused_pixel_components(
             throw hnw::StarDetectCapacityError("star_detect_fused_pixel_components: "
                                                "foreground too dense for GPU CC");
         }
+
+        foreground_indices.allocate(
+            static_cast<size_t>(foreground_count),
+            "star_detect_fused_pixel_components cudaMalloc foreground indices", &workspace);
+        throw_if_cuda_failed(cudaMemsetAsync(count.get(), 0, sizeof(int), stream),
+                             "star_detect_fused_pixel_components cudaMemset foreground count");
+        compact_foreground_indices_kernel<<<blocks, threads, 0, stream>>>(
+            bw.get(), foreground_indices.get(), count.get(), total);
+        throw_if_cuda_failed(cudaGetLastError(),
+                             "star_detect_fused_pixel_components foreground compact launch");
 
         labels_a.allocate(plane_size, "star_detect_fused_pixel_components cudaMalloc labels a",
                           &workspace);
@@ -763,6 +924,7 @@ void launch_star_detect_fused_pixel_components(
                              "star_detect_fused_pixel_components cudaMemcpy intensities");
         throw_if_cuda_failed(cudaStreamSynchronize(stream),
                              "star_detect_fused_pixel_components final sync");
+        return;
     } catch (...) {
         workspace.reset_after_error();
         throw;

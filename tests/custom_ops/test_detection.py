@@ -37,6 +37,60 @@ def _threshold_morph_reference(
 
 
 class TestStarDetectCustomOps(unittest.TestCase):
+    def test_star_detect_fused_pixel_components_cpu_is_thread_count_independent(
+            self) -> None:
+        # Odd shape, border stars and a holed mask reach every border and
+        # non-identity resize branch; the CPU kernel must not depend on the
+        # OpenMP team size (blocked mean, exact percentile selection).
+        rng = np.random.default_rng(7)
+        image = rng.normal(0.1, 0.01, (257, 389))
+        for x, y, value in [(3, 4, 0.8), (385, 252, 0.6), (120, 130, 0.9),
+                            (200, 2, 0.7), (60, 200, 0.5)]:
+            cv2.circle(image, (x, y), 4, value, -1)
+        mask = (rng.random(image.shape) > 0.05).astype(np.uint8)
+
+        for resize_factor, image_mask in ((1.0, None), (1.0, mask), (0.5, mask)):
+            results = []
+            for threads in ("1", "3"):
+                with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_THREADS": threads}):
+                    results.append(
+                        detection_ops.star_detect_fused_pixel_components_compiled_cpu(
+                            image, image_mask, resize_factor, gaussian_ksize=9, sigma=2.0))
+            with self.subTest(resize_factor=resize_factor, masked=image_mask is not None):
+                self.assertGreater(len(results[0][1]), 0)
+                for single, team in zip(*results):
+                    np.testing.assert_array_equal(team, single)
+
+
+    def test_star_detect_cuda_uploaded_mask_matches_implicit_full_mask(self) -> None:
+        # The image and an explicit mask share the pinned staging slots; the
+        # mask upload must not overwrite a slot whose image DMA is in flight.
+        if not build_info().get("cuda"):
+            self.skipTest("CUDA fused pixel-component backend is not built")
+        rng = np.random.default_rng(11)
+        image = rng.normal(0.1, 0.01, (1536, 1800))
+        for x, y in rng.integers(20, 1500, size=(300, 2)):
+            cv2.circle(image, (int(x), int(y)), 3, float(rng.uniform(0.3, 0.9)), -1)
+        full_mask = np.ones(image.shape, dtype=np.uint8)
+        try:
+            implicit = detection_ops.star_detect_fused_pixel_components_compiled(
+                image, None, 1.0, gaussian_ksize=9, sigma=2.0)
+            uploaded = detection_ops.star_detect_fused_pixel_components_compiled(
+                image, full_mask, 1.0, gaussian_ksize=9, sigma=2.0)
+        except RuntimeError as exc:
+            if is_cuda_runtime_unavailable_error(exc):
+                self.skipTest(f"CUDA runtime unavailable: {exc}")
+            raise
+
+        np.testing.assert_array_equal(uploaded[2], implicit[2])
+        # Component order follows GPU atomics; compare in position order.
+        order_a = np.lexsort((implicit[0][:, 0], implicit[0][:, 1]))
+        order_b = np.lexsort((uploaded[0][:, 0], uploaded[0][:, 1]))
+        np.testing.assert_array_equal(uploaded[0][order_b], implicit[0][order_a])
+        np.testing.assert_allclose(
+            uploaded[1][order_b], implicit[1][order_a], rtol=1e-12, atol=0.0)
+
+
     def tearDown(self) -> None:
         detection_ops._load_compiled_module_result.cache_clear()
         detection_ops._select_median_star_mask_backend.cache_clear()

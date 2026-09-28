@@ -195,6 +195,9 @@ int idwt_len(const int n) {
 }
 
 __device__ inline int symmetric_index_device(int idx, const int n) {
+    if (idx >= 0 && idx < n) {
+        return idx;
+    }
     if (n <= 1) {
         return 0;
     }
@@ -209,6 +212,7 @@ __device__ inline int symmetric_index_device(int idx, const int n) {
     return period - 1 - idx;
 }
 
+// row_hi == nullptr computes only the low band (the finest level keeps no detail).
 __global__ void dwt_rows_kernel(const double* input, double* row_lo, double* row_hi, const int h,
                                 const int w, const int out_w) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -218,6 +222,7 @@ __global__ void dwt_rows_kernel(const double* input, double* row_lo, double* row
     }
     const int y = idx / out_w;
     const int x = idx - y * out_w;
+    const bool keep_detail = row_hi != nullptr;
     double lo = 0.0;
     double hi = 0.0;
     for (int j = 0; j < DB8_FILTER_LEN; ++j) {
@@ -225,12 +230,17 @@ __global__ void dwt_rows_kernel(const double* input, double* row_lo, double* row
         const double value = input[y * w + src_x];
         const int rev_j = DB8_FILTER_LEN - 1 - j;
         lo += DB8_DEC_LO[rev_j] * value;
-        hi += DB8_DEC_HI[rev_j] * value;
+        if (keep_detail) {
+            hi += DB8_DEC_HI[rev_j] * value;
+        }
     }
     row_lo[idx] = lo;
-    row_hi[idx] = hi;
+    if (keep_detail) {
+        row_hi[idx] = hi;
+    }
 }
 
+// Without row_hi (cH/cV/cD are then nullptr too) only the approximation is formed.
 __global__ void dwt_cols_kernel(const double* row_lo, const double* row_hi, double* approx,
                                 double* cH, double* cV, double* cD, const int h, const int out_h,
                                 const int out_w) {
@@ -241,6 +251,7 @@ __global__ void dwt_cols_kernel(const double* row_lo, const double* row_hi, doub
     }
     const int y = idx / out_w;
     const int x = idx - y * out_w;
+    const bool keep_detail = row_hi != nullptr;
     double ll = 0.0;
     double hl = 0.0;
     double lh = 0.0;
@@ -249,18 +260,27 @@ __global__ void dwt_cols_kernel(const double* row_lo, const double* row_hi, doub
         const int src_y = symmetric_index_device(2 * y + j + DB8_DWT_OFFSET, h);
         const int rev_j = DB8_FILTER_LEN - 1 - j;
         const double row_lo_value = row_lo[src_y * out_w + x];
-        const double row_hi_value = row_hi[src_y * out_w + x];
         ll += DB8_DEC_LO[rev_j] * row_lo_value;
-        hl += DB8_DEC_HI[rev_j] * row_lo_value;
-        lh += DB8_DEC_LO[rev_j] * row_hi_value;
-        hh += DB8_DEC_HI[rev_j] * row_hi_value;
+        if (keep_detail) {
+            const double row_hi_value = row_hi[src_y * out_w + x];
+            hl += DB8_DEC_HI[rev_j] * row_lo_value;
+            lh += DB8_DEC_LO[rev_j] * row_hi_value;
+            hh += DB8_DEC_HI[rev_j] * row_hi_value;
+        }
     }
     approx[idx] = ll;
-    cH[idx] = hl;
-    cV[idx] = lh;
-    cD[idx] = hh;
+    if (keep_detail) {
+        cH[idx] = hl;
+        cV[idx] = lh;
+        cD[idx] = hh;
+    }
 }
 
+// Only taps with an even upsampled position contribute, and their parity
+// equals the output parity: j = (y & 1) + 2 * m, visited in increasing order.
+// zero_detail (finest level) leaves col_hi == nullptr: that band is all zero.
+// The explicit intrinsics pin the rounding nvcc's contraction chose for the
+// original expressions, so moving code across branches cannot change results.
 __global__ void idwt_cols_kernel(const double* approx, const double* cH_arr, const double* cV_arr,
                                  const double* cD_arr, double* col_lo, double* col_hi,
                                  const int approx_stride, const int h, const int w, const int out_h,
@@ -274,23 +294,24 @@ __global__ void idwt_cols_kernel(const double* approx, const double* cH_arr, con
     const int x = idx - y * w;
     double lo = 0.0;
     double hi = 0.0;
-    for (int j = 0; j < DB8_FILTER_LEN; ++j) {
+    for (int j = y & 1; j < DB8_FILTER_LEN; j += 2) {
         const int t = y + DB8_IDWT_OFFSET - j;
-        if (t % 2 != 0) {
-            continue;
-        }
         const int src_y = symmetric_index_device(t / 2, h);
         const int approx_offset = src_y * approx_stride + x;
         const int detail_offset = src_y * w + x;
         const double cA = approx[approx_offset];
         const double cH = zero_detail ? 0.0 : cH_arr[detail_offset];
-        const double cV = zero_detail ? 0.0 : cV_arr[detail_offset];
-        const double cD = zero_detail ? 0.0 : cD_arr[detail_offset];
-        lo += DB8_REC_LO[j] * cA + DB8_REC_HI[j] * cH;
-        hi += DB8_REC_LO[j] * cV + DB8_REC_HI[j] * cD;
+        lo = __dadd_rn(lo, __fma_rn(DB8_REC_LO[j], cA, __dmul_rn(DB8_REC_HI[j], cH)));
+        if (!zero_detail) {
+            const double cV = cV_arr[detail_offset];
+            const double cD = cD_arr[detail_offset];
+            hi = __dadd_rn(hi, __fma_rn(DB8_REC_HI[j], cD, __dmul_rn(DB8_REC_LO[j], cV)));
+        }
     }
     col_lo[idx] = lo;
-    col_hi[idx] = hi;
+    if (!zero_detail) {
+        col_hi[idx] = hi;
+    }
 }
 
 __global__ void idwt_rows_kernel(const double* col_lo, const double* col_hi, double* output,
@@ -303,14 +324,13 @@ __global__ void idwt_rows_kernel(const double* col_lo, const double* col_hi, dou
     const int y = idx / out_w;
     const int x = idx - y * out_w;
     double value = 0.0;
-    for (int j = 0; j < DB8_FILTER_LEN; ++j) {
+    for (int j = x & 1; j < DB8_FILTER_LEN; j += 2) {
         const int t = x + DB8_IDWT_OFFSET - j;
-        if (t % 2 != 0) {
-            continue;
-        }
         const int src_x = symmetric_index_device(t / 2, w);
         const int offset = y * w + src_x;
-        value += DB8_REC_LO[j] * col_lo[offset] + DB8_REC_HI[j] * col_hi[offset];
+        const double hi_value = col_hi == nullptr ? 0.0 : col_hi[offset];
+        value = __dadd_rn(
+            value, __fma_rn(DB8_REC_LO[j], col_lo[offset], __dmul_rn(DB8_REC_HI[j], hi_value)));
     }
     output[idx] = value;
 }
@@ -327,18 +347,24 @@ DeviceImage wavelet_dec_rec_device(DeviceBuffer current, int current_h, int curr
         const int out_w = dwt_len(current_w);
         const size_t row_size = static_cast<size_t>(current_h) * static_cast<size_t>(out_w);
         const size_t detail_size = static_cast<size_t>(out_h) * static_cast<size_t>(out_w);
+        // The reconstruction zeroes the finest detail band, so level 0 keeps none.
+        const bool keep_detail = idx != 0;
         DeviceBuffer row_lo;
         DeviceBuffer row_hi;
         DeviceBuffer approx;
         row_lo.allocate(row_size, "wavelet_dec_rec_cuda_core cudaMalloc row_lo", workspace);
-        row_hi.allocate(row_size, "wavelet_dec_rec_cuda_core cudaMalloc row_hi", workspace);
+        if (keep_detail) {
+            row_hi.allocate(row_size, "wavelet_dec_rec_cuda_core cudaMalloc row_hi", workspace);
+        }
         approx.allocate(detail_size, "wavelet_dec_rec_cuda_core cudaMalloc approx", workspace);
         DeviceDetailLevel& detail = details[static_cast<size_t>(idx)];
         detail.h = out_h;
         detail.w = out_w;
-        detail.cH.allocate(detail_size, "wavelet_dec_rec_cuda_core cudaMalloc cH", workspace);
-        detail.cV.allocate(detail_size, "wavelet_dec_rec_cuda_core cudaMalloc cV", workspace);
-        detail.cD.allocate(detail_size, "wavelet_dec_rec_cuda_core cudaMalloc cD", workspace);
+        if (keep_detail) {
+            detail.cH.allocate(detail_size, "wavelet_dec_rec_cuda_core cudaMalloc cH", workspace);
+            detail.cV.allocate(detail_size, "wavelet_dec_rec_cuda_core cudaMalloc cV", workspace);
+            detail.cD.allocate(detail_size, "wavelet_dec_rec_cuda_core cudaMalloc cD", workspace);
+        }
 
         const int row_blocks = (static_cast<int>(row_size) + threads - 1) / threads;
         dwt_rows_kernel<<<row_blocks, threads, 0, stream>>>(
@@ -364,14 +390,16 @@ DeviceImage wavelet_dec_rec_device(DeviceBuffer current, int current_h, int curr
         const int out_w = idwt_len(detail.w);
         const size_t col_size = static_cast<size_t>(out_h) * static_cast<size_t>(detail.w);
         const size_t out_size = static_cast<size_t>(out_h) * static_cast<size_t>(out_w);
+        const bool zero_detail = idx == 0;
         DeviceBuffer col_lo;
         DeviceBuffer col_hi;
         DeviceBuffer output;
         col_lo.allocate(col_size, "wavelet_dec_rec_cuda_core cudaMalloc col_lo", workspace);
-        col_hi.allocate(col_size, "wavelet_dec_rec_cuda_core cudaMalloc col_hi", workspace);
+        if (!zero_detail) {
+            col_hi.allocate(col_size, "wavelet_dec_rec_cuda_core cudaMalloc col_hi", workspace);
+        }
         output.allocate(out_size, "wavelet_dec_rec_cuda_core cudaMalloc output", workspace);
 
-        const bool zero_detail = idx == 0;
         const int col_blocks = (static_cast<int>(col_size) + threads - 1) / threads;
         idwt_cols_kernel<<<col_blocks, threads, 0, stream>>>(
             current.get(), detail.cH.get(), detail.cV.get(), detail.cD.get(), col_lo.get(),

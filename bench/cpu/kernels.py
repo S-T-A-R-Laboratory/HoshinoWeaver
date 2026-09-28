@@ -48,6 +48,7 @@ from hoshicore._custom_op import build_info as custom_ops_build_info
 from hoshicore._custom_op._dispatch import is_cuda_runtime_unavailable_error
 import hoshicore._custom_op.ops.alignment as alignment_ops
 import hoshicore._custom_op.ops.calibration as calibration_ops
+import hoshicore._custom_op.ops.detection as detection_ops
 import hoshicore._custom_op.ops.fgp as fgp_ops
 import hoshicore._custom_op.ops.filter as filter_ops
 import hoshicore._custom_op.ops.max as max_ops
@@ -170,6 +171,8 @@ CASE_NAMES = [
     "wavelet_dec_rec_core_cuda",
     "wavelet_dec_rec_numpy",
     "wavelet_dec_rec_auto",
+    "star_detect_fused_pixel_components_compiled",
+    "star_detect_fused_pixel_components_cuda",
     "sigma_clip_chunk_numpy",
     "sigma_clip_chunk_compiled",
     "sigma_clip_iterative_chunk_numpy",
@@ -807,6 +810,18 @@ def bench_extract_point_features_backend(
     _ = extract(vec, vol, k)
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 def build_matching_nearest_inputs(
     n_points: int,
     *,
@@ -878,6 +893,23 @@ def bench_wavelet_dec_rec_backend(
     small = cv2.resize(image, None, fx=resize_factor, fy=resize_factor)
     rec = wavelet_ops.wavelet_dec_rec_core_numpy(small, level)
     _ = cv2.resize(rec, (image.shape[1], image.shape[0]))
+
+
+def bench_star_detect_fused_pixel_components_backend(
+    image: np.ndarray,
+    *,
+    backend: str,
+) -> None:
+    # resize_factor=1.0 is the production value for frames up to 10000 px.
+    fn = {
+        "compiled": detection_ops.star_detect_fused_pixel_components_compiled_cpu,
+        "cuda": detection_ops.star_detect_fused_pixel_components_compiled,
+    }[backend]
+    _ = fn(image, None, 1.0)
+
+
+
+
 
 
 def build_sigma_clip_chunk_stack(
@@ -1187,6 +1219,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             )
         return matching_nearest_inputs
 
+
+
+
     def bench_alignment_extract(backend: str) -> None:
         vec, _, vol, _, _, _, k = get_alignment_inputs()
         bench_extract_point_features_backend(vec, vol, k, backend=backend)
@@ -1388,6 +1423,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             args.wavelet_resize_factor,
             backend="auto",
         ),
+        "star_detect_fused_pixel_components_compiled": lambda: (
+            bench_star_detect_fused_pixel_components_backend(
+                get_wavelet_input(), backend="compiled")),
+        "star_detect_fused_pixel_components_cuda": lambda: (
+            bench_star_detect_fused_pixel_components_backend(
+                get_wavelet_input(), backend="cuda")),
         "sigma_clip_chunk_numpy": lambda: bench_sigma_clip_chunk_backend(
             get_sc_chunk_stack()[0],
             get_sc_chunk_stack()[1],

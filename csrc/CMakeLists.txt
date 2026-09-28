@@ -26,6 +26,7 @@ set(HNW_PACKAGE_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../hoshicore/_custom_op"
 
 add_library(hnw_ops_common STATIC
     common/backend_info.cpp
+    common/host_parallel_copy.cpp
 )
 
 add_library(hnw_ops_cpu_calibration STATIC
