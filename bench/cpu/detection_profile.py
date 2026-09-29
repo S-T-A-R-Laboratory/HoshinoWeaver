@@ -142,6 +142,21 @@ def measure_case(height: int, width: int, *, seed: int, warmup: int, repeat: int
             raise RuntimeError(f"Metal median workspace peak {logical_peak} != {estimate.peak_device_bytes}")
         result["metal_median_exact"] = True
         result["metal_median_peak_bytes"] = logical_peak
+        set_backend_preference("auto")
+        selection = resolve_backend("median_star_mask", "auto")
+        if (not selection.native or selection.candidate is None
+                or selection.candidate.backend != "metal_host_io"):
+            raise RuntimeError("Metal median was not selected for the production detector")
+        metal_samples = []
+        for _ in range(warmup):
+            _, stars = profile_frame(image, mask)
+            _assert_same_stars(stars, expected)
+        for _ in range(repeat):
+            sample, stars = profile_frame(image, mask)
+            _assert_same_stars(stars, expected)
+            metal_samples.append(sample)
+        result["metal_pipeline_exact"] = True
+        result["metal_pipeline_stages"] = summarize_profiles(metal_samples)
     return result
 
 
@@ -186,11 +201,19 @@ def markdown_summary(report: dict) -> str:
             shape = "×".join(str(x) for x in case["shape"][:2])
             lines.append(f"| {shape} | {cpu * 1000:.1f} ms | {metal * 1000:.1f} ms | "
                          f"{cpu / metal:.2f}× | yes | {case['metal_median_peak_bytes']} B |")
+        lines += ["", "| Image | CPU detector | Metal median + CPU detector | CPU / Metal | Exact |",
+                  "|---|---:|---:|---:|:---:|"]
+        for case in report["cases"]:
+            cpu = case["stages"]["total"]["median_sec"]
+            metal = case["metal_pipeline_stages"]["total"]["median_sec"]
+            shape = "×".join(str(x) for x in case["shape"][:2])
+            lines.append(f"| {shape} | {cpu * 1000:.1f} ms | {metal * 1000:.1f} ms | "
+                         f"{cpu / metal:.2f}× | yes |")
     lines += ["", "Fused pixels include median background, threshold and morphology.",
               "The residual includes Python orchestration and the small instrumentation overhead.",
               "Standalone median samples are in JSON and must not be added to the pipeline timings."]
     if report["cases"] and "standalone_median_metal" in report["cases"][0]:
-        lines.append("Metal median timing is host-in/out and does not measure integrated detection.")
+        lines.append("Metal median timing includes host I/O; integrated timing includes CPU statistics and contours.")
     lines.append("Hosted-runner timing is not a physical-Mac speed claim.")
     return "\n".join(lines) + "\n"
 
@@ -229,6 +252,7 @@ def main() -> None:
               "cases": []}
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     for h, w in sizes:
+        set_backend_preference("cpu")
         print(f"Profiling {h}x{w} uint16 BGR, CPU median detection", flush=True)
         report["cases"].append(measure_case(
             h, w, seed=args.seed, warmup=args.warmup, repeat=args.repeat,

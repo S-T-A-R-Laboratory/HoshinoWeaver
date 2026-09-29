@@ -97,7 +97,8 @@ template <typename T>
 py::tuple
 median_star_mask_impl(const py::array_t<T, py::array::c_style | py::array::forcecast>& image,
                       ssize_t median_ksize, double threshold_ratio, ssize_t open_ksize,
-                      ssize_t dilate_ksize, const py::object& mask_object) {
+                      ssize_t dilate_ksize, const py::object& mask_object,
+                      const py::object& background_object) {
     if (image.ndim() != 2 || image.shape(0) <= 0 || image.shape(1) <= 0) {
         throw std::invalid_argument("median_star_mask: image must be a non-empty 2D array");
     }
@@ -125,8 +126,33 @@ median_star_mask_impl(const py::array_t<T, py::array::c_style | py::array::force
         throw std::invalid_argument("median_star_mask: image is too large");
     }
     const ssize_t total = height * width;
-    std::vector<uint16_t> working(static_cast<size_t>(total));
-    std::vector<uint16_t> background(static_cast<size_t>(total));
+    std::vector<uint16_t> working;
+    std::vector<uint16_t> background;
+    py::array_t<uint16_t, py::array::c_style | py::array::forcecast> supplied_background;
+    const bool has_precomputed_background = !background_object.is_none();
+    const uint16_t* working_ptr = nullptr;
+    const uint16_t* background_ptr = nullptr;
+    if (!has_precomputed_background) {
+        working.resize(static_cast<size_t>(total));
+        background.resize(static_cast<size_t>(total));
+        working_ptr = working.data();
+        background_ptr = background.data();
+    } else {
+        const py::array candidate = background_object.cast<py::array>();
+        if (!candidate.dtype().is(py::dtype::of<uint16_t>()) || candidate.ndim() != 2 ||
+            candidate.shape(0) != height || candidate.shape(1) != width) {
+            throw std::invalid_argument("median_star_mask: background must be uint16 image shape");
+        }
+        supplied_background =
+            candidate.cast<py::array_t<uint16_t, py::array::c_style | py::array::forcecast>>();
+        background_ptr = supplied_background.data();
+        if constexpr (std::is_same_v<T, uint16_t>) {
+            working_ptr = image.data();
+        } else {
+            throw std::invalid_argument(
+                "median_star_mask: precomputed background requires uint16 input");
+        }
+    }
     py::array_t<float> response({height, width});
     py::array_t<uint8_t> star_mask({height, width});
     auto response_info = response.request();
@@ -144,9 +170,11 @@ median_star_mask_impl(const py::array_t<T, py::array::c_style | py::array::force
                                             "and normalized to [0, 1]");
             }
         }
-        quantize_gray(input_ptr, working.data(), total);
-        hnw::cpu::median_filter_2d_kernel<uint16_t>(working.data(), background.data(), height,
-                                                    width, 1, median_ksize);
+        if (!has_precomputed_background) {
+            quantize_gray(input_ptr, working.data(), total);
+            hnw::cpu::median_filter_2d_kernel<uint16_t>(working.data(), background.data(), height,
+                                                        width, 1, median_ksize);
+        }
 
         double sum = 0.0;
         uint64_t valid_count = 0;
@@ -154,10 +182,10 @@ median_star_mask_impl(const py::array_t<T, py::array::c_style | py::array::force
 #pragma omp parallel for reduction(+ : sum, valid_count) schedule(static)
 #endif
         for (ssize_t index = 0; index < total; ++index) {
-            const float value =
-                static_cast<float>((static_cast<int32_t>(working[static_cast<size_t>(index)]) -
-                                    static_cast<int32_t>(background[static_cast<size_t>(index)])) /
-                                   65535.0);
+            const float value = static_cast<float>(
+                (static_cast<int32_t>(working_ptr[static_cast<size_t>(index)]) -
+                 static_cast<int32_t>(background_ptr[static_cast<size_t>(index)])) /
+                65535.0);
             response_ptr[index] = value;
             if (mask_ptr == nullptr || mask_ptr[index] != 0) {
                 sum += static_cast<double>(value);
@@ -215,22 +243,40 @@ py::tuple median_star_mask_dispatch(const py::array& image, ssize_t median_ksize
                                     ssize_t dilate_ksize, const py::object& mask) {
     if (py::isinstance<py::array_t<uint8_t>>(image)) {
         return median_star_mask_impl<uint8_t>(image.cast<py::array_t<uint8_t>>(), median_ksize,
-                                              threshold_ratio, open_ksize, dilate_ksize, mask);
+                                              threshold_ratio, open_ksize, dilate_ksize, mask,
+                                              py::none());
     }
     if (py::isinstance<py::array_t<uint16_t>>(image)) {
         return median_star_mask_impl<uint16_t>(image.cast<py::array_t<uint16_t>>(), median_ksize,
-                                               threshold_ratio, open_ksize, dilate_ksize, mask);
+                                               threshold_ratio, open_ksize, dilate_ksize, mask,
+                                               py::none());
     }
     if (py::isinstance<py::array_t<float>>(image)) {
         return median_star_mask_impl<float>(image.cast<py::array_t<float>>(), median_ksize,
-                                            threshold_ratio, open_ksize, dilate_ksize, mask);
+                                            threshold_ratio, open_ksize, dilate_ksize, mask,
+                                            py::none());
     }
     if (py::isinstance<py::array_t<double>>(image)) {
         return median_star_mask_impl<double>(image.cast<py::array_t<double>>(), median_ksize,
-                                             threshold_ratio, open_ksize, dilate_ksize, mask);
+                                             threshold_ratio, open_ksize, dilate_ksize, mask,
+                                             py::none());
     }
     throw std::invalid_argument(
         "median_star_mask: unsupported dtype; expected uint8/uint16/float32/float64");
+}
+
+py::tuple
+median_star_mask_with_background_dispatch(const py::array& image, const py::array& background,
+                                          const ssize_t median_ksize, const double threshold_ratio,
+                                          const ssize_t open_ksize, const ssize_t dilate_ksize,
+                                          const py::object& mask) {
+    if (!image.dtype().is(py::dtype::of<uint16_t>())) {
+        throw std::invalid_argument(
+            "median_star_mask: precomputed background requires uint16 input");
+    }
+    return median_star_mask_impl<uint16_t>(image.cast<py::array_t<uint16_t>>(), median_ksize,
+                                           threshold_ratio, open_ksize, dilate_ksize, mask,
+                                           background);
 }
 
 } // namespace
@@ -240,4 +286,9 @@ void bind_median_star_mask_cpu_ops(py::module_& m) {
           py::arg("median_ksize"), py::arg("threshold_ratio"), py::arg("open_ksize") = 3,
           py::arg("dilate_ksize") = 0, py::arg("mask") = py::none(),
           "Build a median-background star mask and signed response on CPU.");
+    m.def("median_star_mask_with_background_cpu", &median_star_mask_with_background_dispatch,
+          py::arg("image"), py::arg("background"), py::arg("median_ksize"),
+          py::arg("threshold_ratio"), py::arg("open_ksize") = 3, py::arg("dilate_ksize") = 0,
+          py::arg("mask") = py::none(),
+          "Build the star mask and response from an exact precomputed uint16 median background.");
 }

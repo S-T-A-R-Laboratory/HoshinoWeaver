@@ -32,11 +32,13 @@ python -m bench.cpu.detection_profile --sizes 1024x1280 4160x6240 \
 `StarDetectionCache.median_stars`，记录灰度、融合像素处理、轮廓提取与其余几何/
 亮度/筛选阶段；每次结果须与未插桩的生产调用逐位相等。独立 `13×13` median
 滤波只作 microbenchmark，不与融合像素耗时相加。
-实验分支另将单通道 uint16 的 `13×13` Metal median 与 OpenMP 逐位对拍，测完整
-host-in/out 调用时间，并核对 workspace 峰值；它尚未接入生产检测链。
+实验分支将单通道 uint16 的 `13×13` Metal median 与 OpenMP 逐位对拍，测完整
+host-in/out 调用时间并核对 workspace 峰值。生产 median detector 在该尺寸下
+使用 Metal 背景，再用原 CPU 阈值/形态学与轮廓逻辑；两条生产路径的星点数组
+逐位对拍，并分别计时完整调用。
 JSON 包含全部样本、星点数、提交、CPU/OpenCV/Metal 设备信息，Markdown 表写入
-Actions summary，两者作为 artifact 保存。耗时不设通过阈值；单独 median 的收益
-不能直接当作完整检测收益。本地 Linux smoke 可省略 Metal 参数并缩小尺寸。
+Actions summary，两者作为 artifact 保存。耗时不设通过阈值；单独 median 与完整
+检测收益分别报告。本地 Linux smoke 可省略 Metal 参数并缩小尺寸。
 
 ### 统一入口
 
