@@ -1,6 +1,23 @@
 # Custom-op 对齐加速记录
 
-更新：2026-09-28。本批按六个功能/文档提交收尾；不将历史性能预测当作验收结果。
+初始记录：2026-09-28。本批按六个功能/文档提交收尾；不将历史性能预测当作验收结果。
+
+## 2026-09-29：Metal median 检测
+
+在独立 `feature/macos-test` 分支验证后，已将单通道 uint16、`13×13` 的精确 Metal
+背景中位数接入 Norma median 检测。CPU 后处理沿用原有的 response、float64
+统计、阈值和形态学实现；其它 dtype/核大小继续走 OpenMP/NumPy。Metal runtime
+或资源不可用时沿现有 typed fallback 回 CPU；CPU 后处理入口缺失时在分发前
+改走 CPU/NumPy。GPU 两块 uint16 buffer 的 ledger 峰值为每像素 4 字节。
+
+[macOS 实验 CI run 36512799638](https://github.com/S-T-A-R-Laboratory/HoshinoWeaver/actions/runs/36512799638)
+8/8 通过。3 vCPU `Apple Paravirtual device` 上，合成 26MP 星场的完整检测
+中位数 CPU 2220.3 ms → Metal+CPU 1567.8 ms（1.42×）；1.3MP 为
+99.9 → 67.0 ms（1.49×）。五次采样的最终星点数组逐位一致，Metal median
+背景也与 CPU 逐位一致；这组虚拟设备计时不外推实体 Mac。
+
+本分支移植后的跨平台 CI 仍以对应推送结果为准。实验计时脚本和 branch-only
+CI step 留在 `feature/macos-test`，常规 CI 只保留正确性与打包门禁。
 
 ## 已实现
 
@@ -66,9 +83,10 @@ HNW_CUSTOM_OPS_THREADS=8 python -m bench.cpu.kernels \
 
 ## 剩余事项
 
-1. 本批新增 kernel 的 Windows/MSVC、macOS/Apple Clang CI；Linux 验证不能替代。
-2. 对应提交的 CI 收尾与面向 `core-dev` 的集成审查；合并由 maintainer 决定。
+1. Metal median 移植后，以主功能分支的 Windows/MSVC、macOS/Apple Clang CI
+   结果完成最后验证；实验分支 8/8 绿不能替代目标分支的门禁。
+2. 面向 `core-dev` 的最终集成审查；合并由 maintainer 决定。
 3. 轮廓测量仅作为待剖析候选；没有批准以 connected-components 改变 contour 几何语义。
 
-全局关闭 FMA、手写 SIMD、GEMM 匹配、Graph IR/ExecutionPlan、MPS/新 Metal
-移植均不属于本轮待做清单。早期路线图和 `time_cost.md` 只作历史参考。
+全局关闭 FMA、手写 SIMD、GEMM 匹配、Graph IR/ExecutionPlan、MPS 与其它
+Metal 移植尚未立项。早期路线图和 `time_cost.md` 只作历史参考。

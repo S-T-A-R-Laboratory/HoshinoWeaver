@@ -15,12 +15,14 @@ from hoshicore._custom_op._dispatch import apply_compiled_threads as _apply_comp
 from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
+from hoshicore._custom_op.backend_registry import run_with_accelerator_fallback
 from hoshicore._custom_op.backend_registry import BackendSelection
 from hoshicore._custom_op.backend_registry import resolve_after_cuda_failure
 from hoshicore._custom_op.backend_registry import select_backend as _select_backend
 from hoshicore._custom_op.cuda_memory import cuda_memory_estimate
 from hoshicore._custom_op.cuda_memory import run_admitted_cuda as _run_admitted_cuda
 from hoshicore._custom_op.ops.filter import median_filter_2d_numpy as _median_filter_2d_numpy
+from hoshicore._custom_op.ops.filter import median_filter_2d_compiled_metal
 from hoshicore._custom_op.ops.wavelet import _wavelet_level
 
 
@@ -162,6 +164,32 @@ def median_star_mask_cpu_compiled(
     return star_mask, response, float(threshold)
 
 
+def median_star_mask_compiled_metal(
+    image: np.ndarray,
+    median_ksize: int = 13,
+    threshold_ratio: float = 1.0,
+    open_ksize: int = 3,
+    dilate_ksize: int = 0,
+    mask: np.ndarray | None = None,
+) -> tuple[NDArray[np.uint8], NDArray[np.float32], float]:
+    image_arr, mask_u8 = _validate_median_star_mask_inputs(image, mask)
+    median_ksize, threshold_ratio, open_ksize, dilate_ksize = (
+        _validate_median_star_mask_params(
+            median_ksize, threshold_ratio, open_ksize, dilate_ksize)
+    )
+    if image_arr.dtype != np.uint16 or median_ksize != 13:
+        raise ValueError("Metal median star mask requires uint16 input and ksize=13")
+    module, _ = _load_compiled_module_result()
+    if module is None or not hasattr(module, "median_star_mask_with_background_cpu"):
+        raise RuntimeError("compiled median star mask finisher is unavailable")
+    background = median_filter_2d_compiled_metal(image_arr, median_ksize)
+    _apply_compiled_threads("median_star_mask", image_arr)
+    star_mask, response, threshold = module.median_star_mask_with_background_cpu(
+        image_arr, background, median_ksize, threshold_ratio,
+        open_ksize, dilate_ksize, mask_u8)
+    return star_mask, response, float(threshold)
+
+
 @lru_cache(maxsize=3)
 def _select_median_star_mask_backend(preference: str) -> BackendSelection:
     return _select_backend(
@@ -169,6 +197,16 @@ def _select_median_star_mask_backend(preference: str) -> BackendSelection:
         preference,
         load_module=_load_compiled_module_result,
     )
+
+
+def _median_star_mask_backend(selection: BackendSelection) -> tuple[str, Callable]:
+    if not selection.native or selection.candidate is None:
+        return "numpy", median_star_mask_numpy
+    if selection.candidate.backend == "metal_host_io":
+        return "metal", median_star_mask_compiled_metal
+    if selection.candidate.backend == "openmp_cpu":
+        return "cpu", median_star_mask_cpu_compiled
+    raise RuntimeError(f"unknown median star mask backend: {selection.candidate}")
 
 
 def median_star_mask(
@@ -181,18 +219,22 @@ def median_star_mask(
 ) -> tuple[NDArray[np.uint8], NDArray[np.float32], float]:
     preference = _fallback_preference()
     selection = _select_median_star_mask_backend(preference)
-    backend = (
-        median_star_mask_cpu_compiled
-        if selection.native
-        else median_star_mask_numpy
-    )
-    return backend(
-        image,
-        median_ksize=median_ksize,
-        threshold_ratio=threshold_ratio,
-        open_ksize=open_ksize,
-        dilate_ksize=dilate_ksize,
-        mask=mask,
+    if selection.candidate is not None and selection.candidate.backend == "metal_host_io":
+        supported = np.asarray(image).dtype == np.uint16 and median_ksize == 13
+        module, _ = _load_compiled_module_result() if supported else (None, None)
+        if module is None or not hasattr(module, "median_star_mask_with_background_cpu"):
+            selection = _select_backend(
+                "median_star_mask", preference,
+                load_module=_load_compiled_module_result,
+                exclude_backends={"metal_host_io"},
+            )
+    return run_with_accelerator_fallback(
+        "median_star_mask", selection, _median_star_mask_backend,
+        lambda backend: backend(
+            image, median_ksize=median_ksize, threshold_ratio=threshold_ratio,
+            open_ksize=open_ksize, dilate_ksize=dilate_ksize, mask=mask),
+        load_module=_load_compiled_module_result,
+        log=_debug_log,
     )
 
 

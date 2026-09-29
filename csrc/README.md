@@ -291,6 +291,7 @@ device probe、kernel 对拍、workspace high-water 校验与 frozen-package smo
 |------|------|
 | AMD (ROCm/HIP) | 待评估 |
 | macOS (Metal) | 已实现 `star_shrink_process`、`star_mask_dog`、`star_shrink_dog_process` |
+| macOS uint16 median | `13×13` Metal 背景中位数 + 原 OpenMP 阈值/形态学；其它输入走 CPU |
 | macOS (MPS) | 后续按热点评估 |
 | Vulkan (compute shader) | 待评估 |
 
