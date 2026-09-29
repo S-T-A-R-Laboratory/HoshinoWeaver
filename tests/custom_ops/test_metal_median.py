@@ -139,5 +139,21 @@ def test_metal_median_resource_error_falls_back_to_cpu(monkeypatch):
     with mock.patch.object(backend_registry, "resolve_after_accelerator_failure", return_value=cpu) as resolve:
         got = detection_ops.median_star_mask(image)
     resolve.assert_called_once()
-    for actual, wanted in zip(got, expected):
+    for actual, wanted in zip(got[:2], expected[:2]):
         np.testing.assert_array_equal(actual, wanted)
+    np.testing.assert_allclose(got[2], expected[2], rtol=1e-14, atol=1e-15)
+
+
+def test_metal_median_without_cpu_finisher_uses_numpy(monkeypatch):
+    image = np.random.default_rng(96).integers(0, 65536, (27, 33), dtype=np.uint16)
+    expected = detection_ops.median_star_mask_numpy(image)
+    metal = _selection("metal_host_io", "median_filter_2d_metal")
+    monkeypatch.setattr(detection_ops, "_select_median_star_mask_backend", lambda _: metal)
+    monkeypatch.setattr(detection_ops, "_load_compiled_module_result", lambda: (None, "missing"))
+    monkeypatch.setattr(
+        detection_ops, "_select_backend",
+        lambda *args, **kwargs: BackendSelection(None, None, "CPU extension unavailable"),
+    )
+    actual = detection_ops.median_star_mask(image)
+    for got, wanted in zip(actual, expected):
+        np.testing.assert_array_equal(got, wanted)

@@ -219,14 +219,15 @@ def median_star_mask(
 ) -> tuple[NDArray[np.uint8], NDArray[np.float32], float]:
     preference = _fallback_preference()
     selection = _select_median_star_mask_backend(preference)
-    if (selection.candidate is not None
-            and selection.candidate.backend == "metal_host_io"
-            and (np.asarray(image).dtype != np.uint16 or median_ksize != 13)):
-        selection = _select_backend(
-            "median_star_mask", preference,
-            load_module=_load_compiled_module_result,
-            exclude_backends={"metal_host_io"},
-        )
+    if selection.candidate is not None and selection.candidate.backend == "metal_host_io":
+        supported = np.asarray(image).dtype == np.uint16 and median_ksize == 13
+        module, _ = _load_compiled_module_result() if supported else (None, None)
+        if module is None or not hasattr(module, "median_star_mask_with_background_cpu"):
+            selection = _select_backend(
+                "median_star_mask", preference,
+                load_module=_load_compiled_module_result,
+                exclude_backends={"metal_host_io"},
+            )
     return run_with_accelerator_fallback(
         "median_star_mask", selection, _median_star_mask_backend,
         lambda backend: backend(
