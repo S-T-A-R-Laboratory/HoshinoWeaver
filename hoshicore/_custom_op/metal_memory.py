@@ -110,6 +110,17 @@ def estimate_star_mask_dog(
     )
 
 
+def estimate_median_filter_2d(*, height: int, width: int) -> MetalMemoryEstimate:
+    if min(height, width) <= 0:
+        raise ValueError("Metal median filter requires positive dimensions")
+    return MetalMemoryEstimate(
+        logical_op="median_filter_2d",
+        peak_device_bytes=2 * height * width * 2,
+        confidence="exact",
+        reason="input and output uint16 planes in the Metal host-I/O workspace",
+    )
+
+
 def estimate_star_shrink_dog_process(
     *,
     height: int,
@@ -151,6 +162,7 @@ def estimate_star_shrink_dog_process(
 
 
 _METAL_STATIC_MEMORY_ESTIMATORS = {
+    "median_filter_2d": estimate_median_filter_2d,
     "star_shrink_process": estimate_star_shrink_process,
     "star_mask_dog": estimate_star_mask_dog,
     "star_shrink_dog_process": estimate_star_shrink_dog_process,

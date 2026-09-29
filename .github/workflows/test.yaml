@@ -208,7 +208,7 @@ jobs:
           HNW_CUSTOM_OPS_THREADS: auto
         run: |
           python -m bench.cpu.detection_profile --sizes 1024x1280 4160x6240 \
-            --warmup 1 --repeat 5 --require-metal \
+            --warmup 1 --repeat 5 --require-metal --compare-metal \
             --output-json benchmark_results/macos-detection/profile.json
           cat benchmark_results/macos-detection/profile.md >> "$GITHUB_STEP_SUMMARY"
 

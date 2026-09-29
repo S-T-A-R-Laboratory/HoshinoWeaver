@@ -21,7 +21,9 @@ import numpy as np
 
 from bench.common import run_benchmark, summarize_samples
 from hoshicore._custom_op import build_info, set_backend_preference
+from hoshicore._custom_op import metal_memory
 from hoshicore._custom_op.backend_registry import resolve_backend
+from hoshicore._custom_op.ops import filter as filter_ops
 from hoshicore._custom_op.ops.filter import median_filter_2d_compiled
 from hoshicore.component.norma import detection, geometry_view
 
@@ -97,7 +99,8 @@ def _assert_same_stars(actual: detection.DetectedStars, expected: detection.Dete
         np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
 
 
-def measure_case(height: int, width: int, *, seed: int, warmup: int, repeat: int) -> dict:
+def measure_case(height: int, width: int, *, seed: int, warmup: int, repeat: int,
+                 compare_metal: bool = False) -> dict:
     image, mask = make_starfield(height, width, seed=seed)
     expected = geometry_view.StarDetectionCache.from_image(image, mask).median_stars
     if len(expected.positions) == 0:
@@ -112,11 +115,12 @@ def measure_case(height: int, width: int, *, seed: int, warmup: int, repeat: int
         samples.append(sample)
 
     gray = geometry_view.to_median_gray_u16(image)
+    cpu_background = median_filter_2d_compiled(gray, 13)
     background = run_benchmark(lambda: median_filter_2d_compiled(gray, 13), warmup=warmup, repeat=repeat)
     fingerprint = hashlib.sha256()
     for name in ("positions", "volumes", "intensities"):
         fingerprint.update(np.ascontiguousarray(getattr(expected, name)).tobytes())
-    return {
+    result = {
         "shape": list(image.shape), "dtype": str(image.dtype), "seed": seed,
         "masked_fraction": float(1 - np.count_nonzero(mask) / mask.size),
         "detected_stars": len(expected.positions), "stars_sha256": fingerprint.hexdigest(),
@@ -124,6 +128,21 @@ def measure_case(height: int, width: int, *, seed: int, warmup: int, repeat: int
         "stages": summarize_profiles(samples), "standalone_median": background,
         "note": "standalone_median is a separate microbenchmark, not an additive pipeline stage",
     }
+    if compare_metal:
+        from hoshicore._custom_op import _metal
+
+        metal_background = filter_ops.median_filter_2d_compiled_metal(gray, 13)
+        np.testing.assert_array_equal(metal_background, cpu_background)
+        result["standalone_median_metal"] = run_benchmark(
+            lambda: filter_ops.median_filter_2d_compiled_metal(gray, 13),
+            warmup=warmup, repeat=repeat)
+        logical_peak = int(_metal.metal_host_io_cache_info()["last_logical_peak_bytes"])
+        estimate = metal_memory.estimate_median_filter_2d(height=height, width=width)
+        if logical_peak != estimate.peak_device_bytes:
+            raise RuntimeError(f"Metal median workspace peak {logical_peak} != {estimate.peak_device_bytes}")
+        result["metal_median_exact"] = True
+        result["metal_median_peak_bytes"] = logical_peak
+    return result
 
 
 def environment(require_metal: bool) -> dict:
@@ -158,10 +177,21 @@ def markdown_summary(report: dict) -> str:
                   ("gray", "pixel", "find_contours", "geometry_intensity_filter", "total")]
         shape = "×".join(str(x) for x in case["shape"][:2])
         lines.append(f"| {shape} | {case['detected_stars']} | " + " | ".join(f"{v:.1f}" for v in values) + " |")
+    if report["cases"] and "standalone_median_metal" in report["cases"][0]:
+        lines += ["", "| Image | CPU median | Metal median | CPU / Metal | Exact | Metal peak |",
+                  "|---|---:|---:|---:|:---:|---:|"]
+        for case in report["cases"]:
+            cpu = case["standalone_median"]["median_sec"]
+            metal = case["standalone_median_metal"]["median_sec"]
+            shape = "×".join(str(x) for x in case["shape"][:2])
+            lines.append(f"| {shape} | {cpu * 1000:.1f} ms | {metal * 1000:.1f} ms | "
+                         f"{cpu / metal:.2f}× | yes | {case['metal_median_peak_bytes']} B |")
     lines += ["", "Fused pixels include median background, threshold and morphology.",
               "The residual includes Python orchestration and the small instrumentation overhead.",
-              "Standalone median samples are in JSON and must not be added to the pipeline timings.",
-              "No Metal median kernel is measured; hosted-runner timing is not a physical-Mac speed claim."]
+              "Standalone median samples are in JSON and must not be added to the pipeline timings."]
+    if report["cases"] and "standalone_median_metal" in report["cases"][0]:
+        lines.append("Metal median timing is host-in/out and does not measure integrated detection.")
+    lines.append("Hosted-runner timing is not a physical-Mac speed claim.")
     return "\n".join(lines) + "\n"
 
 
@@ -172,6 +202,7 @@ def main() -> None:
     parser.add_argument("--repeat", type=int, default=5)
     parser.add_argument("--seed", type=int, default=20260928)
     parser.add_argument("--require-metal", action="store_true")
+    parser.add_argument("--compare-metal", action="store_true")
     parser.add_argument("--output-json", type=Path, required=True)
     args = parser.parse_args()
     if args.warmup < 0 or args.repeat < 1:
@@ -193,12 +224,15 @@ def main() -> None:
     logger.disable("hoshicore")
     report = {"environment": environment(args.require_metal), "completed": False,
               "config": {"warmup": args.warmup, "repeat": args.repeat, "median_ksize": 13,
-                         "threshold_ratio": 1.0, "open_ksize": 3, "stars_per_megapixel": 800},
+                         "threshold_ratio": 1.0, "open_ksize": 3, "stars_per_megapixel": 800,
+                         "compare_metal": args.compare_metal},
               "cases": []}
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     for h, w in sizes:
         print(f"Profiling {h}x{w} uint16 BGR, CPU median detection", flush=True)
-        report["cases"].append(measure_case(h, w, seed=args.seed, warmup=args.warmup, repeat=args.repeat))
+        report["cases"].append(measure_case(
+            h, w, seed=args.seed, warmup=args.warmup, repeat=args.repeat,
+            compare_metal=args.compare_metal))
         args.output_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
     report["completed"] = True
     args.output_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
