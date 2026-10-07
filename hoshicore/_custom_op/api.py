@@ -3,6 +3,9 @@
 from hoshicore._custom_op._dispatch import get_backend_preference
 from hoshicore._custom_op._dispatch import set_backend_preference
 from hoshicore._custom_op.ops.alignment import (
+    asterism_anchor_votes,
+    asterism_mutual_nearest,
+    asterism_tokens,
     extract_point_features,
     matching_cosine_bidirectional_nearest,
 )
@@ -23,6 +26,7 @@ from hoshicore._custom_op.ops.fgp import (
     sigma_clip_fused_merge,
 )
 from hoshicore._custom_op.ops.filter import median_filter_2d
+from hoshicore._custom_op.ops.gray import detection_gray_f64, detection_gray_u16
 from hoshicore._custom_op.ops.max import (
     build_info,
     custom_ops_available,
@@ -49,12 +53,17 @@ from hoshicore._custom_op.ops.star_shrink import (
 from hoshicore._custom_op.ops.wavelet import wavelet_dec_rec
 
 __all__ = [
+    "detection_gray_f64",
+    "detection_gray_u16",
     "build_info",
     "calibration_divide",
     "calibration_subtract",
     "camera_model_remap",
     "custom_ops_available",
     "equalize_noise_correct",
+    "asterism_anchor_votes",
+    "asterism_mutual_nearest",
+    "asterism_tokens",
     "extract_point_features",
     "fgp_accumulate",
     "fgp_masked_mean_merge",

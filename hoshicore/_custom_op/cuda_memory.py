@@ -159,6 +159,70 @@ def estimate_matching_cosine_bidirectional_nearest(
     )
 
 
+# Pinned double-buffer slot of the staged host transfers (cuda_host_staging.cuh).
+CUDA_STAGING_SLOT_BYTES = 8 * 1024 * 1024
+
+ASTERISM_MAX_GRID_CELLS = 1 << 22
+_ASTERISM_EXTENT_BYTES = 2 * 64 * 7 * 8
+_ASTERISM_SCAN_TILE = 4096
+
+
+def asterism_device_bytes(n1: int, n2: int, cells: int) -> int:
+    """Device bytes of the native asterism op for a grid of ``cells`` cells:
+    token values, block extents, two cell-offset grids with slot-ordered
+    indices and coordinates, scan tile sums, both nearest outputs and the
+    tie flag."""
+    tiles = -(-cells // _ASTERISM_SCAN_TILE)
+    return ((n1 + n2) * (3 * 8 + 4 + 3 * 8 + 4) + _ASTERISM_EXTENT_BYTES
+            + 2 * (cells + 1) * 4 + tiles * 4 + 4)
+
+
+def estimate_asterism_mutual_nearest(
+    *,
+    n1: int,
+    n2: int,
+) -> CudaMemoryEstimate:
+    if min(n1, n2) <= 0:
+        raise ValueError(
+            "asterism mutual nearest CUDA memory estimate requires positive sizes")
+    return CudaMemoryEstimate(
+        logical_op="asterism_mutual_nearest",
+        peak_device_bytes=asterism_device_bytes(n1, n2, ASTERISM_MAX_GRID_CELLS),
+        confidence="bounded",
+        reason=(
+            "token buffers are exact; the device-built cell grid is bounded by "
+            "the largest grid the kernel accepts"
+        ),
+    )
+
+
+POINT_FEATURE_BINS = 120
+
+
+def estimate_extract_point_features(
+    *,
+    n_points: int,
+    k: int,
+) -> CudaMemoryEstimate:
+    if min(n_points, k) <= 0:
+        raise ValueError(
+            "extract_point_features CUDA memory estimate requires positive sizes")
+    max_cells = 8 * n_points + 64
+    points = n_points * (3 * 8 + 8 + 8)
+    grid = n_points * 3 * 8 + (max_cells + 1) * 8 + n_points * 8
+    return CudaMemoryEstimate(
+        logical_op="extract_point_features",
+        peak_device_bytes=(points + grid + n_points * k * 3 * 8
+                           + n_points * POINT_FEATURE_BINS * 8 + 4),
+        peak_pinned_bytes=2 * CUDA_STAGING_SLOT_BYTES,
+        confidence="bounded",
+        reason=(
+            "points, norms, per-neighbour parameters and descriptors are exact; "
+            "the direction grid uses its cell-count limit"
+        ),
+    )
+
+
 def _star_shrink_image_sizes(
     *,
     height: int,
@@ -328,31 +392,40 @@ def _wavelet_device_peak_bytes(height: int, width: int, level: int) -> int:
     detail_bytes = 0
     peak = current_bytes
 
-    for _ in range(level):
+    # The reconstruction zeroes the finest detail band, so level 0 allocates
+    # neither its high-pass row buffer nor detail planes nor the high column.
+    for index in range(level):
         out_h = _dwt_len(current_h)
         out_w = _dwt_len(current_w)
         row_bytes = current_h * out_w * 8
         level_bytes = out_h * out_w * 8
+        kept_bands = 0 if index == 0 else 3
         peak = max(
             peak,
-            current_bytes + detail_bytes + 2 * row_bytes + 4 * level_bytes,
+            current_bytes
+            + detail_bytes
+            + (1 if index == 0 else 2) * row_bytes
+            + (1 + kept_bands) * level_bytes,
         )
-        detail_bytes += 3 * level_bytes
-        details.append((out_h, out_w))
+        detail_bytes += kept_bands * level_bytes
+        details.append((out_h, out_w, kept_bands))
         current_h = out_h
         current_w = out_w
         current_bytes = level_bytes
 
-    for detail_h, detail_w in reversed(details):
+    for detail_h, detail_w, kept_bands in reversed(details):
         out_h = _idwt_len(detail_h)
         out_w = _idwt_len(detail_w)
         col_bytes = out_h * detail_w * 8
         output_bytes = out_h * out_w * 8
         peak = max(
             peak,
-            current_bytes + detail_bytes + 2 * col_bytes + output_bytes,
+            current_bytes
+            + detail_bytes
+            + (2 if kept_bands else 1) * col_bytes
+            + output_bytes,
         )
-        detail_bytes -= 3 * detail_h * detail_w * 8
+        detail_bytes -= kept_bands * detail_h * detail_w * 8
         current_bytes = output_bytes
 
     return peak
@@ -470,6 +543,20 @@ def chunk_host_cost_per_row(
     raise KeyError(f"no chunk host memory model registered for {logical_op}")
 
 
+def _wavelet_reconstructed_bytes(height: int, width: int, level: int) -> int:
+    current_h, current_w = height, width
+    shapes: list[tuple[int, int]] = []
+    for _ in range(level):
+        current_h, current_w = _dwt_len(current_h), _dwt_len(current_w)
+        shapes.append((current_h, current_w))
+    for detail_h, detail_w in reversed(shapes):
+        current_h, current_w = _idwt_len(detail_h), _idwt_len(detail_w)
+    return current_h * current_w * 8
+
+
+STAR_DETECT_SELECT_BINS = 2048
+
+
 def estimate_star_detect_fused_pixel_components(
     *,
     height: int,
@@ -484,57 +571,63 @@ def estimate_star_detect_fused_pixel_components(
         raise ValueError("star detection CUDA memory estimate requires positive dimensions")
 
     pixels = height * width
-    small_pixels = small_height * small_width
     double_plane = pixels * 8
-    small_double_plane = small_pixels * 8
+    small_double_plane = small_height * small_width * 8
     byte_plane = pixels
     int_plane = pixels * 4
+    counter = 4
+    identity_resize = (small_height, small_width) == (height, width)
 
-    initial_peak = (
-        6 * double_plane
-        + small_double_plane
-        + 3 * byte_plane
-        + gaussian_ksize * 8
-        + 4
-    )
-
-    wavelet_base = 2 * double_plane + 3 * byte_plane + 4
-    wavelet_peak = wavelet_base + _wavelet_device_peak_bytes(
+    # Phases follow the kernel's allocation order; each term is the set of
+    # project-controlled buffers alive at that point.
+    blur_peak = 2 * double_plane + gaussian_ksize * 8 + byte_plane + counter
+    resize_down_peak = (
+        0 if identity_resize
+        else double_plane + small_double_plane + byte_plane + counter)
+    wavelet_peak = byte_plane + counter + _wavelet_device_peak_bytes(
         small_height, small_width, level)
-
-    # Thrust currently owns its sort scratch allocation. Two value planes are
-    # reserved as a bounded allowance until the sort is migrated to an
-    # explicitly sized workspace.
-    sort_peak = 2 * double_plane + 3 * byte_plane + 4 + 2 * double_plane
+    reconstructed = _wavelet_reconstructed_bytes(small_height, small_width, level)
+    resize_up_peak = (
+        0 if reconstructed == double_plane
+        else double_plane + reconstructed + byte_plane + counter)
+    # Selection candidates are bounded by the masked pixel count.
+    select_peak = (
+        2 * double_plane + byte_plane + counter + STAR_DETECT_SELECT_BINS * 4)
+    morphology_peak = double_plane + 3 * byte_plane + counter
 
     max_foreground = max(
         1, int(pixels * STAR_DETECT_MAX_FOREGROUND_FRACTION))
     foreground = max_foreground if foreground_count is None else foreground_count
     foreground = max(0, min(foreground, max_foreground))
     hash_capacity = _next_power_of_two(max(16, foreground * 2))
+    hash_bytes = hash_capacity * (2 * 4 + 3 * 8)
+    labels_peak = (
+        double_plane + byte_plane + foreground * 4 + 2 * int_plane + 2 * counter)
     cc_peak = (
-        double_plane
-        + 3 * int_plane
-        + hash_capacity * (2 * 4 + 3 * 8)
-        + 3 * 4
-    )
-    output_peak = hash_capacity * (2 * 4 + 3 * 8) + foreground * 3 * 8 + 3 * 4
-    pinned_peak = 2 * 8 + 4
+        double_plane + foreground * 4 + 2 * int_plane + hash_bytes + 3 * counter)
+    output_peak = hash_bytes + foreground * 3 * 8 + 3 * counter
+    pinned_peak = (
+        2 * 8 + 4 + 2 * CUDA_STAGING_SLOT_BYTES + STAR_DETECT_SELECT_BINS * 4)
 
     return CudaMemoryEstimate(
         logical_op="star_detect_fused_pixel_components",
         peak_device_bytes=max(
-            initial_peak,
+            blur_peak,
+            resize_down_peak,
             wavelet_peak,
-            sort_peak,
+            resize_up_peak,
+            select_peak,
+            morphology_peak,
+            labels_peak,
             cc_peak,
             output_peak,
         ),
         peak_pinned_bytes=pinned_peak,
-        confidence="estimated",
+        confidence="bounded",
         reason=(
-            "phase-aware project-controlled buffers with an empirical Thrust "
-            "sort allowance and foreground_count capped at 25%"
+            "phase-aware project-controlled buffers; selection candidates and "
+            "foreground_count (capped at 25%) use their upper bounds, and the "
+            "small Thrust reduction scratch is not ledger-tracked"
         ),
     )
 
@@ -542,7 +635,9 @@ def estimate_star_detect_fused_pixel_components(
 _CUDA_STATIC_MEMORY_ESTIMATORS: dict[
     str, Callable[..., CudaMemoryEstimate]
 ] = {
+    "asterism_mutual_nearest": estimate_asterism_mutual_nearest,
     "camera_model_remap": estimate_camera_model_remap,
+    "extract_point_features": estimate_extract_point_features,
     "matching_cosine_bidirectional_nearest": (
         estimate_matching_cosine_bidirectional_nearest
     ),

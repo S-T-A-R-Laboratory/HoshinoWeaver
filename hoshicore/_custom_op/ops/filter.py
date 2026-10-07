@@ -13,7 +13,10 @@ from hoshicore._custom_op._dispatch import apply_compiled_threads as _apply_comp
 from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
+from hoshicore._custom_op._dispatch import load_metal_module as _load_metal_module_result
 from hoshicore._custom_op.backend_registry import native_backend_available as _native_backend_available
+from hoshicore._custom_op.metal_memory import metal_memory_estimate
+from hoshicore._custom_op.metal_memory import run_admitted_metal as _run_admitted_metal
 
 
 _debug_log = partial(debug_log, "filter")
@@ -77,6 +80,22 @@ def median_filter_2d_compiled(image: np.ndarray, ksize: int) -> np.ndarray:
     ksize = _validate_ksize(ksize)
     _apply_compiled_threads("median_filter_2d", image_arr)
     return module.median_filter_2d(image_arr, ksize)
+
+
+def median_filter_2d_compiled_metal(image: np.ndarray, ksize: int) -> np.ndarray:
+    module, error = _load_metal_module_result()
+    if module is None or not hasattr(module, "median_filter_2d_metal"):
+        raise RuntimeError(error or "Metal median filter backend is unavailable")
+    image_arr = _validate_image(image)
+    ksize = _validate_ksize(ksize)
+    if image_arr.ndim != 2 or image_arr.dtype != np.uint16 or ksize != 13:
+        raise ValueError("Metal median filter supports 2D uint16 images with ksize=13")
+    return _run_admitted_metal(
+        metal_memory_estimate("median_filter_2d", height=image_arr.shape[0], width=image_arr.shape[1]),
+        module.median_filter_2d_metal,
+        image_arr,
+        ksize,
+    )
 
 
 @lru_cache(maxsize=2)

@@ -2,9 +2,11 @@
 from functools import cached_property
 from typing import Optional
 
-import cv2
 import numpy as np
 from numpy.typing import NDArray
+
+from hoshicore._custom_op.ops.detection import GraySource
+from hoshicore._custom_op import detection_gray_f64, detection_gray_u16
 
 from .detection import DetectedStars, detect_star_points, detect_star_points_median
 from .matching import adaptive_k, extract_point_features
@@ -13,20 +15,18 @@ from .types import BaseCameraModel
 
 def to_gray_f64(arr: np.ndarray) -> NDArray[np.float64]:
     """Convert a project-convention BGR image to grayscale in ``[0, 1]``."""
-    if arr.ndim == 3:
-        gray = cv2.cvtColor(arr.astype(np.float32),
-                            cv2.COLOR_BGR2GRAY).astype(np.float64)
-    else:
-        gray = arr.astype(np.float64)
+    return detection_gray_f64(arr)
 
-    if np.issubdtype(arr.dtype, np.integer):
-        gray /= np.iinfo(arr.dtype).max
-    else:
-        max_val = gray.max()
-        if max_val > 1.0:
-            gray /= max_val
 
-    return gray
+def to_median_gray_u16(arr: np.ndarray) -> NDArray[np.uint16] | None:
+    """The median detector's uint16 gray of a uint16 frame, without float64.
+
+    Bitwise equal to quantizing :func:`to_gray_f64` back to uint16: for every
+    float32 gray ``g`` in ``[0, 65535]``, ``rint(float32(g / 65535) * 65535)``
+    equals ``rint(g)`` (checked over all such float32 values). Returns None for
+    other dtypes or a gray outside that range, which take the float64 path.
+    """
+    return detection_gray_u16(arr)
 
 
 class StarDetectionCache:
@@ -37,10 +37,15 @@ class StarDetectionCache:
     discarded after one alignment.
     """
 
-    def __init__(self, gray: NDArray[np.float64], mask: Optional[np.ndarray] = None,
+    def __init__(self, gray: Optional[NDArray[np.float64]] = None,
+                 mask: Optional[np.ndarray] = None,
                  median_threshold_ratio: float = 1.0,
-                 star_detection_mode: str = "auto"):
+                 star_detection_mode: str = "auto", *,
+                 image: Optional[np.ndarray] = None):
+        if (gray is None) == (image is None):
+            raise ValueError("StarDetectionCache needs exactly one of gray or image")
         self._gray = gray
+        self._image = image
         self._mask = mask
         self._median_threshold_ratio = median_threshold_ratio
         self._star_detection_mode = star_detection_mode
@@ -49,16 +54,27 @@ class StarDetectionCache:
     def from_image(cls, image: np.ndarray, mask: Optional[np.ndarray] = None,
                    median_threshold_ratio: float = 1.0,
                    star_detection_mode: str = "auto") -> "StarDetectionCache":
-        return cls(to_gray_f64(image), mask, median_threshold_ratio, star_detection_mode)
+        return cls(mask=mask, median_threshold_ratio=median_threshold_ratio,
+                   star_detection_mode=star_detection_mode, image=image)
+
+    @cached_property
+    def gray(self) -> NDArray[np.float64]:
+        """Host gray, converted from the image only when a detector needs it."""
+        return self._gray if self._gray is not None else to_gray_f64(self._image)
 
     @cached_property
     def pywt_stars(self) -> DetectedStars:
-        return detect_star_points(self._gray, self._mask, mode=self._star_detection_mode)
+        # From an image, the CUDA detector converts the gray on the device.
+        source = (self.gray if self._image is None
+                  else GraySource(self._image, to_gray_f64, host_gray=lambda: self.gray))
+        return detect_star_points(source, self._mask,
+                                  mode=self._star_detection_mode)
 
     @cached_property
     def median_stars(self) -> DetectedStars:
+        gray = None if self._image is None else to_median_gray_u16(self._image)
         return detect_star_points_median(
-            self._gray, self._mask,
+            self.gray if gray is None else gray, self._mask,
             threshold_ratio=self._median_threshold_ratio)
 
 

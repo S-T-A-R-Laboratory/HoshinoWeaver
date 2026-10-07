@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SMOKE_ENTRY = PROJECT_ROOT / "hoshicore" / "_custom_op" / "package_smoke.py"
 DEFAULT_WORK_DIR = PROJECT_ROOT / "build" / "native-package-smoke"
 SMOKE_MARKER = "HNW_NATIVE_PACKAGE_SMOKE_OK"

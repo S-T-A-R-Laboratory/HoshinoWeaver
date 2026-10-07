@@ -16,7 +16,8 @@ import sys
 import sysconfig
 from pathlib import Path
 
-CSRC = Path(__file__).resolve().parent
+CSRC = Path(__file__).resolve().parent.parent
+OBJC_STUBS = Path(__file__).resolve().parent / "objc_stubs"
 # Any real Apple runtime works; this only selects ABI details clang needs to
 # accept ARC and @autoreleasepool off-platform.
 OBJC_RUNTIME = "macosx-10.15"
@@ -32,7 +33,7 @@ def _sources() -> list[Path]:
 
 
 def _include_flags() -> list[str]:
-    flags = [f"-I{CSRC / 'objc_stubs'}", f"-I{CSRC}"]
+    flags = [f"-I{OBJC_STUBS}", f"-I{CSRC}"]
     flags.append("-I" + sysconfig.get_paths()["include"])
     try:
         import pybind11

@@ -134,7 +134,18 @@ NumPy when that backend is explicitly unavailable. The
 `star_detect_fused_pixel_components` wrapper has CUDA and OpenMP native backends
 but intentionally no standalone NumPy implementation: its final production
 fallback is Norma's OpenCV contour detector at the component layer, so the
-project still runs without compilation.
+project still runs without compilation. It also accepts a `GraySource` (the raw
+uint8/uint16 frame plus its host gray conversion): CUDA then uploads the frame
+and converts it on the device, after a bitwise check against OpenCV's
+conversion that reruns whenever OpenCV's IPP/optimization switches change;
+every other path uses the host gray.
+
+Host detection gray uses `detection_gray_f64` / `detection_gray_u16`: OpenMP
+handles casts, normalization and nearest-even quantization around the current
+OpenCV color conversion. This preserves IPP/non-IPP arithmetic on each platform;
+missing native kernels and forced NumPy use the original conversion. Floating
+image inputs retain the original normalization path. Alignment acceleration
+status and remaining validation are tracked in `docs/custom_op_alignment_acceleration.md`.
 
 Key env vars: `HNW_CUSTOM_OPS_FALLBACK` (`auto`|`cpu`|`numpy`), `HNW_CUSTOM_OPS_THREADS` (`auto`|int), `HNW_CUSTOM_OPS_DEBUG` (`0`|`1`). `cpu` disables CUDA while preserving OpenMP; GUI/runtime callers may use `set_backend_preference()` before starting a pipeline.
 

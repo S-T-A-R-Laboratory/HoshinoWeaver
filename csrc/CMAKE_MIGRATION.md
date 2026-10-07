@@ -29,7 +29,9 @@ csrc/
     HnwOpenMP.cmake
     HnwPython.cmake
     HnwCuda.cmake
-  module.cpp
+  modules/
+    _C.cpp
+    _metal.mm
   common/
   ops/
     fgp/
@@ -122,7 +124,8 @@ Windows 构建说明：
 
 ## 后续方向
 
-- macOS：评估 Metal/MPS 构建骨架，设计与 `_C` 并列的 GPU backend
+- macOS：独立 `_metal` backend、workspace 与 CI/打包验证已实现；新 CPU
+  灰度及 asterism 改动仍需本轮 macOS CI 验证。MPS 暂未立项。
 - 打包链：待 custom-op 构建稳定后，评估是否接 `scikit-build-core`
 - GPU 扩展：优先考虑大粒度数据链 / GPU-resident 路径，而非逐个小算子移植
 

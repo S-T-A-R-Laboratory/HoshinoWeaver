@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 PACKAGE_DIR = PROJECT_ROOT / "hoshicore" / "_custom_op"
 STALE_PATTERNS = ("_metal*.so", "_metal*.dylib", "_metal_kernels.metallib")
 PARAMS = (3, "CIRCLE", 1, 1.0, 5)

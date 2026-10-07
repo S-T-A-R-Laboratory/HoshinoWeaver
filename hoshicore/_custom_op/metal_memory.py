@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Iterator, TypeVar
 
 from hoshicore._custom_op._dispatch import CustomOpMetalRuntimeUnavailableError
@@ -110,6 +110,25 @@ def estimate_star_mask_dog(
     )
 
 
+def estimate_median_filter_2d(*, height: int, width: int) -> MetalMemoryEstimate:
+    if min(height, width) <= 0:
+        raise ValueError("Metal median filter requires positive dimensions")
+    return MetalMemoryEstimate(
+        logical_op="median_filter_2d",
+        peak_device_bytes=2 * height * width * 2,
+        confidence="exact",
+        reason="input and output uint16 planes in the Metal host-I/O workspace",
+    )
+
+
+def estimate_median_star_mask(*, height: int, width: int, channels: int = 1,
+                              dtype_bytes: int = 2) -> MetalMemoryEstimate:
+    if channels != 1 or dtype_bytes != 2:
+        raise ValueError("Metal median star mask requires a 2D uint16 image")
+    return replace(estimate_median_filter_2d(height=height, width=width),
+                   logical_op="median_star_mask")
+
+
 def estimate_star_shrink_dog_process(
     *,
     height: int,
@@ -151,6 +170,8 @@ def estimate_star_shrink_dog_process(
 
 
 _METAL_STATIC_MEMORY_ESTIMATORS = {
+    "median_filter_2d": estimate_median_filter_2d,
+    "median_star_mask": estimate_median_star_mask,
     "star_shrink_process": estimate_star_shrink_process,
     "star_mask_dog": estimate_star_mask_dog,
     "star_shrink_dog_process": estimate_star_shrink_dog_process,

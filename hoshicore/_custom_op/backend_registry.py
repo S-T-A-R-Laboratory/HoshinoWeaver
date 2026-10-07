@@ -107,7 +107,29 @@ class BackendSelection:
 
 
 _CANDIDATES: tuple[BackendCandidate, ...] = (
+    BackendCandidate("detection_gray", "openmp_cpu", "detection_gray_cast_cpu"),
+    BackendCandidate(
+        "extract_point_features",
+        "cuda_host_io",
+        "extract_point_features_cuda",
+        priority=10,
+        fallback="openmp_cpu",
+        build_flag="cuda",
+        memory_model="static_estimator",
+    ),
     BackendCandidate("extract_point_features", "openmp_cpu", "extract_point_features"),
+    BackendCandidate(
+        "asterism_mutual_nearest",
+        "cuda_host_io",
+        "asterism_mutual_nearest_cuda",
+        priority=10,
+        fallback="openmp_cpu",
+        build_flag="cuda",
+        memory_model="static_estimator",
+    ),
+    BackendCandidate("asterism_mutual_nearest", "openmp_cpu", "asterism_mutual_nearest_cpu"),
+    BackendCandidate("asterism_tokens", "openmp_cpu", "asterism_tokens_cpu"),
+    BackendCandidate("asterism_anchor_votes", "openmp_cpu", "asterism_anchor_votes_cpu"),
     BackendCandidate(
         "matching_cosine_bidirectional_nearest",
         "cuda_host_io",
@@ -129,6 +151,11 @@ _CANDIDATES: tuple[BackendCandidate, ...] = (
     # Public primitive and fused-mask benchmark baseline; the production
     # median detector consumes median_star_mask instead.
     BackendCandidate("median_filter_2d", "openmp_cpu", "median_filter_2d"),
+    BackendCandidate(
+        "median_star_mask", "metal_host_io", "median_filter_2d_metal",
+        priority=9, fallback="openmp_cpu", module_key="metal",
+        build_flag="metal", memory_model="static_estimator",
+    ),
     BackendCandidate("median_star_mask", "openmp_cpu", "median_star_mask_cpu"),
     BackendCandidate("huber_weighted_accumulate", "openmp_cpu", "huber_weighted_accumulate"),
     BackendCandidate("sigma_clip_fused_merge", "openmp_cpu", "sigma_clip_fused_merge"),

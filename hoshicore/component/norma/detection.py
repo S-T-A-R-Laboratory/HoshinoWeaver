@@ -13,7 +13,7 @@ from hoshicore._custom_op import median_star_mask, wavelet_dec_rec
 from hoshicore._custom_op._dispatch import (CustomOpResourceExhaustedError,
                                             CustomOpUnavailableError)
 from hoshicore._custom_op.ops.detection import (
-    StarDetectCapacityError, star_detect_fused_pixel_components)
+    GraySource, StarDetectCapacityError, star_detect_fused_pixel_components)
 
 MIN_STAR_AREA = 10
 STAR_FILTER_PERCENTILE = 10
@@ -683,7 +683,7 @@ def _detect_star_points_opencv(*args, **kwargs) -> DetectedStars:
 
 
 def _detect_star_points_native_hybrid(
-    img_gray: NDArray,
+    img_gray: NDArray | GraySource,
     mask=None,
     resize_length=10000,
     gaussian_ksize: int = 9,
@@ -691,24 +691,31 @@ def _detect_star_points_native_hybrid(
     min_star_points: int = 400,
     mode: str = "auto",
 ) -> DetectedStars:
-    """Run fused native pixel processing with exact OpenCV contour geometry."""
+    """Run fused native pixel processing with exact OpenCV contour geometry.
+
+    A :class:`GraySource` lets the CUDA backend convert the gray on the device;
+    the native stage then reports a constant gray itself.
+    """
     img_shape = img_gray.shape
-    img_gray = _normalize_gray(img_gray)
-    if np.ptp(img_gray) == 0:
-        return _empty_detected_stars()
+    if not isinstance(img_gray, GraySource):
+        img_gray = _normalize_gray(img_gray)
+        if np.ptp(img_gray) == 0:
+            return _empty_detected_stars()
     resize_factor = 1.0
     while max(img_shape) * resize_factor > resize_length:
         resize_factor /= 2.0
 
     while True:
-        component_positions, component_intensities, binary_mask = (
-            star_detect_fused_pixel_components(
-                img_gray,
-                mask,
-                resize_factor,
-                gaussian_ksize=gaussian_ksize,
-                sigma=sigma,
-            ))
+        components = star_detect_fused_pixel_components(
+            img_gray,
+            mask,
+            resize_factor,
+            gaussian_ksize=gaussian_ksize,
+            sigma=sigma,
+        )
+        if components is None:
+            return _empty_detected_stars()
+        component_positions, component_intensities, binary_mask = components
         candidates = _measure_native_hybrid_contour_candidates(
             component_positions, component_intensities, binary_mask, mode=mode)
         candidate_count = len(candidates[0])
@@ -731,7 +738,7 @@ def _detect_star_points_native_hybrid(
 
 
 def detect_star_points(
-    img_gray: NDArray,
+    img_gray: NDArray | GraySource,
     mask=None,
     resize_length=10000,
     gaussian_ksize: int = 9,
@@ -739,7 +746,11 @@ def detect_star_points(
     min_star_points: int = 400,
     mode: str = "auto",
 ) -> DetectedStars:
-    """Detect stars with native pixel work plus exact host contour geometry."""
+    """Detect stars with native pixel work plus exact host contour geometry.
+
+    Explicit contour mode and native fallback materialize a GraySource's host
+    gray only when the contour detector needs it.
+    """
     kwargs = {
         "mask": mask,
         "resize_length": resize_length,
@@ -751,6 +762,8 @@ def detect_star_points(
         raise ValueError(f"Invalid star_detection_mode: {mode!r}")
     logger.debug("Star detection mode: {}", mode)
     if mode == "contour":
+        if isinstance(img_gray, GraySource):
+            img_gray = img_gray.host_gray()
         return _detect_star_points_contour(img_gray, **kwargs)
     try:
         return _detect_star_points_native_hybrid(img_gray, mode=mode, **kwargs)
@@ -772,4 +785,6 @@ def detect_star_points(
             "Native star detector resources exhausted; using contour fallback: {}",
             exc,
         )
+    if isinstance(img_gray, GraySource):
+        img_gray = img_gray.host_gray()
     return _detect_star_points_contour(img_gray, **kwargs)
