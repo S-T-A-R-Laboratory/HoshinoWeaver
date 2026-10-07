@@ -168,7 +168,7 @@ def test_bundle_adjustment_uses_reference_camera_for_every_frame(
     monkeypatch.setattr(op, "_broadcast_outputs", broadcast)
     monkeypatch.setattr(
         bundle_ops.StarDetectionCache, "from_image",
-        staticmethod(lambda image, mask: (
+        staticmethod(lambda image, mask, star_detection_mode="auto": (
             detection_masks.append(mask)
             or SimpleNamespace(pywt_stars=object()))))
     monkeypatch.setattr(bundle_ops, "build_camera_candidate", build_candidate)
