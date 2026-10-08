@@ -26,6 +26,7 @@ set(HNW_PACKAGE_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../hoshicore/_custom_op"
 
 add_library(hnw_ops_common STATIC
     common/backend_info.cpp
+    common/host_parallel_copy.cpp
 )
 
 add_library(hnw_ops_cpu_calibration STATIC
@@ -33,13 +34,21 @@ add_library(hnw_ops_cpu_calibration STATIC
 )
 
 add_library(hnw_ops_cpu_detection STATIC
+    ops/cpu/detection/gray_ops.cpp
     ops/cpu/detection/median_star_mask_ops.cpp
     ops/cpu/detection/star_detect_fused_pixel_components_ops.cpp
 )
 
 add_library(hnw_ops_cpu_alignment STATIC
     ops/cpu/alignment/alignment_ops.cpp
+    ops/cpu/alignment/asterism_match_ops.cpp
+    ops/cpu/alignment/asterism_mutual_nearest_ops.cpp
     ops/cpu/alignment/matching_bidirectional_nearest_ops.cpp
+)
+
+# Token arithmetic must round like NumPy even on targets with FMA.
+set_property(SOURCE ops/cpu/alignment/asterism_match_ops.cpp APPEND PROPERTY
+    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>"
 )
 
 add_library(hnw_ops_cpu_fgp STATIC
@@ -116,7 +125,7 @@ target_link_libraries(hnw_ops_cpu_detection PRIVATE hnw_ops_cpu_wavelet)
 
 pybind11_add_module(_C MODULE
     NO_EXTRAS
-    module.cpp
+    modules/_C.cpp
 )
 
 if(HNW_ENABLE_CUDA)
@@ -125,6 +134,12 @@ if(HNW_ENABLE_CUDA)
         # Alignment matching distance and bidirectional nearest-neighbor reduction.
         ops/cuda/alignment/matching_bidirectional_nearest_ops.cpp
         ops/cuda/alignment/matching_bidirectional_nearest_ops.cu
+        # Asterism-token mutual nearest pairs within a threshold.
+        ops/cuda/alignment/asterism_mutual_nearest_ops.cpp
+        ops/cuda/alignment/asterism_mutual_nearest_ops.cu
+        # Star-point angular-histogram descriptors.
+        ops/cuda/alignment/point_features_ops.cpp
+        ops/cuda/alignment/point_features_ops.cu
         # Fused camera-model remap.
         ops/cuda/remap/camera_model_remap_fused_ops.cpp
         ops/cuda/remap/camera_model_remap_fused_ops.cu
@@ -208,6 +223,7 @@ if(HNW_ENABLE_METAL)
     # Every shader compiles to its own .air; metallib links them into the single
     # library the runtime loads, so kernels can be split per logical op.
     set(HNW_METAL_SHADER_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/ops/metal/filter/median_filter.metal"
         "${CMAKE_CURRENT_SOURCE_DIR}/ops/metal/star_shrink/star_shrink_process.metal"
         "${CMAKE_CURRENT_SOURCE_DIR}/ops/metal/star_shrink/star_mask.metal"
     )
@@ -242,10 +258,12 @@ if(HNW_ENABLE_METAL)
 
     pybind11_add_module(_metal MODULE
         NO_EXTRAS
-        metal/module.mm
+        modules/_metal.mm
         common/metal_runtime.mm
         common/metal_host_io_workspace.mm
+        ops/metal/filter/median_filter_ops.mm
         ops/metal/star_shrink/star_shrink_process_ops.mm
+        ops/metal/star_shrink/star_shrink_dog_process_ops.mm
         ops/metal/star_shrink/star_mask_ops.mm
     )
     add_dependencies(_metal hnw_metal_shaders)

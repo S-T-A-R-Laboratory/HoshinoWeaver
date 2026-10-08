@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
+from loguru import logger
 
 from .._custom_op import median_reduce_chunk, sigma_clip_fused_chunk
 from ..component.data_container import FloatImage
@@ -313,6 +314,7 @@ class BundleAdjustmentOp(BaseOp):
         "exifs": {"type": "sequence", "required": False},
     }
     CONFIGS: dict[str, Any] = {
+        "star_detection_mode": {"type": "str", "default": "auto"},
         "mask": {"type": "image", "default": None},
         "reference_frame_index": {"type": "int", "default": None},
         "method": {"type": "str", "default": "distortion"},
@@ -371,15 +373,17 @@ class BundleAdjustmentOp(BaseOp):
                 f"Unsupported camera_setup_mode {camera_setup_mode!r}; "
                 "expected 'auto' or 'manual'")
         focal_length = configs.get("focal_length_mm")
-        if camera_setup_mode == "auto":
-            focal_length = None
-        elif camera_setup_mode == "manual" and focal_length in (None, ""):
+        if camera_setup_mode == "manual" and focal_length in (None, ""):
             raise ValueError(
                 "focal_length_mm is required when "
                 "camera_setup_mode='manual'")
+        # ``auto`` keeps EXIF as the primary focal source and only falls back to
+        # an explicitly supplied one when EXIF has no usable value; ``manual``
+        # ignores EXIF entirely. The warning below reports the auto case where
+        # EXIF won and the supplied value therefore had no effect.
         focal_equiv = (
             float(focal_length) * float(configs.get("crop_factor") or 1.0)
-            if focal_length is not None else None)
+            if focal_length not in (None, "") else None)
         fallback = float(configs.get("fallback_focal_equiv_mm", 20.0))
         configured_reference = configs.get("reference_frame_index")
         configured_mask = configs.get("mask")
@@ -406,7 +410,8 @@ class BundleAdjustmentOp(BaseOp):
                     configured_mask, array.shape)
                 detection_mask_shape = array.shape[:2]
             detection = await self._run_cpu(
-                StarDetectionCache.from_image, array, detection_mask)
+                StarDetectionCache.from_image, array, detection_mask,
+                star_detection_mode=configs.get("star_detection_mode", "auto"))
             stars = await self._run_cpu(lambda: detection.pywt_stars)
             observations.append((index, stars, array.shape, tags))
             self.tracker.update(self.name)
@@ -437,6 +442,17 @@ class BundleAdjustmentOp(BaseOp):
         shared_candidate = build_camera_candidate(
             camera_tags, reference_array_shape, "distortion",
             configs.get("distortion"), focal_equiv, policy)
+        if (focal_length not in (None, "")
+                and getattr(shared_candidate, "init_source", None) != "manual"):
+            # The value reached the op but the mode resolved the camera from
+            # something else, so silently ignoring it would hide a configuration
+            # mistake (e.g. an EXIF-less sequence falling back to a synthetic
+            # focal while the user supplied the real one).
+            logger.warning(
+                f"{self.name}: focal_length_mm={focal_length} was not used "
+                f"(camera source: "
+                f"{getattr(shared_candidate, 'init_source', 'unknown')}); set "
+                f"camera_setup_mode='manual' to use it")
         reference_shape = reference_array_shape[:2]
         if any(shape[:2] != reference_shape
                for _, _, shape, _ in observations):

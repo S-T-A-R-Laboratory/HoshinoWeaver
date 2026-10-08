@@ -87,6 +87,7 @@ def _rotation_plan():
         rejected_edge_count=1,
         active_camera_parameter_count=0,
         observability_condition=1.5,
+        focal_metadata_ratio=1.42,
     )
 
 
@@ -97,6 +98,7 @@ def test_build_bundle_frame_rotation_export_covers_camera_and_frames():
     assert export.camera.focal_length_mm == 20.0
     assert export.camera.accepted_edge_count == 2
     assert export.camera.observability_condition == 1.5
+    assert export.camera.focal_metadata_ratio == 1.42
 
     assert [f.index for f in export.frames] == [0, 1, 2]
     solved, excluded, _ = export.frames

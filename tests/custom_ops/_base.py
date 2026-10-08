@@ -38,4 +38,3 @@ class CustomOpsTestCase(unittest.TestCase):
         median_ops._select_median_backend.cache_clear()
         sigma_clip_chunk_ops._load_compiled_module_result.cache_clear()
         alignment_ops._load_compiled_module_result.cache_clear()
-        alignment_ops._select_extract_point_features_backend.cache_clear()

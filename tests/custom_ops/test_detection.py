@@ -36,11 +36,218 @@ def _threshold_morph_reference(
     return cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
 
+def _cuda_module_or_skip(test: unittest.TestCase):
+    module, error = detection_ops._load_compiled_module_result()
+    if module is None:
+        test.skipTest(error or "compiled custom ops unavailable")
+    if not module.build_info().get("cuda"):
+        test.skipTest("CUDA fused pixel-component backend is not built")
+    if not module.cuda_memory_info().get("available"):
+        test.skipTest("CUDA runtime unavailable")
+    return module
+
+
+def _starfield_bgr(height: int = 480, width: int = 603, seed: int = 21) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    image = rng.normal(3000.0, 60.0, (height, width, 3))
+    for x, y in rng.integers(12, min(height, width) - 12, size=(120, 2)):
+        cv2.circle(image, (int(x), int(y)), 3, tuple(float(v) for v in rng.uniform(2e4, 6e4, 3)), -1)
+    return np.clip(image, 0, 65535).astype(np.uint16)
+
+
 class TestStarDetectCustomOps(unittest.TestCase):
     def tearDown(self) -> None:
         detection_ops._load_compiled_module_result.cache_clear()
         detection_ops._select_median_star_mask_backend.cache_clear()
         detection_ops._select_star_detect_fused_pixel_components_backend.cache_clear()
+        detection_ops._device_gray_matches.cache_clear()
+
+    def test_device_gray_matches_opencv_ipp_arithmetic_when_compatible(self) -> None:
+        # The device conversion mirrors OpenCV's IPP AVX2/AVX-512 arithmetic;
+        # other OpenCV builds or switches must fail the check (host fallback).
+        module = _cuda_module_or_skip(self)
+        from hoshicore.component.norma.geometry_view import to_gray_f64
+
+        rng = np.random.default_rng(4)
+        config = detection_ops._opencv_gray_config()
+        for dtype in (np.uint8, np.uint16):
+            for channels in (1, 3):
+                with self.subTest(dtype=np.dtype(dtype).name, channels=channels):
+                    if not detection_ops._device_gray_matches(
+                            np.dtype(dtype).str, channels, to_gray_f64, config):
+                        self.skipTest("OpenCV gray is not the IPP arithmetic here")
+                    # Widths 1..20 cover every leftover-pixel count of the SIMD rows.
+                    for width in range(1, 21):
+                        shape = (5, width, 3) if channels == 3 else (5, width)
+                        raw = rng.integers(0, np.iinfo(dtype).max + 1, size=shape, dtype=dtype)
+                        np.testing.assert_array_equal(
+                            module.star_detect_source_gray_cuda(raw), to_gray_f64(raw))
+
+    def _assert_same_detection(self, got, expected) -> None:
+        np.testing.assert_array_equal(got[2], expected[2])
+        # Component order follows GPU atomics; compare in position order.
+        order_got = np.lexsort((got[0][:, 0], got[0][:, 1]))
+        order_expected = np.lexsort((expected[0][:, 0], expected[0][:, 1]))
+        np.testing.assert_array_equal(got[0][order_got], expected[0][order_expected])
+        np.testing.assert_allclose(
+            got[1][order_got], expected[1][order_expected], rtol=1e-12, atol=0.0)
+
+    def _detect_gray_source(self, raw):
+        from hoshicore.component.norma.geometry_view import to_gray_f64
+
+        host_gray = mock.Mock(side_effect=lambda: to_gray_f64(raw))
+        with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "auto"}, clear=False):
+            with mock.patch.object(
+                detection_ops,
+                "_star_detect_fused_pixel_components_source_validated",
+                wraps=detection_ops._star_detect_fused_pixel_components_source_validated,
+            ) as device_path:
+                got = detection_ops.star_detect_fused_pixel_components(
+                    detection_ops.GraySource(raw, to_gray_f64, host_gray=host_gray), None, 1.0)
+        return got, device_path, host_gray
+
+    def test_gray_source_takes_device_or_host_gray_as_verified(self) -> None:
+        _cuda_module_or_skip(self)
+        from hoshicore.component.norma.geometry_view import to_gray_f64
+
+        raw = _starfield_bgr()
+        compatible = detection_ops._device_gray_matches(
+            raw.dtype.str, 3, to_gray_f64, detection_ops._opencv_gray_config())
+        got, device_path, host_gray = self._detect_gray_source(raw)
+
+        if compatible:
+            device_path.assert_called_once()
+            host_gray.assert_not_called()
+        else:
+            device_path.assert_not_called()
+            host_gray.assert_called()
+        expected = detection_ops.star_detect_fused_pixel_components_compiled(
+            to_gray_f64(raw), None, 1.0)
+        self._assert_same_detection(got, expected)
+
+    def test_device_gray_check_reruns_when_opencv_switches_change(self) -> None:
+        _cuda_module_or_skip(self)
+        if not cv2.ipp.useIPP():
+            self.skipTest("OpenCV runs without IPP here")
+        from hoshicore.component.norma.geometry_view import to_gray_f64
+
+        raw = _starfield_bgr(seed=24)
+        source = detection_ops.GraySource(raw, to_gray_f64)
+        detection_ops._device_gray_input(source)
+        misses = detection_ops._device_gray_matches.cache_info().misses
+        cv2.ipp.setUseIPP(False)
+        try:
+            # OpenCV's own SIMD path rounds differently from the IPP arithmetic.
+            self.assertIsNone(detection_ops._device_gray_input(source))
+            self.assertEqual(detection_ops._device_gray_matches.cache_info().misses, misses + 1)
+            got, device_path, host_gray = self._detect_gray_source(raw)
+            device_path.assert_not_called()
+            host_gray.assert_called()
+            expected = detection_ops.star_detect_fused_pixel_components_compiled(
+                to_gray_f64(raw), None, 1.0)
+        finally:
+            cv2.ipp.setUseIPP(True)
+        self._assert_same_detection(got, expected)
+
+    def test_device_gray_check_propagates_cuda_errors_uncached(self) -> None:
+        module = _cuda_module_or_skip(self)
+        from hoshicore.component.norma.geometry_view import to_gray_f64
+
+        raw = _starfield_bgr(seed=25)
+        with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "auto"}, clear=False):
+            with mock.patch.object(
+                module, "star_detect_source_gray_cuda",
+                side_effect=RuntimeError("CUDA error: an illegal memory access was encountered"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "illegal memory access"):
+                    detection_ops.star_detect_fused_pixel_components(
+                        detection_ops.GraySource(raw, to_gray_f64), None, 1.0)
+        self.assertEqual(detection_ops._device_gray_matches.cache_info().currsize, 0)
+
+    def test_device_gray_check_runtime_unavailable_falls_back_to_cpu(self) -> None:
+        module, error = detection_ops._load_compiled_module_result()
+        if module is None:
+            self.skipTest(error or "compiled custom ops unavailable")
+        from hoshicore.component.norma.geometry_view import to_gray_f64
+
+        raw = np.full((8, 9, 3), 100, dtype=np.uint16)
+        raw[4, 4] = 60000
+        expected = (np.zeros((0, 2)), np.zeros(0), np.zeros((8, 9), dtype=np.uint8))
+        cuda_selection = BackendSelection(BackendCandidate(
+            "star_detect_fused_pixel_components", "cuda_host_io",
+            "star_detect_fused_pixel_components_cuda"), object())
+        cpu_selection = BackendSelection(BackendCandidate(
+            "star_detect_fused_pixel_components", "openmp_cpu",
+            "star_detect_fused_pixel_components_cpu"), object())
+        with mock.patch.object(
+                detection_ops, "_select_star_detect_fused_pixel_components_backend",
+                return_value=cuda_selection), \
+                mock.patch.object(
+                    detection_ops, "_device_gray_matches",
+                    side_effect=RuntimeError("no CUDA-capable device is detected")), \
+                mock.patch.object(
+                    backend_registry, "resolve_after_runtime_unavailable",
+                    return_value=cpu_selection), \
+                mock.patch.object(
+                    detection_ops, "_star_detect_fused_pixel_components_cpu_validated",
+                    return_value=expected) as cpu_backend:
+            got = detection_ops.star_detect_fused_pixel_components(
+                detection_ops.GraySource(raw, to_gray_f64), None, 1.0)
+
+        self.assertIs(got, expected)
+        np.testing.assert_array_equal(cpu_backend.call_args.args[0], to_gray_f64(raw))
+
+    def test_gray_source_constant_gray_returns_none(self) -> None:
+        from hoshicore.component.norma.geometry_view import to_gray_f64
+
+        raw = np.full((64, 70, 3), 1234, dtype=np.uint16)
+        preferences = ["cpu"]
+        module, _ = detection_ops._load_compiled_module_result()
+        if module is not None and module.build_info().get("cuda"):
+            preferences.append("auto")
+        for preference in preferences:
+            with self.subTest(preference=preference):
+                detection_ops._select_star_detect_fused_pixel_components_backend.cache_clear()
+                with mock.patch.dict(
+                        "os.environ", {"HNW_CUSTOM_OPS_FALLBACK": preference}, clear=False):
+                    self.assertIsNone(detection_ops.star_detect_fused_pixel_components(
+                        detection_ops.GraySource(raw, to_gray_f64), None, 1.0))
+
+    def test_gray_source_uses_host_gray_when_device_conversion_differs(self) -> None:
+        _cuda_module_or_skip(self)
+        from hoshicore.component.norma.geometry_view import to_gray_f64
+
+        def other_convert(raw):
+            return to_gray_f64(raw) * 0.5
+
+        raw = _starfield_bgr(seed=22)
+        source = detection_ops.GraySource(raw, other_convert)
+        with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "auto"}, clear=False):
+            with mock.patch.object(
+                detection_ops, "_star_detect_fused_pixel_components_source_validated"
+            ) as device_path:
+                got = detection_ops.star_detect_fused_pixel_components(source, None, 1.0)
+
+        device_path.assert_not_called()
+        expected = detection_ops.star_detect_fused_pixel_components_compiled(
+            other_convert(raw), None, 1.0)
+        np.testing.assert_array_equal(got[2], expected[2])
+
+    def test_gray_source_cpu_backend_uses_host_gray(self) -> None:
+        from hoshicore.component.norma.geometry_view import to_gray_f64
+
+        module, error = detection_ops._load_compiled_module_result()
+        if module is None:
+            self.skipTest(error or "compiled custom ops unavailable")
+        raw = _starfield_bgr(seed=23)
+        with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_FALLBACK": "cpu"}, clear=False):
+            got = detection_ops.star_detect_fused_pixel_components(
+                detection_ops.GraySource(raw, to_gray_f64), None, 1.0)
+            expected = detection_ops.star_detect_fused_pixel_components(
+                to_gray_f64(raw), None, 1.0)
+
+        for got_array, expected_array in zip(got, expected):
+            np.testing.assert_array_equal(got_array, expected_array)
 
     def test_median_star_mask_backend_registered(self) -> None:
         candidates = registered_backend_candidates("median_star_mask")
@@ -453,6 +660,58 @@ class TestStarDetectCustomOps(unittest.TestCase):
         self.assertTrue(np.all(component_intensities > 0))
         self.assertEqual(np.count_nonzero(binary_mask[:, 128:]), 0)
 
+    def test_star_detect_fused_pixel_components_cpu_is_thread_count_independent(
+            self) -> None:
+        # Odd shape, border stars and a holed mask reach every border and
+        # non-identity resize branch; the CPU kernel must not depend on the
+        # OpenMP team size (blocked mean, exact percentile selection).
+        rng = np.random.default_rng(7)
+        image = rng.normal(0.1, 0.01, (257, 389))
+        for x, y, value in [(3, 4, 0.8), (385, 252, 0.6), (120, 130, 0.9),
+                            (200, 2, 0.7), (60, 200, 0.5)]:
+            cv2.circle(image, (x, y), 4, value, -1)
+        mask = (rng.random(image.shape) > 0.05).astype(np.uint8)
+
+        for resize_factor, image_mask in ((1.0, None), (1.0, mask), (0.5, mask)):
+            results = []
+            for threads in ("1", "3"):
+                with mock.patch.dict("os.environ", {"HNW_CUSTOM_OPS_THREADS": threads}):
+                    results.append(
+                        detection_ops.star_detect_fused_pixel_components_compiled_cpu(
+                            image, image_mask, resize_factor, gaussian_ksize=9, sigma=2.0))
+            with self.subTest(resize_factor=resize_factor, masked=image_mask is not None):
+                self.assertGreater(len(results[0][1]), 0)
+                for single, team in zip(*results):
+                    np.testing.assert_array_equal(team, single)
+
+    def test_star_detect_cuda_uploaded_mask_matches_implicit_full_mask(self) -> None:
+        # The image and an explicit mask share the pinned staging slots; the
+        # mask upload must not overwrite a slot whose image DMA is in flight.
+        if not build_info().get("cuda"):
+            self.skipTest("CUDA fused pixel-component backend is not built")
+        rng = np.random.default_rng(11)
+        image = rng.normal(0.1, 0.01, (1536, 1800))
+        for x, y in rng.integers(20, 1500, size=(300, 2)):
+            cv2.circle(image, (int(x), int(y)), 3, float(rng.uniform(0.3, 0.9)), -1)
+        full_mask = np.ones(image.shape, dtype=np.uint8)
+        try:
+            implicit = detection_ops.star_detect_fused_pixel_components_compiled(
+                image, None, 1.0, gaussian_ksize=9, sigma=2.0)
+            uploaded = detection_ops.star_detect_fused_pixel_components_compiled(
+                image, full_mask, 1.0, gaussian_ksize=9, sigma=2.0)
+        except RuntimeError as exc:
+            if is_cuda_runtime_unavailable_error(exc):
+                self.skipTest(f"CUDA runtime unavailable: {exc}")
+            raise
+
+        np.testing.assert_array_equal(uploaded[2], implicit[2])
+        # Component order follows GPU atomics; compare in position order.
+        order_a = np.lexsort((implicit[0][:, 0], implicit[0][:, 1]))
+        order_b = np.lexsort((uploaded[0][:, 0], uploaded[0][:, 1]))
+        np.testing.assert_array_equal(uploaded[0][order_b], implicit[0][order_a])
+        np.testing.assert_allclose(
+            uploaded[1][order_b], implicit[1][order_a], rtol=1e-12, atol=0.0)
+
     def test_star_detect_fused_pixel_components_compiled_matches_opencv_on_synthetic(
             self) -> None:
         if not build_info().get("cuda"):
@@ -816,6 +1075,89 @@ class TestStarDetectCustomOps(unittest.TestCase):
                 np.array([3.0], dtype=np.float64),
                 binary_mask,
             )
+
+    def test_relaxed_mapping_accepts_excessive_geometry_mismatch(self) -> None:
+        binary_mask = np.zeros((160, 160), dtype=np.uint8)
+        for x in range(20, 150, 20):
+            cv2.circle(binary_mask, (x, 50), 4, 255, -1)
+        positions, _, intensities, _ = (
+            star_detection._measure_native_hybrid_contour_candidates(
+                np.array([[20., 50.]]), np.array([3.]), binary_mask,
+                mode="native_relaxed"))
+        self.assertEqual(len(positions), 7)
+        np.testing.assert_array_equal(intensities, np.full(7, 3.))
+
+    def test_ineligible_geometry_mismatch_does_not_reject_frame(self) -> None:
+        binary_mask = np.zeros((180, 180), dtype=np.uint8)
+        for y in range(20, 170, 20):
+            cv2.ellipse(binary_mask, (80, y), (12, 3), 0, 0, 360, 255, -1)
+        components = np.array([[82., float(y)] for y in range(20, 170, 20)])
+        positions, _, intensities, eccentricities = (
+            star_detection._measure_native_hybrid_contour_candidates(
+                components, np.full(8, 3.), binary_mask))
+        self.assertEqual(len(positions), 8)
+        self.assertTrue(np.all(eccentricities >= .8))
+        np.testing.assert_array_equal(intensities, np.full(8, 3.))
+
+    def test_contour_mode_skips_native(self) -> None:
+        with mock.patch.object(star_detection, "_detect_star_points_contour") as contour:
+            with mock.patch.object(star_detection, "_detect_star_points_native_hybrid") as native:
+                got = star_detection.detect_star_points(np.zeros((16, 16)), mode="contour")
+        native.assert_not_called()
+        self.assertIs(got, contour.return_value)
+
+    def test_image_cache_contour_and_native_fallback_match_host_gray(self) -> None:
+        from hoshicore.component.norma import geometry_view
+
+        image = _starfield_bgr()
+        mask = np.ones(image.shape[:2], dtype=np.uint8)
+        mask[:32] = 0
+        expected = star_detection.detect_star_points(
+            geometry_view.to_gray_f64(image), mask, mode="contour")
+        self.assertGreater(len(expected.positions), 0)
+
+        for mode in ("auto", "native_relaxed", "contour"):
+            with self.subTest(mode=mode):
+                with mock.patch.object(
+                        geometry_view, "to_gray_f64",
+                        wraps=geometry_view.to_gray_f64) as convert:
+                    with mock.patch.object(
+                            star_detection, "_detect_star_points_native_hybrid",
+                            side_effect=CustomOpUnavailableError("no native backend")) as native:
+                        cache = geometry_view.StarDetectionCache.from_image(
+                            image, mask, star_detection_mode=mode)
+                        convert.assert_not_called()
+                        got = cache.pywt_stars
+                        self.assertIs(cache.pywt_stars, got)
+                        convert.assert_called_once_with(image)
+                        if mode == "contour":
+                            native.assert_not_called()
+                        else:
+                            native.assert_called_once()
+                            self.assertEqual(native.call_args.kwargs["mode"], mode)
+                for name in ("positions", "volumes", "intensities"):
+                    np.testing.assert_array_equal(
+                        getattr(got, name), getattr(expected, name))
+
+    def test_relaxed_mode_keeps_empty_component_guard(self) -> None:
+        binary_mask = np.zeros((32, 32), dtype=np.uint8)
+        cv2.circle(binary_mask, (16, 16), 4, 255, -1)
+        with self.assertRaises(star_detection._NativeHybridGeometryMismatch):
+            star_detection._measure_native_hybrid_contour_candidates(
+                np.empty((0, 2)), np.empty(0), binary_mask,
+                mode="native_relaxed")
+
+    def test_invalid_detection_mode_is_reported(self) -> None:
+        with self.assertRaisesRegex(ValueError, "star_detection_mode"):
+            star_detection.detect_star_points(np.zeros((16, 16)), mode="invalid")
+
+    def test_detection_cache_passes_explicit_mode(self) -> None:
+        from hoshicore.component.norma.geometry_view import StarDetectionCache
+        with mock.patch("hoshicore.component.norma.geometry_view.detect_star_points") as detect:
+            cache = StarDetectionCache.from_image(
+                np.zeros((16, 16)), star_detection_mode="native_relaxed")
+            self.assertIs(cache.pywt_stars, detect.return_value)
+        self.assertEqual(detect.call_args.kwargs["mode"], "native_relaxed")
 
     def test_star_detect_cuda_external_empty_mask_is_not_relaxed(self) -> None:
         if not build_info().get("cuda"):

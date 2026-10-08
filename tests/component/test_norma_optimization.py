@@ -9,9 +9,17 @@ from scipy.optimize import least_squares
 from hoshicore.component.norma.alignment import (
     AlignmentOptimizationError,
     _camera_optimization_state,
+    _relaxed_camera_policies,
     _validate_flexible_optimization,
+    optimize_alignment,
 )
+from hoshicore.component.norma import alignment as alignment_module
+from hoshicore.component.norma.matching import MatchResult
 from hoshicore.component.norma.optimization import (
+    FOCAL_ONLY_FROZEN_TERMS,
+    FOCAL_ONLY_POLICY,
+    ROTATION_ONLY_FROZEN_TERMS,
+    ROTATION_ONLY_POLICY,
     CameraOptimizationPolicy,
     CameraOptimizationState,
     FlexibleOptimizationContext,
@@ -22,6 +30,7 @@ from hoshicore.component.norma.optimization import (
     unpack_flexible_params,
 )
 from hoshicore.component.norma.types import (
+    CameraModel,
     FisheyeCameraModel,
     FisheyeDistortion,
     Intrinsics,
@@ -340,3 +349,183 @@ def test_fisheye_focal_prior_is_context_weight():
     weights = make_flexible_regularization_weights(ctx, x0)
 
     np.testing.assert_allclose(weights, np.array([0.0, 0.0, 0.0, 1.0]))
+
+
+# ---------------------------------------------------------------------------
+# Relaxed camera-policy ladder: a bound hit re-solves with fewer camera
+# degrees of freedom instead of dropping the frame.
+# ---------------------------------------------------------------------------
+
+FULL_POLICY = CameraOptimizationPolicy(True, True, True, 4)
+
+
+def _rung_label(policy: CameraOptimizationPolicy) -> str:
+    if not policy.optimize_focal:
+        return "rotation_only"
+    if not policy.optimize_distortion:
+        return "focal_only"
+    return "requested"
+
+
+def _install_fake_solver(monkeypatch, *, bounded_rungs, failing_rungs=(),
+                         residual_p90_rad):
+    """Script the optimizer and the residual diagnostics per ladder rung."""
+    real_residual_diagnostics = alignment_module.compute_flexible_residual_diagnostics
+
+    def fake_run(x0, ctx, max_nfev=300):
+        width = len(x0)
+        label = _rung_label(ctx.ref_state.policy)
+        if label in failing_rungs:
+            return SimpleNamespace(
+                success=False, x=np.zeros(width), message="fake failure",
+                active_mask=np.zeros(width, dtype=int), jac=np.eye(width))
+        mask = np.zeros(width, dtype=int)
+        if label in bounded_rungs:
+            mask[-1] = 1
+        return SimpleNamespace(success=True, x=np.zeros(width), message="ok",
+                               active_mask=mask, jac=np.eye(width))
+
+    def fake_diagnostics(params_flat, ctx):
+        diagnostics = real_residual_diagnostics(params_flat, ctx)
+        p90 = residual_p90_rad[_rung_label(ctx.ref_state.policy)]
+        diagnostics["raw_angle_p90_rad"] = p90
+        diagnostics["raw_angle_p90_px"] = (
+            p90 * diagnostics["pixel_scale_px_per_rad"])
+        return diagnostics
+
+    monkeypatch.setattr(alignment_module, "run_flexible_optimization",
+                        fake_run)
+    monkeypatch.setattr(alignment_module,
+                        "compute_flexible_residual_diagnostics",
+                        fake_diagnostics)
+
+
+def _matched_pair(count: int = 4) -> MatchResult:
+    points = np.column_stack([np.linspace(100.0, 500.0, count),
+                              np.linspace(120.0, 420.0, count)])
+    return MatchResult(pair_idx=np.arange(count),
+                       ref_pts=points.copy(), src_pts=points.copy(),
+                       rotation=np.eye(3))
+
+
+def _camera() -> CameraModel:
+    return CameraModel(Intrinsics(20.0, 36.0, 24.0, 1200, 800))
+
+
+def test_ladder_keeps_requested_policy_when_it_validates(monkeypatch):
+    _install_fake_solver(
+        monkeypatch, bounded_rungs=set(),
+        residual_p90_rad={"requested": 1e-3, "focal_only": 1e-3,
+                          "rotation_only": 1e-3})
+
+    result = optimize_alignment(_matched_pair(), _camera(), _camera(),
+                                same_camera=True, ref_policy=FULL_POLICY)
+
+    assert result.camera_policy == "requested"
+
+
+def test_ladder_falls_back_to_focal_only_on_bound_hit(monkeypatch):
+    _install_fake_solver(
+        monkeypatch, bounded_rungs={"requested"},
+        residual_p90_rad={"requested": 1e-3, "focal_only": 1.05e-3,
+                          "rotation_only": 1e-3})
+
+    result = optimize_alignment(_matched_pair(), _camera(), _camera(),
+                                same_camera=True, ref_policy=FULL_POLICY)
+
+    assert result.camera_policy == "focal_only"
+
+
+def test_ladder_skips_rung_whose_residual_misses_the_floor(monkeypatch):
+    _install_fake_solver(
+        monkeypatch, bounded_rungs={"requested", "focal_only"},
+        residual_p90_rad={"requested": 1e-2, "focal_only": 5e-3,
+                          "rotation_only": 1e-3})
+
+    result = optimize_alignment(_matched_pair(), _camera(), _camera(),
+                                same_camera=True, ref_policy=FULL_POLICY)
+
+    # focal_only is 5x the rotation-only residual: the simpler rung wins
+    assert result.camera_policy == "rotation_only"
+
+
+def test_ladder_refuses_rung_above_the_pixel_bar(monkeypatch):
+    # 2.7e-3 rad is 1.8 px P90 at this camera (f_px = 667): inside the pixel
+    # bar, so rotation-only is usable, but a rung 1.2x worse is 2.16 px and must
+    # not be accepted just because it is close to a mediocre floor.
+    _install_fake_solver(
+        monkeypatch, bounded_rungs={"requested", "focal_only"},
+        residual_p90_rad={"requested": 2.7e-3, "focal_only": 3.24e-3,
+                          "rotation_only": 2.7e-3})
+
+    result = optimize_alignment(_matched_pair(), _camera(), _camera(),
+                                same_camera=True, ref_policy=FULL_POLICY)
+
+    assert result.camera_policy == "rotation_only"
+
+
+def test_ladder_still_rejects_when_rotation_only_is_not_usable(monkeypatch):
+    _install_fake_solver(
+        monkeypatch, bounded_rungs={"requested"},
+        residual_p90_rad={"requested": 5e-2, "focal_only": 5e-2,
+                          "rotation_only": 5e-2})
+
+    # 5e-2 rad is ~33 px at this camera, far beyond the 2 px quality bar, so the
+    # frame is still rejected: relaxing the camera model must not accept a bad
+    # fit.
+    with pytest.raises(AlignmentOptimizationError,
+                       match="reached optimization bounds"):
+        optimize_alignment(_matched_pair(), _camera(), _camera(),
+                           same_camera=True, ref_policy=FULL_POLICY)
+
+
+def test_ladder_propagates_original_error_when_rotation_only_fails(monkeypatch):
+    _install_fake_solver(
+        monkeypatch, bounded_rungs={"requested"},
+        failing_rungs={"rotation_only"},
+        residual_p90_rad={"requested": 1e-3, "focal_only": 1e-3,
+                          "rotation_only": 1e-3})
+
+    with pytest.raises(AlignmentOptimizationError,
+                       match="reached optimization bounds"):
+        optimize_alignment(_matched_pair(), _camera(), _camera(),
+                           same_camera=True, ref_policy=FULL_POLICY)
+
+
+@pytest.mark.parametrize(
+    ("frozen_terms", "expected_policy"),
+    [
+        (FOCAL_ONLY_FROZEN_TERMS, FOCAL_ONLY_POLICY),
+        (ROTATION_ONLY_FROZEN_TERMS, ROTATION_ONLY_POLICY),
+    ],
+)
+def test_relaxed_rung_flags_match_the_shared_policies(frozen_terms,
+                                                      expected_policy):
+    """The frozen-term tuples and the shared policy objects must not drift."""
+    ref_policy, src_policy = _relaxed_camera_policies(
+        FULL_POLICY, FULL_POLICY, True, frozen_terms)
+
+    assert (ref_policy.optimize_focal,
+            ref_policy.optimize_distortion,
+            ref_policy.optimize_principal_point) == (
+        expected_policy.optimize_focal,
+        expected_policy.optimize_distortion,
+        expected_policy.optimize_principal_point)
+    assert src_policy == ref_policy
+
+
+def test_relaxed_rung_keeps_per_camera_settings():
+    """Freezing flags must not clobber per-camera settings such as n_dist."""
+    fisheye_policy = CameraOptimizationPolicy(
+        True, True, True, 3,
+        principal_point_offset_limit=0.5)
+    perspective_policy = CameraOptimizationPolicy(True, True, True, 4)
+
+    ref_policy, src_policy = _relaxed_camera_policies(
+        fisheye_policy, perspective_policy, False, FOCAL_ONLY_FROZEN_TERMS)
+
+    assert ref_policy.n_dist == 3
+    assert ref_policy.principal_point_offset_limit == pytest.approx(0.5)
+    assert src_policy.n_dist == 4
+    assert not ref_policy.optimize_distortion
+    assert not src_policy.optimize_distortion

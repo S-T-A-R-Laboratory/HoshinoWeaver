@@ -19,6 +19,17 @@ execute(ops, feeders, output_queues)
 | 校验+拓扑 | `build.py` | flat spec → `ValidatedDag`（含 `exec_order`、依赖图、全局声明） |
 | 实例化+布线 | `wiring.py` | `ValidatedDag` + 数据 → Op 实例列表 + feeder 协程 + 输出队列 |
 
+其余引擎模块位于 `hoshicore/engine/`：
+
+| 模块 | 职责 |
+|------|------|
+| `executor.py` | 并发执行节点并传播全局取消 |
+| `registry.py` | `@register_op()` 按类名登记到 `REGISTERED_OP` |
+| `preflight.py` | 估算峰值内存和磁盘需求，并与系统资源比较 |
+| `runtime_plan.py` | 根据可用内存为分块算子规划 `chunk_rows` |
+| `inspect.py` | 不实例化 Op，提取 YAML 参数 schema，供 CLI `--inspect` 使用 |
+| `visualize.py` | 生成展开子图前或展开后的 Mermaid 图 |
+
 ### 关键编译约定
 
 - **命名空间**：子图节点展开后以 `parent.child` 点分隔命名，`rsplit(".", 1)` 解析 link

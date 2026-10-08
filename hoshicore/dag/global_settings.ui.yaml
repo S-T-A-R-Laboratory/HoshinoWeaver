@@ -16,6 +16,15 @@ buffer_mode:
     - {value: "disk",   label: "磁盘缓冲"}
     - {value: "replay", label: "源重放"}
 
+star_detection_mode:
+  label: "星点检测策略"
+  description: "自动模式在校验失败时回退；宽松模式运行更快，主要用于性能与质量诊断，可能影响检测结果；OpenCV 模式用于对照。"
+  widget: select
+  options:
+    - {value: "auto", label: "自动（推荐）"}
+    - {value: "native_relaxed", label: "原生宽松（诊断）"}
+    - {value: "contour", label: "OpenCV（对照）"}
+
 auto_fallback:
   label: "资源不足自动降级"
   description: "预检发现资源不足时，自动降低缓冲策略并继续执行"

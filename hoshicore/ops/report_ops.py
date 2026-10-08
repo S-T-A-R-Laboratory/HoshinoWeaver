@@ -151,6 +151,7 @@ class BundleCameraSummary:
     observability_condition: Optional[float]
     camera_solve_mode: str
     camera_fallback_reason: Optional[str]
+    focal_metadata_ratio: Optional[float] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -188,6 +189,7 @@ def build_bundle_frame_rotation_export(
         observability_condition=plan.observability_condition,
         camera_solve_mode=plan.camera_solve_mode,
         camera_fallback_reason=plan.camera_fallback_reason,
+        focal_metadata_ratio=plan.focal_metadata_ratio,
     )
 
     def _readonly(rotation: Optional[NDArray[np.float64]]):

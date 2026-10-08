@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/compat.h"
+#include "common/default_init_vector.h"
 
 #include <pybind11/pybind11.h>
 
@@ -11,8 +12,10 @@ namespace py = pybind11;
 
 namespace hnw::wavelet {
 
+using Buffer = DefaultInitVector<double>;
+
 struct CpuImage {
-    std::vector<double> values;
+    Buffer values;
     int64_t height = 0;
     int64_t width = 0;
 };

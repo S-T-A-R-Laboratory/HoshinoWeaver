@@ -45,6 +45,7 @@ class StarAlignmentOp(FilterBaseOp):
         "exifs": {"type": "sequence", "required": False},
     }
     CONFIGS: dict[str, Any] = {
+        "star_detection_mode": {"type": "str", "default": "auto"},
         "reference":        {"type": "image",  "required": True},
         "reference_exif":   {"type": "exif",   "default": None},
         "method":           {"type": "str",    "default": "distortion"},
@@ -90,6 +91,10 @@ class StarAlignmentOp(FilterBaseOp):
         configured_src_lens = configs.get('src_lens_type')
         focal_length_mm = configs.get('focal_length_mm')
         crop_factor = configs.get('crop_factor') or 1.0
+        requested_focal = focal_length_mm
+        requested_lens = [value for value in
+                          (shared_lens_type, configured_ref_lens,
+                           configured_src_lens) if value is not None]
 
         # camera_setup_mode is the user-facing controller.  Keep
         # same_camera and the individual lens fields as a backwards-compatible
@@ -100,8 +105,6 @@ class StarAlignmentOp(FilterBaseOp):
                 shared_lens_type = None
                 configured_ref_lens = None
                 configured_src_lens = None
-                focal_length_mm = None
-                crop_factor = 1.0
             elif camera_setup_mode == "manual":
                 same_camera = True
                 configured_ref_lens = None
@@ -155,8 +158,25 @@ class StarAlignmentOp(FilterBaseOp):
             ref_arr.shape, method, init_distortion,
             focal_equiv_mm, ref_policy)
         ref_camera = ref_candidate.camera
+        if (requested_focal not in (None, "")
+                and getattr(ref_candidate, "init_source", None) != "manual"):
+            # EXIF provided the focal, so the supplied value had no effect.
+            logger.warning(
+                f"{self.name}: focal_length_mm={requested_focal} was not used "
+                f"(camera source: "
+                f"{getattr(ref_candidate, 'init_source', 'unknown')}); set "
+                f"camera_setup_mode='manual' to use it")
+        if camera_setup_mode == "auto" and requested_lens:
+            # auto still resolves the projection family from EXIF only, so an
+            # explicitly supplied lens type has no effect (a fisheye would be
+            # modelled as a pinhole without any notice).
+            logger.warning(
+                f"{self.name}: lens type(s) {requested_lens} were not used "
+                f"because camera_setup_mode='auto' infers the projection from "
+                f"EXIF; set camera_setup_mode='manual' to use them")
         ref_detection = await self._run_cpu(
-            StarDetectionCache.from_image, ref_arr)
+            StarDetectionCache.from_image, ref_arr,
+            star_detection_mode=configs.get("star_detection_mode", "auto"))
         if method == "homography" or matching_path == MATCHING_PATH_MEDIAN:
             ref_stars = await self._run_cpu(
                 lambda: ref_detection.median_stars)
@@ -222,7 +242,8 @@ class StarAlignmentOp(FilterBaseOp):
                          bootstrap_scales_tuple, remap_map_scale,
                          guided_refine=guided_refine,
                          matching_path=matching_path,
-                         ref_refine_geo=ref_refine_geo)
+                         ref_refine_geo=ref_refine_geo,
+                         star_detection_mode=configs.get("star_detection_mode", "auto"))
                 else:
                     aligned_arr = await self._run_cpu(
                         align_frame_homography,
@@ -231,6 +252,7 @@ class StarAlignmentOp(FilterBaseOp):
                         ref_arr,
                         float(fallback_focal_equiv_mm),
                         src_camera,
+                        star_detection_mode=configs.get("star_detection_mode", "auto"),
                     )
 
                 aligned = (FloatImage(data=aligned_arr, dtype=frame.dtype)

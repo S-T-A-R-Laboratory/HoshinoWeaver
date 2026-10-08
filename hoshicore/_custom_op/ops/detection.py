@@ -15,12 +15,14 @@ from hoshicore._custom_op._dispatch import apply_compiled_threads as _apply_comp
 from hoshicore._custom_op._dispatch import debug_log
 from hoshicore._custom_op._dispatch import fallback_preference as _fallback_preference
 from hoshicore._custom_op._dispatch import load_compiled_module as _load_compiled_module_result
+from hoshicore._custom_op.backend_registry import run_with_accelerator_fallback
 from hoshicore._custom_op.backend_registry import BackendSelection
 from hoshicore._custom_op.backend_registry import resolve_after_cuda_failure
 from hoshicore._custom_op.backend_registry import select_backend as _select_backend
 from hoshicore._custom_op.cuda_memory import cuda_memory_estimate
 from hoshicore._custom_op.cuda_memory import run_admitted_cuda as _run_admitted_cuda
 from hoshicore._custom_op.ops.filter import median_filter_2d_numpy as _median_filter_2d_numpy
+from hoshicore._custom_op.ops.filter import median_filter_2d_compiled_metal
 from hoshicore._custom_op.ops.wavelet import _wavelet_level
 
 
@@ -162,6 +164,32 @@ def median_star_mask_cpu_compiled(
     return star_mask, response, float(threshold)
 
 
+def median_star_mask_compiled_metal(
+    image: np.ndarray,
+    median_ksize: int = 13,
+    threshold_ratio: float = 1.0,
+    open_ksize: int = 3,
+    dilate_ksize: int = 0,
+    mask: np.ndarray | None = None,
+) -> tuple[NDArray[np.uint8], NDArray[np.float32], float]:
+    image_arr, mask_u8 = _validate_median_star_mask_inputs(image, mask)
+    median_ksize, threshold_ratio, open_ksize, dilate_ksize = (
+        _validate_median_star_mask_params(
+            median_ksize, threshold_ratio, open_ksize, dilate_ksize)
+    )
+    if image_arr.dtype != np.uint16 or median_ksize != 13:
+        raise ValueError("Metal median star mask requires uint16 input and ksize=13")
+    module, _ = _load_compiled_module_result()
+    if module is None or not hasattr(module, "median_star_mask_with_background_cpu"):
+        raise RuntimeError("compiled median star mask finisher is unavailable")
+    background = median_filter_2d_compiled_metal(image_arr, median_ksize)
+    _apply_compiled_threads("median_star_mask", image_arr)
+    star_mask, response, threshold = module.median_star_mask_with_background_cpu(
+        image_arr, background, median_ksize, threshold_ratio,
+        open_ksize, dilate_ksize, mask_u8)
+    return star_mask, response, float(threshold)
+
+
 @lru_cache(maxsize=3)
 def _select_median_star_mask_backend(preference: str) -> BackendSelection:
     return _select_backend(
@@ -169,6 +197,16 @@ def _select_median_star_mask_backend(preference: str) -> BackendSelection:
         preference,
         load_module=_load_compiled_module_result,
     )
+
+
+def _median_star_mask_backend(selection: BackendSelection) -> tuple[str, Callable]:
+    if not selection.native or selection.candidate is None:
+        return "numpy", median_star_mask_numpy
+    if selection.candidate.backend == "metal_host_io":
+        return "metal", median_star_mask_compiled_metal
+    if selection.candidate.backend == "openmp_cpu":
+        return "cpu", median_star_mask_cpu_compiled
+    raise RuntimeError(f"unknown median star mask backend: {selection.candidate}")
 
 
 def median_star_mask(
@@ -181,18 +219,22 @@ def median_star_mask(
 ) -> tuple[NDArray[np.uint8], NDArray[np.float32], float]:
     preference = _fallback_preference()
     selection = _select_median_star_mask_backend(preference)
-    backend = (
-        median_star_mask_cpu_compiled
-        if selection.native
-        else median_star_mask_numpy
-    )
-    return backend(
-        image,
-        median_ksize=median_ksize,
-        threshold_ratio=threshold_ratio,
-        open_ksize=open_ksize,
-        dilate_ksize=dilate_ksize,
-        mask=mask,
+    if selection.candidate is not None and selection.candidate.backend == "metal_host_io":
+        supported = np.asarray(image).dtype == np.uint16 and median_ksize == 13
+        module, _ = _load_compiled_module_result() if supported else (None, None)
+        if module is None or not hasattr(module, "median_star_mask_with_background_cpu"):
+            selection = _select_backend(
+                "median_star_mask", preference,
+                load_module=_load_compiled_module_result,
+                exclude_backends={"metal_host_io"},
+            )
+    return run_with_accelerator_fallback(
+        "median_star_mask", selection, _median_star_mask_backend,
+        lambda backend: backend(
+            image, median_ksize=median_ksize, threshold_ratio=threshold_ratio,
+            open_ksize=open_ksize, dilate_ksize=dilate_ksize, mask=mask),
+        load_module=_load_compiled_module_result,
+        log=_debug_log,
     )
 
 
@@ -244,6 +286,56 @@ def star_detect_threshold_morph_numpy(
     return cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
 
+class GraySource:
+    """An image standing for the detection gray ``convert(raw)``.
+
+    ``raw`` is the source image and ``convert`` the host conversion (Norma's
+    ``to_gray_f64``). The CUDA backend uploads a uint8/uint16 (H, W) or
+    (H, W, 3) BGR ``raw`` and converts it on the device once that is verified
+    to reproduce ``convert`` exactly; other backends use ``host_gray()``.
+    """
+
+    __slots__ = ("raw", "_convert", "_host_gray", "_gray")
+
+    def __init__(
+        self,
+        raw: np.ndarray,
+        convert: Callable[[np.ndarray], NDArray[np.float64]],
+        host_gray: Callable[[], NDArray[np.float64]] | None = None,
+    ) -> None:
+        self.raw = raw
+        self._convert = convert
+        self._host_gray = host_gray
+        self._gray: NDArray[np.float64] | None = None
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return tuple(self.raw.shape[:2])
+
+    def host_gray(self) -> NDArray[np.float64]:
+        if self._gray is None:
+            self._gray = (self._host_gray() if self._host_gray is not None
+                          else self._convert(self.raw))
+        return self._gray
+
+
+def _validate_fused_pixel_component_mask(
+    mask: np.ndarray | None,
+    shape: tuple[int, int],
+) -> NDArray[np.uint8] | None:
+    if mask is None:
+        return None
+    mask_arr = np.asarray(mask)
+    if mask_arr.ndim != 2 or mask_arr.shape != tuple(shape):
+        raise ValueError(
+            "star_detect_fused_pixel_components: mask shape must match image"
+        )
+    mask_u8 = (mask_arr > 0).astype(np.uint8, copy=False)
+    if not mask_u8.flags.c_contiguous:
+        mask_u8 = np.ascontiguousarray(mask_u8)
+    return mask_u8
+
+
 def _validate_fused_pixel_component_inputs(
     image: np.ndarray,
     mask: np.ndarray | None,
@@ -257,18 +349,62 @@ def _validate_fused_pixel_component_inputs(
         )
     if not image_arr.flags.c_contiguous:
         image_arr = np.ascontiguousarray(image_arr)
+    return image_arr, _validate_fused_pixel_component_mask(mask, image_arr.shape)
 
-    if mask is None:
-        return image_arr, None
-    mask_arr = np.asarray(mask)
-    if mask_arr.ndim != 2 or mask_arr.shape != image_arr.shape:
-        raise ValueError(
-            "star_detect_fused_pixel_components: mask shape must match image"
-        )
-    mask_u8 = (mask_arr > 0).astype(np.uint8, copy=False)
-    if not mask_u8.flags.c_contiguous:
-        mask_u8 = np.ascontiguousarray(mask_u8)
-    return image_arr, mask_u8
+
+# Widths covering every leftover-pixel count of the conversion's SIMD blocks.
+_GRAY_PROBE_WIDTHS = (*range(1, 18), 64)
+
+
+def _opencv_gray_config() -> tuple[bool, ...]:
+    """OpenCV switches that select its float BGR->GRAY implementation."""
+    config = [cv2.useOptimized(), cv2.ipp.useIPP()]
+    if hasattr(cv2.ipp, "useIPP_NotExact"):
+        config.append(cv2.ipp.useIPP_NotExact())
+    return tuple(config)
+
+
+@lru_cache(maxsize=8)
+def _device_gray_matches(
+    dtype: str,
+    channels: int,
+    convert: Callable[[np.ndarray], NDArray[np.float64]],
+    opencv_config: tuple[bool, ...],
+) -> bool:
+    """Whether the device conversion reproduces ``convert`` bit for bit.
+
+    It mirrors OpenCV's IPP float BGR->GRAY arithmetic, which other OpenCV
+    builds, CPUs or runtime switches may not share, so the check runs once per
+    format and ``opencv_config``. CUDA errors propagate uncached.
+    """
+    del opencv_config  # cache key only
+    module, _ = _load_compiled_module_result()
+    if module is None or not hasattr(module, "star_detect_source_gray_cuda"):
+        return False
+    rng = np.random.default_rng(0)
+    info = np.iinfo(np.dtype(dtype))
+    for width in _GRAY_PROBE_WIDTHS:
+        shape = (3, width, 3) if channels == 3 else (3, width)
+        probe = rng.integers(0, int(info.max) + 1, size=shape, dtype=np.dtype(dtype))
+        if not np.array_equal(module.star_detect_source_gray_cuda(probe), convert(probe)):
+            _debug_log(f"device gray differs from the host conversion for {dtype} x{channels}")
+            return False
+    return True
+
+
+def _device_gray_input(source: GraySource) -> np.ndarray | None:
+    raw = source.raw
+    if raw.dtype not in (np.uint8, np.uint16):
+        return None
+    if not (raw.ndim == 2 or (raw.ndim == 3 and raw.shape[2] == 3)):
+        return None
+    if min(raw.shape[:2]) <= 0:
+        return None
+    channels = 3 if raw.ndim == 3 else 1
+    if not _device_gray_matches(raw.dtype.str, channels, source._convert,
+                                _opencv_gray_config()):
+        return None
+    return np.ascontiguousarray(raw)
 
 
 def _fused_pixel_component_kernel_params(
@@ -340,6 +476,37 @@ def _star_detect_fused_pixel_components_native_validated(
     return _run_admitted_cuda(estimate, kernel, *kernel_args)
 
 
+def _star_detect_fused_pixel_components_source_validated(
+    raw: np.ndarray,
+    mask_u8: NDArray[np.uint8] | None,
+    resize_factor: float,
+    gaussian_ksize: int = 9,
+    sigma: float = 2.0,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.uint8]] | None:
+    """CUDA detection of a device-converted gray; None when it is constant."""
+    module, _ = _load_compiled_module_result()
+    kernel_name = "star_detect_fused_pixel_components_cuda_from_source"
+    if module is None or not hasattr(module, kernel_name):
+        raise RuntimeError("compiled custom op backend is unavailable")
+    small_height, small_width, level, gaussian_kernel = (
+        _fused_pixel_component_kernel_params(
+            raw.shape[:2], resize_factor, gaussian_ksize, sigma)
+    )
+    # The source is staged in the blur-row buffer, so the peak is unchanged.
+    estimate = cuda_memory_estimate(
+        "star_detect_fused_pixel_components",
+        height=raw.shape[0],
+        width=raw.shape[1],
+        small_height=small_height,
+        small_width=small_width,
+        level=level,
+        gaussian_ksize=gaussian_kernel.size,
+    )
+    return _run_admitted_cuda(
+        estimate, getattr(module, kernel_name), raw, mask_u8,
+        small_height, small_width, level, gaussian_kernel)
+
+
 def _star_detect_fused_pixel_components_compiled_validated(
     image_arr: NDArray[np.float64],
     mask_u8: NDArray[np.uint8] | None,
@@ -395,6 +562,28 @@ def star_detect_fused_pixel_components_compiled(
     )
 
 
+def star_detect_fused_pixel_components_compiled_source(
+    source: GraySource,
+    mask: np.ndarray | None,
+    resize_factor: float,
+    gaussian_ksize: int = 9,
+    sigma: float = 2.0,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.uint8]] | None:
+    """CUDA detection of a :class:`GraySource`, converted on the device when
+    verified and on the host otherwise; None when its gray is constant."""
+    mask_u8 = _validate_fused_pixel_component_mask(mask, source.shape)
+    raw = _device_gray_input(source)
+    if raw is not None:
+        return _star_detect_fused_pixel_components_source_validated(
+            raw, mask_u8, resize_factor, gaussian_ksize, sigma)
+    gray = source.host_gray()
+    if np.ptp(gray) == 0:
+        return None
+    return _star_detect_fused_pixel_components_compiled_validated(
+        _validate_fused_pixel_component_inputs(gray, None)[0], mask_u8, resize_factor,
+        gaussian_ksize, sigma)
+
+
 def star_detect_fused_pixel_components_compiled_cpu(
     image: np.ndarray,
     mask: np.ndarray | None,
@@ -443,7 +632,7 @@ def _star_detect_fused_pixel_components_backend(
 
 
 def star_detect_fused_pixel_components(
-    image: np.ndarray,
+    image: np.ndarray | GraySource,
     mask: np.ndarray | None,
     resize_factor: float,
     gaussian_ksize: int = 9,
@@ -452,21 +641,43 @@ def star_detect_fused_pixel_components(
     NDArray[np.float64],
     NDArray[np.float64],
     NDArray[np.uint8],
-]:
-    image_arr, mask_u8 = _validate_fused_pixel_component_inputs(image, mask)
+] | None:
+    """Fused native pixel stage of star detection.
+
+    ``image`` is a float64 gray, or a :class:`GraySource` whose gray the CUDA
+    backend may convert on the device; for a source, returns None when its
+    gray is constant.
+    """
+    source = image if isinstance(image, GraySource) else None
+    if source is None:
+        image_arr, mask_u8 = _validate_fused_pixel_component_inputs(image, mask)
+    else:
+        mask_u8 = _validate_fused_pixel_component_mask(mask, source.shape)
     preference = _fallback_preference()
     selection = _select_star_detect_fused_pixel_components_backend(preference)
     backend_name, backend = _star_detect_fused_pixel_components_backend(selection)
-    kernel_args = (
-        image_arr,
-        mask_u8,
-        resize_factor,
-        int(gaussian_ksize),
-        float(sigma),
-    )
+
+    def host_args():
+        gray = image_arr if source is None else source.host_gray()
+        if source is not None:
+            if np.ptp(gray) == 0:
+                return None
+            gray = _validate_fused_pixel_component_inputs(gray, None)[0]
+        return gray, mask_u8, resize_factor, int(gaussian_ksize), float(sigma)
+
     if backend_name != "cuda":
-        return backend(*kernel_args)
+        kernel_args = host_args()
+        return None if kernel_args is None else backend(*kernel_args)
     try:
+        # The device-gray check runs CUDA too, so its failures take the same
+        # fallback path as the detection kernel.
+        device_raw = _device_gray_input(source) if source is not None else None
+        if device_raw is not None:
+            return _star_detect_fused_pixel_components_source_validated(
+                device_raw, mask_u8, resize_factor, int(gaussian_ksize), float(sigma))
+        kernel_args = host_args()
+        if kernel_args is None:
+            return None
         return backend(*kernel_args)
     except RuntimeError as exc:
         if _is_native_star_detect_capacity_error(exc):
@@ -492,4 +703,7 @@ def star_detect_fused_pixel_components(
     )
     if fallback_name == "cuda":
         raise RuntimeError("CUDA backend remained selected after runtime exclusion")
+    kernel_args = host_args()
+    if kernel_args is None:
+        return None
     return fallback_backend(*kernel_args)

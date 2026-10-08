@@ -1,6 +1,11 @@
 
 # Time Cost
 
+> 历史 CPU 管线剖析，保留作为当时的测量记录。下文耗时、优先级和预计收益
+> 不代表当前 custom-op 管线，也不构成待办：remap、检测、features 和 asterism
+> 已有后续实现。当前收尾与验证状态见
+> [custom-op 对齐加速记录](custom_op_alignment_acceleration.md)。
+
 ## Baseline
 
 1000 images, 24MP, uint16

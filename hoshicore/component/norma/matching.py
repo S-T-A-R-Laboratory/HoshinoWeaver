@@ -12,6 +12,9 @@ from scipy.spatial import distance as spd
 from hoshicore._custom_op import (
     extract_point_features as custom_extract_point_features,
 )
+from hoshicore._custom_op import asterism_anchor_votes
+from hoshicore._custom_op import asterism_mutual_nearest
+from hoshicore._custom_op import asterism_tokens
 from hoshicore._custom_op import matching_cosine_bidirectional_nearest
 
 
@@ -663,52 +666,8 @@ def extract_asterism_tokens(
     long_anchor_edge`` and ``log(long_anchor_edge)``. Unit-sphere chord lengths
     avoid inverse trigonometry while remaining rotation invariant.
     """
-    vectors = np.asarray(vectors, dtype=np.float64)
-    if vectors.ndim != 2 or vectors.shape[1:] != (3,):
-        raise ValueError("asterism tokens require an (N, 3) vector array")
-    if not np.all(np.isfinite(vectors)):
-        raise ValueError("asterism tokens require finite vectors")
-    if neighbor_count < 2:
-        raise ValueError("asterism neighbor_count must be at least 2")
-    if len(vectors) < 3:
-        raise ValueError("asterism tokens require at least 3 stars")
-
-    norms = np.linalg.norm(vectors, axis=1)
-    if np.any(norms <= 1e-12):
-        raise ValueError("asterism tokens require non-zero vectors")
-    unit = vectors / norms[:, np.newaxis]
-    k = min(int(neighbor_count), len(unit) - 1)
-    _, neighbor_indices = cKDTree(unit).query(unit, k=k + 1)
-    neighbor_indices = np.asarray(neighbor_indices[:, 1:], dtype=np.int32)
-
-    neighbor_vectors = unit[neighbor_indices]
-    anchor_dot = np.sum(unit[:, np.newaxis, :] * neighbor_vectors, axis=2)
-    anchor_edges = np.sqrt(
-        np.maximum(2.0 - 2.0 * np.clip(anchor_dot, -1.0, 1.0), 0.0))
-    left, right = np.triu_indices(k, k=1)
-    first_edge = anchor_edges[:, left]
-    second_edge = anchor_edges[:, right]
-    short_edge = np.minimum(first_edge, second_edge)
-    long_edge = np.maximum(first_edge, second_edge)
-
-    first_neighbor = neighbor_vectors[:, left, :]
-    second_neighbor = neighbor_vectors[:, right, :]
-    neighbor_dot = np.sum(first_neighbor * second_neighbor, axis=2)
-    neighbor_edge = np.sqrt(
-        np.maximum(2.0 - 2.0 * np.clip(neighbor_dot, -1.0, 1.0), 0.0))
-
-    valid = long_edge > 1e-12
-    values = np.stack((
-        short_edge[valid] / long_edge[valid],
-        neighbor_edge[valid] / long_edge[valid],
-        np.log(long_edge[valid]),
-    ), axis=1)
-    anchor_grid = np.broadcast_to(
-        np.arange(len(unit), dtype=np.int32)[:, np.newaxis], long_edge.shape)
-    return AsterismTokens(
-        values=np.ascontiguousarray(values, dtype=np.float64),
-        anchor_indices=np.ascontiguousarray(anchor_grid[valid], dtype=np.int32),
-    )
+    values, anchor_indices = asterism_tokens(vectors, neighbor_count)
+    return AsterismTokens(values=values, anchor_indices=anchor_indices)
 
 
 def find_asterism_initial_match(
@@ -733,73 +692,29 @@ def find_asterism_initial_match(
     ], dtype=np.float64)
     values1 = tokens1.values / scale
     values2 = tokens2.values / scale
-    distance12, nearest12 = cKDTree(values2).query(values1, k=1)
-    distance21, nearest21 = cKDTree(values1).query(values2, k=1)
-    token_indices1 = np.arange(len(values1), dtype=np.int64)
-    mutual = (
-        np.isfinite(distance12)
-        & (distance12 <= config.token_distance_threshold)
-        & (nearest21[nearest12] == token_indices1)
-        & (distance21[nearest12] <= config.token_distance_threshold)
-    )
-    if not np.any(mutual):
+    token_pairs1, token_pairs2 = asterism_mutual_nearest(
+        values1, values2, config.token_distance_threshold)
+    if len(token_pairs1) == 0:
         logger.debug("Asterism match: no mutually compatible tokens")
         return np.empty((0, 2), dtype=np.int32)
 
-    token_pairs1 = token_indices1[mutual]
-    token_pairs2 = nearest12[mutual]
-    anchor1 = tokens1.anchor_indices[token_pairs1].astype(np.int64)
-    anchor2 = tokens2.anchor_indices[token_pairs2].astype(np.int64)
-    num2 = len(vectors2)
-    pair_codes = anchor1 * num2 + anchor2
-    unique_codes, votes = np.unique(pair_codes, return_counts=True)
-    pair_anchor1 = unique_codes // num2
-    pair_anchor2 = unique_codes % num2
-
-    best2_for_1 = np.full(len(vectors1), -1, dtype=np.int64)
-    best_votes1 = np.zeros(len(vectors1), dtype=np.int32)
-    second_votes1 = np.zeros(len(vectors1), dtype=np.int32)
-    best1_for_2 = np.full(len(vectors2), -1, dtype=np.int64)
-    best_votes2 = np.zeros(len(vectors2), dtype=np.int32)
-    second_votes2 = np.zeros(len(vectors2), dtype=np.int32)
-
-    for first, second, vote_count in zip(pair_anchor1, pair_anchor2, votes):
-        if vote_count > best_votes1[first]:
-            second_votes1[first] = best_votes1[first]
-            best_votes1[first] = vote_count
-            best2_for_1[first] = second
-        elif vote_count > second_votes1[first]:
-            second_votes1[first] = vote_count
-
-        if vote_count > best_votes2[second]:
-            second_votes2[second] = best_votes2[second]
-            best_votes2[second] = vote_count
-            best1_for_2[second] = first
-        elif vote_count > second_votes2[second]:
-            second_votes2[second] = vote_count
-
-    first_indices = np.flatnonzero(
-        (best2_for_1 >= 0)
-        & (best_votes1 >= config.min_votes)
-        & ((best_votes1 - second_votes1) >= config.min_vote_margin))
-    second_indices = best2_for_1[first_indices]
-    accepted = (
-        (best1_for_2[second_indices] == first_indices)
-        & (best_votes2[second_indices] >= config.min_votes)
-        & ((best_votes2[second_indices] - second_votes2[second_indices])
-           >= config.min_vote_margin)
+    pair_idx, voted_pairs, accepted_votes = asterism_anchor_votes(
+        token_pairs1,
+        token_pairs2,
+        tokens1.anchor_indices,
+        tokens2.anchor_indices,
+        len(vectors1),
+        len(vectors2),
+        config.min_votes,
+        config.min_vote_margin,
     )
-    pair_idx = np.column_stack(
-        (first_indices[accepted], second_indices[accepted])).astype(
-            np.int32, copy=False)
-    accepted_votes = best_votes1[first_indices[accepted]]
     logger.debug(
         "Asterism match: tokens={}/{} mutual_tokens={} voted_pairs={} "
         "accepted_pairs={} votes_min/median/max={}/{:.1f}/{}",
         len(tokens1.values),
         len(tokens2.values),
-        int(np.count_nonzero(mutual)),
-        len(unique_codes),
+        len(token_pairs1),
+        voted_pairs,
         len(pair_idx),
         int(np.min(accepted_votes)) if len(accepted_votes) else 0,
         float(np.median(accepted_votes)) if len(accepted_votes) else 0.0,

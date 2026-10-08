@@ -2,14 +2,20 @@
 
 #include "common/compat.h"
 #include "common/cpu_compat.h"
+#include "common/default_init_vector.h"
 #include "common/wavelet_geometry.h"
 #include "ops/cpu/wavelet/wavelet_ops.h"
 
 #include <pybind11/numpy.h>
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -17,6 +23,8 @@
 #include <vector>
 
 namespace {
+
+using hnw::wavelet::Buffer;
 
 int64_t reflect101(int64_t index, const int64_t length) {
     if (length <= 1) {
@@ -35,11 +43,19 @@ void gaussian_rows(const double* input, double* output, const double* kernel, co
 #pragma omp parallel for schedule(static)
 #endif
     for (int64_t y = 0; y < height; ++y) {
+        const double* row = input + y * width;
         for (int64_t x = 0; x < width; ++x) {
             double value = 0.0;
-            for (int64_t k = 0; k < kernel_size; ++k) {
-                const int64_t xx = reflect101(x + k - radius, width);
-                value += input[y * width + xx] * kernel[k];
+            if (x >= radius && x + radius < width) {
+                const double* taps = row + x - radius;
+                for (int64_t k = 0; k < kernel_size; ++k) {
+                    value += taps[k] * kernel[k];
+                }
+            } else {
+                for (int64_t k = 0; k < kernel_size; ++k) {
+                    const int64_t xx = reflect101(x + k - radius, width);
+                    value += row[xx] * kernel[k];
+                }
             }
             output[y * width + x] = value;
         }
@@ -53,11 +69,19 @@ void gaussian_cols(const double* input, double* output, const double* kernel, co
 #pragma omp parallel for schedule(static)
 #endif
     for (int64_t y = 0; y < height; ++y) {
+        const bool interior = y >= radius && y + radius < height;
         for (int64_t x = 0; x < width; ++x) {
             double value = 0.0;
-            for (int64_t k = 0; k < kernel_size; ++k) {
-                const int64_t yy = reflect101(y + k - radius, height);
-                value += input[yy * width + x] * kernel[k];
+            if (interior) {
+                const double* taps = input + (y - radius) * width + x;
+                for (int64_t k = 0; k < kernel_size; ++k) {
+                    value += taps[k * width] * kernel[k];
+                }
+            } else {
+                for (int64_t k = 0; k < kernel_size; ++k) {
+                    const int64_t yy = reflect101(y + k - radius, height);
+                    value += input[yy * width + x] * kernel[k];
+                }
             }
             output[y * width + x] = value;
         }
@@ -102,77 +126,294 @@ void resize_linear(const double* input, double* output, const int64_t input_heig
     }
 }
 
-double percentile_995(std::vector<double>* values) {
-    if (values->empty()) {
+int max_team_size() {
+#if defined(_OPENMP)
+    return omp_get_max_threads();
+#else
+    return 1;
+#endif
+}
+
+int team_index() {
+#if defined(_OPENMP)
+    return omp_get_thread_num();
+#else
+    return 0;
+#endif
+}
+
+// Order-preserving map from a double to an unsigned key (IEEE-754 order).
+inline uint64_t order_key(const double value) {
+    uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return (bits >> 63) != 0 ? ~bits : bits | (uint64_t{1} << 63);
+}
+
+constexpr int SELECT_DIGIT_BITS = 16;
+constexpr size_t SELECT_BINS = size_t{1} << SELECT_DIGIT_BITS;
+
+// Masked-value counts per 16-bit key digit at `digit_shift`, limited to keys
+// whose higher bits equal `prefix` (no limit for the top digit).
+std::vector<uint64_t> masked_digit_histogram(const double* values, const uint8_t* mask,
+                                             const int64_t total, const int digit_shift,
+                                             const uint64_t prefix) {
+    const bool has_prefix = digit_shift + SELECT_DIGIT_BITS < 64;
+    const int prefix_shift = digit_shift + SELECT_DIGIT_BITS;
+    std::vector<uint32_t> local(static_cast<size_t>(max_team_size()) * SELECT_BINS, 0);
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+        uint32_t* counts = local.data() + static_cast<size_t>(team_index()) * SELECT_BINS;
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+        for (int64_t index = 0; index < total; ++index) {
+            if (mask[index] == 0) {
+                continue;
+            }
+            const uint64_t key = order_key(values[index]);
+            if (has_prefix && (key >> prefix_shift) != prefix) {
+                continue;
+            }
+            ++counts[(key >> digit_shift) & (SELECT_BINS - 1)];
+        }
+    }
+    std::vector<uint64_t> merged(SELECT_BINS, 0);
+    for (size_t offset = 0; offset < local.size(); offset += SELECT_BINS) {
+        for (size_t bin = 0; bin < SELECT_BINS; ++bin) {
+            merged[bin] += local[offset + bin];
+        }
+    }
+    return merged;
+}
+
+// Masked values whose key shares the top 32 bits located by two radix passes
+// (the first pass histogram is supplied), with `rank` rebased into them.
+std::vector<double> masked_rank_candidates(const double* values, const uint8_t* mask,
+                                           const int64_t total,
+                                           const std::vector<uint64_t>& top_histogram,
+                                           uint64_t* rank) {
+    uint64_t prefix = 0;
+    std::vector<uint64_t> histogram = top_histogram;
+    for (int digit_shift = 64 - SELECT_DIGIT_BITS; digit_shift >= 32;
+         digit_shift -= SELECT_DIGIT_BITS) {
+        if (digit_shift != 64 - SELECT_DIGIT_BITS) {
+            histogram = masked_digit_histogram(values, mask, total, digit_shift, prefix);
+        }
+        size_t bin = 0;
+        while (*rank >= histogram[bin]) {
+            *rank -= histogram[bin];
+            ++bin;
+        }
+        prefix = (prefix << SELECT_DIGIT_BITS) | bin;
+    }
+
+    std::vector<std::vector<double>> local(static_cast<size_t>(max_team_size()));
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+        std::vector<double>& part = local[static_cast<size_t>(team_index())];
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+        for (int64_t index = 0; index < total; ++index) {
+            if (mask[index] != 0 && (order_key(values[index]) >> 32) == prefix) {
+                part.push_back(values[index]);
+            }
+        }
+    }
+    std::vector<double> candidates;
+    for (const std::vector<double>& part : local) {
+        candidates.insert(candidates.end(), part.begin(), part.end());
+    }
+    return candidates;
+}
+
+// Smallest masked value strictly above `lower`, or `lower` itself when it
+// repeats past sorted position `upper_index`.
+double masked_next_value(const double* values, const uint8_t* mask, const int64_t total,
+                         const double lower, const size_t upper_index) {
+    int64_t not_above = 0;
+    double above_min = std::numeric_limits<double>::infinity();
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+        int64_t local_not_above = 0;
+        double local_above_min = std::numeric_limits<double>::infinity();
+#if defined(_OPENMP)
+#pragma omp for schedule(static) nowait
+#endif
+        for (int64_t index = 0; index < total; ++index) {
+            if (mask[index] == 0) {
+                continue;
+            }
+            const double value = values[index];
+            if (lower < value) {
+                local_above_min = std::min(local_above_min, value);
+            } else {
+                ++local_not_above;
+            }
+        }
+#if defined(_OPENMP)
+#pragma omp critical(hnw_star_detect_percentile)
+#endif
+        {
+            not_above += local_not_above;
+            above_min = std::min(above_min, local_above_min);
+        }
+    }
+    return not_above > static_cast<int64_t>(upper_index) ? lower : above_min;
+}
+
+// np.percentile(values[mask], 99.5) with linear interpolation. The ranks are
+// selected exactly (the values nth_element returns) without compacting the
+// masked values.
+double masked_percentile_995(const double* values, const uint8_t* mask, const int64_t total) {
+    const std::vector<uint64_t> top_histogram =
+        masked_digit_histogram(values, mask, total, 64 - SELECT_DIGIT_BITS, 0);
+    uint64_t count = 0;
+    for (const uint64_t bin_count : top_histogram) {
+        count += bin_count;
+    }
+    if (count == 0) {
         throw std::invalid_argument("star_detect_fused_pixel_components: mask selects no pixels");
     }
-    const double rank = 0.995 * static_cast<double>(values->size() - 1);
+    const double rank = 0.995 * static_cast<double>(count - 1);
     const size_t lower_index = static_cast<size_t>(std::floor(rank));
     const size_t upper_index = static_cast<size_t>(std::ceil(rank));
-    std::nth_element(values->begin(), values->begin() + lower_index, values->end());
-    const double lower = (*values)[lower_index];
+
+    uint64_t local_rank = lower_index;
+    std::vector<double> candidates =
+        masked_rank_candidates(values, mask, total, top_histogram, &local_rank);
+    const auto lower_it = candidates.begin() + static_cast<ptrdiff_t>(local_rank);
+    std::nth_element(candidates.begin(), lower_it, candidates.end());
+    const double lower = *lower_it;
     if (lower_index == upper_index) {
         return lower;
     }
-    std::nth_element(values->begin() + static_cast<ptrdiff_t>(lower_index + 1),
-                     values->begin() + static_cast<ptrdiff_t>(upper_index), values->end());
-    const double upper = (*values)[upper_index];
+    double upper = 0.0;
+    if (local_rank + 1 < candidates.size()) {
+        const auto upper_it = lower_it + 1;
+        std::nth_element(upper_it, upper_it, candidates.end());
+        upper = *upper_it;
+    } else {
+        upper = masked_next_value(values, mask, total, lower, upper_index);
+    }
     return lower + (upper - lower) * (rank - static_cast<double>(lower_index));
 }
 
+// Fixed-size blocks summed in index order and combined in block order, so the
+// result does not depend on thread count or reduction arrival order.
+double blocked_sum(const double* values, const int64_t total) {
+    constexpr int64_t block = int64_t{1} << 16;
+    const int64_t block_count = (total + block - 1) / block;
+    std::vector<double> partial(static_cast<size_t>(block_count));
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (int64_t b = 0; b < block_count; ++b) {
+        const int64_t end = std::min(total, (b + 1) * block);
+        double sum = 0.0;
+        for (int64_t index = b * block; index < end; ++index) {
+            sum += values[index];
+        }
+        partial[static_cast<size_t>(b)] = sum;
+    }
+    double sum = 0.0;
+    for (const double value : partial) {
+        sum += value;
+    }
+    return sum;
+}
+
+void parallel_minmax(const double* values, const int64_t total, double* minimum, double* maximum) {
+    double lo = values[0];
+    double hi = values[0];
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+        double local_lo = values[0];
+        double local_hi = values[0];
+#if defined(_OPENMP)
+#pragma omp for schedule(static) nowait
+#endif
+        for (int64_t index = 0; index < total; ++index) {
+            local_lo = std::min(local_lo, values[index]);
+            local_hi = std::max(local_hi, values[index]);
+        }
+#if defined(_OPENMP)
+#pragma omp critical(hnw_star_detect_minmax)
+#endif
+        {
+            lo = std::min(lo, local_lo);
+            hi = std::max(hi, local_hi);
+        }
+    }
+    *minimum = lo;
+    *maximum = hi;
+}
+
+// One 3-tap AND (erode) or OR (dilate) along rows. Out-of-image neighbours
+// pass an erosion and never set a dilation.
+void morph_rows(const uint8_t* source, uint8_t* output, const int64_t height, const int64_t width,
+                const bool erode) {
+    const uint8_t outside = erode ? 1 : 0;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (int64_t y = 0; y < height; ++y) {
+        const uint8_t* row = source + y * width;
+        uint8_t* out = output + y * width;
+        for (int64_t x = 0; x < width; ++x) {
+            const uint8_t left = x > 0 ? row[x - 1] : outside;
+            const uint8_t right = x + 1 < width ? row[x + 1] : outside;
+            out[x] = erode ? (left & row[x] & right) : (left | row[x] | right);
+        }
+    }
+}
+
+// The matching 3-tap pass along columns; set pixels are written as `on`.
+void morph_cols(const uint8_t* source, uint8_t* output, const int64_t height, const int64_t width,
+                const bool erode, const uint8_t on) {
+    const uint8_t outside = erode ? 1 : 0;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (int64_t y = 0; y < height; ++y) {
+        const uint8_t* up = y > 0 ? source + (y - 1) * width : nullptr;
+        const uint8_t* mid = source + y * width;
+        const uint8_t* down = y + 1 < height ? source + (y + 1) * width : nullptr;
+        uint8_t* out = output + y * width;
+        for (int64_t x = 0; x < width; ++x) {
+            const uint8_t above = up != nullptr ? up[x] : outside;
+            const uint8_t below = down != nullptr ? down[x] : outside;
+            const uint8_t value = erode ? (above & mid[x] & below) : (above | mid[x] | below);
+            out[x] = value != 0 ? on : 0;
+        }
+    }
+}
+
+// 3x3 erosion then dilation, both clipped to the image; each square window is
+// separable into a row and a column pass, which is exact for booleans.
 void threshold_open(const double* image, const uint8_t* mask, uint8_t* output, const int64_t height,
                     const int64_t width, const double threshold) {
-    std::vector<uint8_t> eroded(static_cast<size_t>(height * width));
+    const int64_t total = height * width;
+    hnw::DefaultInitVector<uint8_t> binary(static_cast<size_t>(total));
+    hnw::DefaultInitVector<uint8_t> scratch(static_cast<size_t>(total));
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
-    for (int64_t y = 0; y < height; ++y) {
-        for (int64_t x = 0; x < width; ++x) {
-            bool keep = true;
-            for (int64_t dy = -1; dy <= 1 && keep; ++dy) {
-                const int64_t yy = y + dy;
-                if (yy < 0 || yy >= height) {
-                    continue;
-                }
-                for (int64_t dx = -1; dx <= 1; ++dx) {
-                    const int64_t xx = x + dx;
-                    if (xx < 0 || xx >= width) {
-                        continue;
-                    }
-                    const int64_t offset = yy * width + xx;
-                    if (mask[offset] == 0 || !(image[offset] > threshold)) {
-                        keep = false;
-                        break;
-                    }
-                }
-            }
-            eroded[static_cast<size_t>(y * width + x)] = keep ? 255 : 0;
-        }
+    for (int64_t index = 0; index < total; ++index) {
+        binary[static_cast<size_t>(index)] = mask[index] != 0 && image[index] > threshold ? 1 : 0;
     }
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (int64_t y = 0; y < height; ++y) {
-        for (int64_t x = 0; x < width; ++x) {
-            uint8_t value = 0;
-            for (int64_t dy = -1; dy <= 1 && value == 0; ++dy) {
-                const int64_t yy = y + dy;
-                if (yy < 0 || yy >= height) {
-                    continue;
-                }
-                for (int64_t dx = -1; dx <= 1; ++dx) {
-                    const int64_t xx = x + dx;
-                    if (xx >= 0 && xx < width &&
-                        eroded[static_cast<size_t>(yy * width + xx)] != 0) {
-                        value = 255;
-                        break;
-                    }
-                }
-            }
-            output[y * width + x] = value;
-        }
-    }
+    morph_rows(binary.data(), scratch.data(), height, width, true);
+    morph_cols(scratch.data(), binary.data(), height, width, true, 1);
+    morph_rows(binary.data(), scratch.data(), height, width, false);
+    morph_cols(scratch.data(), output, height, width, false, 255);
 }
 
 void connected_component_stats(const uint8_t* binary_mask, const double* image,
@@ -241,25 +482,17 @@ void launch_star_detect_fused_pixel_components_cpu(
         mask = full_mask.data();
     }
 
-    std::vector<double> rows(static_cast<size_t>(total));
-    std::vector<double> normalized(static_cast<size_t>(total));
+    Buffer rows(static_cast<size_t>(total));
+    Buffer normalized(static_cast<size_t>(total));
     gaussian_rows(image, rows.data(), gaussian_kernel, height, width, gaussian_kernel_size);
     gaussian_cols(rows.data(), normalized.data(), gaussian_kernel, height, width,
                   gaussian_kernel_size);
-    rows.clear();
-    rows.shrink_to_fit();
+    Buffer().swap(rows);
 
-    double sum = 0.0;
-#if defined(_OPENMP)
-#pragma omp parallel for reduction(+ : sum) schedule(static)
-#endif
-    for (int64_t index = 0; index < total; ++index) {
-        sum += normalized[static_cast<size_t>(index)];
-    }
-    const auto [minimum_iterator, maximum_iterator] =
-        std::minmax_element(normalized.begin(), normalized.end());
-    const double minimum = *minimum_iterator;
-    const double maximum = *maximum_iterator;
+    const double sum = blocked_sum(normalized.data(), total);
+    double minimum = 0.0;
+    double maximum = 0.0;
+    parallel_minmax(normalized.data(), total, &minimum, &maximum);
     const double range = maximum - minimum;
     if (!(range > 0.0)) {
         throw std::runtime_error(
@@ -274,27 +507,40 @@ void launch_star_detect_fused_pixel_components_cpu(
             (normalized[static_cast<size_t>(index)] - mean) / range;
     }
 
-    std::vector<double> small(static_cast<size_t>(small_height * small_width));
-    resize_linear(normalized.data(), small.data(), height, width, small_height, small_width);
-    normalized.clear();
-    normalized.shrink_to_fit();
-    hnw::wavelet::CpuImage reconstructed =
-        hnw::wavelet::dec_rec_cpu(small.data(), small_height, small_width, level);
-    small.clear();
-    small.shrink_to_fit();
-
-    std::vector<double> image_rec(static_cast<size_t>(total));
-    resize_linear(reconstructed.values.data(), image_rec.data(), reconstructed.height,
-                  reconstructed.width, height, width, mask);
-
-    std::vector<double> percentile_values;
-    percentile_values.reserve(static_cast<size_t>(total));
-    for (int64_t index = 0; index < total; ++index) {
-        if (mask[index] != 0) {
-            percentile_values.push_back(image_rec[static_cast<size_t>(index)]);
-        }
+    // Linear resizing between equal shapes samples every source pixel centre
+    // with zero weight, so it is an exact copy and can be skipped.
+    Buffer small;
+    const double* wavelet_input = normalized.data();
+    if (small_height != height || small_width != width) {
+        small.resize(static_cast<size_t>(small_height * small_width));
+        resize_linear(normalized.data(), small.data(), height, width, small_height, small_width);
+        Buffer().swap(normalized);
+        wavelet_input = small.data();
     }
-    const double threshold = percentile_995(&percentile_values);
+    hnw::wavelet::CpuImage reconstructed =
+        hnw::wavelet::dec_rec_cpu(wavelet_input, small_height, small_width, level);
+    Buffer().swap(small);
+    Buffer().swap(normalized);
+
+    Buffer image_rec;
+    if (reconstructed.height == height && reconstructed.width == width) {
+        image_rec = std::move(reconstructed.values);
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+        for (int64_t index = 0; index < total; ++index) {
+            if (mask[index] == 0) {
+                image_rec[static_cast<size_t>(index)] = 0.0;
+            }
+        }
+    } else {
+        image_rec.resize(static_cast<size_t>(total));
+        resize_linear(reconstructed.values.data(), image_rec.data(), reconstructed.height,
+                      reconstructed.width, height, width, mask);
+        Buffer().swap(reconstructed.values);
+    }
+
+    const double threshold = masked_percentile_995(image_rec.data(), mask, total);
     threshold_open(image_rec.data(), mask, binary_mask, height, width, threshold);
     connected_component_stats(binary_mask, image_rec.data(), height, width, positions, intensities);
 }

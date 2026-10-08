@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 CLANG_FORMAT_VERSION = "20.1.8"
-CSRC_ROOT = Path(__file__).resolve().parent
+CSRC_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_SUFFIXES = frozenset(
     {".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".metal", ".mm"}
 )
@@ -91,7 +91,7 @@ def main() -> int:
         )
         for path in failures:
             print(f"  {path}")
-        print("Run: python csrc/check_format.py --fix")
+        print("Run: python csrc/tools/check_format.py --fix")
         return 1
 
     print(f"clang-format {CLANG_FORMAT_VERSION}: checked {len(files)} files")

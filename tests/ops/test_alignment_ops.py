@@ -108,7 +108,9 @@ def _frame(index, status=FrameAlignmentStatus.SOLVED, rotation=None,
     ),
     [
         (1, 1, None, {"frame": 1}, 14.0),
-        (None, 2, "auto", {"frame": 2}, None),
+        # ``auto`` keeps EXIF as the primary source and passes the configured
+        # focal as its fallback for sequences whose EXIF has no usable value.
+        (None, 2, "auto", {"frame": 2}, 14.0),
         (None, 2, "manual", None, 14.0),
     ],
 )
@@ -166,7 +168,7 @@ def test_bundle_adjustment_uses_reference_camera_for_every_frame(
     monkeypatch.setattr(op, "_broadcast_outputs", broadcast)
     monkeypatch.setattr(
         bundle_ops.StarDetectionCache, "from_image",
-        staticmethod(lambda image, mask: (
+        staticmethod(lambda image, mask, star_detection_mode="auto": (
             detection_masks.append(mask)
             or SimpleNamespace(pywt_stars=object()))))
     monkeypatch.setattr(bundle_ops, "build_camera_candidate", build_candidate)

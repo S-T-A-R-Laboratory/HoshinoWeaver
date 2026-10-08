@@ -14,12 +14,15 @@
 
 ```text
 csrc/
-  build_ops.py
+  build_ops.py            # 构建主入口
   CMakePresets.json
   CMakeLists.txt
-  module.cpp
-  common/
-  ops/
+  cmake/                  # CMake 模块
+  common/                 # 跨算子共享的头文件与运行时
+  modules/                # pybind11 扩展入口，文件名 = 产物名
+    _C.cpp
+    _metal.mm
+  ops/                    # 算子实现，按 后端/算法族 两级划分
     cpu/
       fgp/
       max/
@@ -28,21 +31,36 @@ csrc/
       sigma_clip/
     cuda/
     metal/
+  tools/                  # 构建与 CI 检查脚本（非编译源码）
+    check_format.py
+    check_objc_syntax.py
+    verify_metal_runtime.py
+    verify_no_metal_fallback.py
+    verify_packaged_custom_ops.py
+    objc_stubs/           # 假 Apple 框架头，仅供 check_objc_syntax.py 离机解析
 ```
 
 职责：
 
-- `module.cpp`
+- `modules/_C.cpp`
   pybind11 模块入口，注册 `_C` 内的算子
-- `ops/cpu/<name>/`
-  单个算子的 compiled CPU 实现与绑定；OpenMP 是可选并行能力
-- `ops/cuda/<name>/`
-  单个算子的 CUDA 实现与绑定
-- `ops/metal/<name>/`
-  单个算子的 Metal shader 与 Objective-C++ host binding；编译到独立 `_metal`
+- `modules/_metal.mm`
+  pybind11 模块入口，注册独立 `_metal` extension 内的算子
+- `ops/<backend>/<family>/`
+  第二级是**算法族，不是单个算子**。一个族常注册多个 logical op，因为它们共用
+  kernel、参数结构或内部头；例如 `cpu/fgp/` 有 5 个，三个后端的 `star_shrink/`
+  各有 3 个。拆散会把共享头往上提一层，反而藏起耦合关系。
+- `ops/cpu/<family>/`
+  compiled CPU 实现与绑定；OpenMP 是可选并行能力
+- `ops/cuda/<family>/`
+  CUDA 实现与绑定
+- `ops/metal/<family>/`
+  Metal shader 与 Objective-C++ host binding；编译到独立 `_metal`
   extension，不与 CUDA `_C` 混合
 - `build_ops.py`
   统一本地构建入口
+- `tools/`
+  构建与 CI 检查脚本，以及它们的数据；不参与 `_C` / `_metal` 的编译
 - `CMakeLists.txt` / `CMakePresets.json`
   custom-op 的 CMake/Ninja 构建骨架
 
@@ -121,10 +139,10 @@ python csrc/build_ops.py --dry-run
 
 ```bash
 # 只检查
-python csrc/check_format.py
+python csrc/tools/check_format.py
 
 # 应用格式化
-python csrc/check_format.py --fix
+python csrc/tools/check_format.py --fix
 ```
 
 检查覆盖 `csrc/` 下的 C++/CUDA/Objective-C++/Metal 源码并排除生成的 build tree；
@@ -172,8 +190,8 @@ CI 使用同一入口。
 
 ## 打包约定
 
-最终发布为 PyInstaller single-folder 模式。CUDA runtime 静态链接到 `_C`；
-OpenMP 在 Linux/Windows 为动态链接（PyInstaller 自动收集），macOS 为静态链接。
+发布支持 PyInstaller single-folder 和 Nuitka standalone 两种工具。打包中，CUDA runtime 静态链接到 `_C`；
+OpenMP 在 Linux/Windows 为动态链接（自动收集），macOS 为静态链接。
 Metal、Foundation 与 CoreGraphics 使用 macOS 系统 framework，不需要随应用捆绑第三方 GPU runtime；
 项目自己的 `_metal_kernels.metallib` 必须随 `_metal` 一起收集。
 
@@ -200,9 +218,9 @@ dumpbin /dependents hoshicore/_custom_op/_C*.pyd
 # 预期：出现 VCOMP140.DLL（正常），不应出现 cudart64_*.dll
 
 # 跨平台最小 frozen-package smoke；会清理 Python/编译器/CUDA 环境路径后启动
-python csrc/verify_packaged_custom_ops.py
+python csrc/tools/verify_packaged_custom_ops.py
 # macOS Metal 发布 gate：必须收集 shader 并真实执行 Metal kernel
-python csrc/verify_packaged_custom_ops.py --require-metal
+python csrc/tools/verify_packaged_custom_ops.py --require-metal
 ```
 
 ### PyInstaller 收集
@@ -272,11 +290,29 @@ device probe、kernel 对拍、workspace high-water 校验与 frozen-package smo
 | 方向 | 状态 |
 |------|------|
 | AMD (ROCm/HIP) | 待评估 |
-| macOS (Metal) | v0：`star_shrink_process` |
+| macOS (Metal) | 已实现 `star_shrink_process`、`star_mask_dog`、`star_shrink_dog_process` |
+| macOS uint16 median | `13×13` Metal 背景中位数 + 原 OpenMP 阈值/形态学；其它输入走 CPU |
 | macOS (MPS) | 后续按热点评估 |
 | Vulkan (compute shader) | 待评估 |
 
 所有 GPU 后端保持 CPU fallback 语义不变。
+
+CPU 检测灰度的 `detection_gray` candidate 只并行化 OpenCV 前后的类型转换、
+归一化和 uint16 最近偶数取整；颜色计算仍由 Python wrapper 调用当前 OpenCV，
+因此无需链接 C++ OpenCV 或假设特定 IPP/SIMD 实现。该路径面向 uint8/uint16
+图像；其他 dtype 沿用 NumPy 参考实现。转换循环按现有线程设置取最多 8 线程，
+小数组串行执行。
+
+### 运行时控制
+
+| 环境变量 | 值与用途 |
+|----------|----------|
+| `HNW_CUSTOM_OPS_FALLBACK` | `auto` 自动选择；`cpu` 禁用 GPU、保留 OpenMP；`numpy` 强制参考路径 |
+| `HNW_CUSTOM_OPS_THREADS` | `auto` 或正整数，控制 native CPU 线程数 |
+| `HNW_CUSTOM_OPS_DEBUG` | `0` / `1`，关闭或开启分发调试信息 |
+
+多数 wrapper 的参考路径为 NumPy；fused 星点检测的最终回退位于 Norma 组件层。
+灰度输入兼容性和该回退的细节见 [对齐加速记录](../docs/custom_op_alignment_acceleration.md)。
 
 运行时可通过 `HNW_CUSTOM_OPS_FALLBACK=cpu` 禁用 Metal/CUDA 并保留 OpenMP，或在
 pipeline 启动前调用 `hoshicore._custom_op.set_backend_preference("cpu")`。传入
@@ -315,9 +351,9 @@ deferral reason 保持兼容，但仓库内建候选的 registry 校验不接受
 
 最小流程：
 
-1. 在 `csrc/ops/cpu/<name>/` 新增 CPU `.h/.cpp`
+1. 在 `csrc/ops/cpu/<family>/` 新增 CPU `.h/.cpp`（复用已有算法族目录，只有确实是新族才建新目录）
 2. 在 `CMakeLists.txt` 新增 static library target 并链接到 `_C`
-3. 在 `module.cpp` 中注册 `bind_*_ops(m)`
+3. 在 `modules/_C.cpp` 中注册 `bind_*_ops(m)`（Metal 算子则在 `modules/_metal.mm`）
 4. 在 `hoshicore/_custom_op/ops/` 增加 Python 包装与 numpy fallback
 5. 在 `hoshicore/_custom_op/backend_registry.py` 注册 `BackendCandidate`
 6. 在 `hoshicore/_custom_op/api.py` + `__init__.py` 导出
@@ -330,7 +366,7 @@ backend 只能影响性能，不能影响 public API 可用性。
 
 CUDA 算子沿用同样流程，但额外需要：
 
-1. 在 `csrc/ops/cuda/<name>/` 新增 CUDA `.h/.cpp/.cu`，并在 `CMakeLists.txt` 的 `HNW_ENABLE_CUDA` 分支接入
+1. 在 `csrc/ops/cuda/<family>/` 新增 CUDA `.h/.cpp/.cu`，并在 `CMakeLists.txt` 的 `HNW_ENABLE_CUDA` 分支接入
 2. 保持 CPU fallback 语义不变
 3. `.cpp` 绑定文件需 `#include "common/compat.h"`（MSVC `ssize_t` 兼容）
 4. 在 `BackendCandidate` 中标注对应 backend（如 `cuda_host_io`）和 build flag（如 `cuda`）

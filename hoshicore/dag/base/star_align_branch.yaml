@@ -5,6 +5,7 @@ inputs:
   fnames: { type: sequence, required: true }
 
 configs:
+  star_detection_mode: { type: str, default: "auto" }
   mask:              { type: image, default: null }
   loader_type:       { type: str,  default: "img_file_list" }
   loader_configs:    { type: dict, default: {} }
@@ -61,6 +62,7 @@ nodes:
       reference: load_align_base.result
       reference_exif: reference_exif_loader.result
       method: configs.align_method
+      star_detection_mode: configs.star_detection_mode
       camera_setup_mode: configs.camera_setup_mode
       same_camera: configs.same_camera
       matching_path: configs.matching_path

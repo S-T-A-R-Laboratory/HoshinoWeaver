@@ -29,7 +29,8 @@ from scipy.spatial.transform import Rotation
 from .detection import DetectedStars
 from .frame_align import (DEFAULT_BOOTSTRAP_SCALES, AlignmentCameraCandidate,
                           solve_star_alignment)
-from .optimization import CameraOptimizationPolicy
+from .optimization import (FOCAL_ONLY_POLICY, ROTATION_ONLY_POLICY,
+                           CameraOptimizationPolicy)
 from .types import (BaseCameraModel, CameraModel, Distortion, FisheyeCameraModel,
                     FisheyeDistortion)
 
@@ -76,6 +77,11 @@ class BAAlignmentPlan:
     observability_condition: Optional[float]
     camera_solve_mode: str = "requested"
     camera_fallback_reason: Optional[str] = None
+    # pixel-density focal / 35mm-equivalent focal from the reference frame's
+    # EXIF, when both derivations were available. 1.0 means they agree; a value
+    # far from 1.0 marks metadata that no longer matches the pixels (post-capture
+    # crop or resample), so the shared camera's absolute scale is unverified.
+    focal_metadata_ratio: Optional[float] = None
 
     def frame(self, index: int) -> FrameAlignment:
         if index < 0 or index >= len(self.frames):
@@ -97,8 +103,10 @@ class _BundleEdge:
 
 
 _SCALE_PROBE_EDGE_COUNT = 3
-_ROTATION_ONLY_POLICY = CameraOptimizationPolicy(False, False, False, 0)
-_FOCAL_FALLBACK_POLICY = CameraOptimizationPolicy(True, False, False, 0)
+# Aliases for the shared reduced camera policies (defined in optimization.py so
+# the two-image ladder and the bundle fallback cannot drift apart).
+_ROTATION_ONLY_POLICY = ROTATION_ONLY_POLICY
+_FOCAL_FALLBACK_POLICY = FOCAL_ONLY_POLICY
 _FOCAL_SCALE_DELTA_LIMIT = 0.3
 _DISTORTION_ABS_LIMIT = 1.0
 _DEFAULT_MAX_PAIRS_PER_EDGE = 128
@@ -998,7 +1006,9 @@ def _assemble_plan(
         active_camera_parameter_count=_camera_parameter_count(solved_policy),
         observability_condition=condition,
         camera_solve_mode=solve_mode,
-        camera_fallback_reason=fallback_reason)
+        camera_fallback_reason=fallback_reason,
+        focal_metadata_ratio=by_index[
+            reference_frame_index].candidate.focal_metadata_ratio)
 
 
 def solve_anchor_camera_and_rotations(
@@ -1147,6 +1157,13 @@ def _solve_rotations_hierarchical(
             if edge.first_index in segment_component
             and edge.second_index in segment_component]
         segment_fixed = {lo: anchor_rotations[lo], hi: anchor_rotations[hi]}
+        if segment_component == set(segment_fixed):
+            # segment contains nothing but its two gauge-fixed ends. 
+            # There is no free pose to solve.
+            rotations.setdefault(lo, anchor_rotations[lo])
+            rotations.setdefault(hi, anchor_rotations[hi])
+            retained.extend(segment_edges)
+            continue
         segment_rotations, segment_retained, _ = _solve_rotations_only(
             segment_edges, segment_fixed, segment_component, camera, max_nfev)
         for index, rotation in segment_rotations.items():
@@ -1176,9 +1193,13 @@ def _solve_rotations_only(
     from scipy import sparse
     from scipy.optimize import least_squares
 
-    initial = _initial_rotations(edges, fixed_rotations, component)
     variable_indices = [
         index for index in sorted(component) if index not in fixed_rotations]
+    if not variable_indices:
+        # Every frame in the component is gauge-fixed, so the optimization
+        # vector would be empty.
+        return dict(fixed_rotations), list(edges), None
+    initial = _initial_rotations(edges, fixed_rotations, component)
     pose_column = {index: 3 * position
                    for position, index in enumerate(variable_indices)}
 

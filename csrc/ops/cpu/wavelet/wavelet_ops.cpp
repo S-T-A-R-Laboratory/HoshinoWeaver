@@ -42,12 +42,14 @@ constexpr std::array<double, DB8_FILTER_LEN> DB8_REC_HI = {
     0.5853546836542067,      -0.6756307362972898,    0.31287159091429995,     -0.05441584224310401,
 };
 
+using hnw::wavelet::Buffer;
+
 struct DetailLevel {
     ssize_t h = 0;
     ssize_t w = 0;
-    std::vector<double> cH;
-    std::vector<double> cV;
-    std::vector<double> cD;
+    Buffer cH;
+    Buffer cV;
+    Buffer cD;
 };
 
 inline ssize_t dwt_len(const ssize_t n) {
@@ -73,76 +75,136 @@ inline ssize_t symmetric_index(ssize_t idx, const ssize_t n) {
     return period - 1 - idx;
 }
 
-void dwt2(const std::vector<double>& input, const ssize_t h, const ssize_t w,
-          std::vector<double>* approx, DetailLevel* detail) {
+// Source index of every (output, tap) pair along one axis. Building the
+// symmetric extension once per level keeps the modulo out of pixel loops.
+std::vector<ssize_t> dwt_source_indices(const ssize_t n) {
+    const ssize_t out = dwt_len(n);
+    std::vector<ssize_t> indices(static_cast<size_t>(out * DB8_FILTER_LEN));
+    for (ssize_t pos = 0; pos < out; ++pos) {
+        for (ssize_t j = 0; j < DB8_FILTER_LEN; ++j) {
+            indices[static_cast<size_t>(pos * DB8_FILTER_LEN + j)] =
+                symmetric_index(2 * pos + j + DB8_DWT_OFFSET, n);
+        }
+    }
+    return indices;
+}
+
+// Only taps with an even upsampled position contribute to an idwt output, and
+// their parity equals the output parity: taps j = (pos & 1) + 2 * m, in order.
+constexpr ssize_t IDWT_TAPS = DB8_FILTER_LEN / 2;
+
+std::vector<ssize_t> idwt_source_indices(const ssize_t out, const ssize_t n) {
+    std::vector<ssize_t> indices(static_cast<size_t>(out * IDWT_TAPS));
+    for (ssize_t pos = 0; pos < out; ++pos) {
+        for (ssize_t m = 0; m < IDWT_TAPS; ++m) {
+            const ssize_t j = (pos & 1) + 2 * m;
+            indices[static_cast<size_t>(pos * IDWT_TAPS + m)] =
+                symmetric_index((pos + DB8_IDWT_OFFSET - j) / 2, n);
+        }
+    }
+    return indices;
+}
+
+void dwt2(const double* input, const ssize_t h, const ssize_t w, Buffer* approx,
+          DetailLevel* detail, const bool keep_detail) {
     const ssize_t out_h = dwt_len(h);
     const ssize_t out_w = dwt_len(w);
-    std::vector<double> row_lo(static_cast<size_t>(h * out_w));
-    std::vector<double> row_hi(static_cast<size_t>(h * out_w));
+    const std::vector<ssize_t> src_x = dwt_source_indices(w);
+    const std::vector<ssize_t> src_y = dwt_source_indices(h);
+    // Outputs whose 16 taps lie inside the row read them directly.
+    const ssize_t interior_begin = (-DB8_DWT_OFFSET + 1) / 2;
+    const ssize_t interior_end = (w - DB8_FILTER_LEN - DB8_DWT_OFFSET) / 2 + 1;
+    Buffer row_lo(static_cast<size_t>(h * out_w));
+    Buffer row_hi(keep_detail ? static_cast<size_t>(h * out_w) : 0);
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
     for (ssize_t y = 0; y < h; ++y) {
+        const double* row = input + y * w;
         for (ssize_t x = 0; x < out_w; ++x) {
             double lo = 0.0;
             double hi = 0.0;
-            for (ssize_t j = 0; j < DB8_FILTER_LEN; ++j) {
-                const ssize_t src_x = symmetric_index(2 * x + j + DB8_DWT_OFFSET, w);
-                const double value = input[static_cast<size_t>(y * w + src_x)];
+            const auto accumulate = [&](const ssize_t j, const double value) {
                 const ssize_t rev_j = DB8_FILTER_LEN - 1 - j;
                 lo += DB8_DEC_LO[static_cast<size_t>(rev_j)] * value;
-                hi += DB8_DEC_HI[static_cast<size_t>(rev_j)] * value;
+                if (keep_detail) {
+                    hi += DB8_DEC_HI[static_cast<size_t>(rev_j)] * value;
+                }
+            };
+            if (x >= interior_begin && x < interior_end) {
+                const double* direct = row + 2 * x + DB8_DWT_OFFSET;
+                for (ssize_t j = 0; j < DB8_FILTER_LEN; ++j) {
+                    accumulate(j, direct[j]);
+                }
+            } else {
+                const ssize_t* taps = src_x.data() + x * DB8_FILTER_LEN;
+                for (ssize_t j = 0; j < DB8_FILTER_LEN; ++j) {
+                    accumulate(j, row[taps[j]]);
+                }
             }
             row_lo[static_cast<size_t>(y * out_w + x)] = lo;
-            row_hi[static_cast<size_t>(y * out_w + x)] = hi;
+            if (keep_detail) {
+                row_hi[static_cast<size_t>(y * out_w + x)] = hi;
+            }
         }
     }
 
-    approx->assign(static_cast<size_t>(out_h * out_w), 0.0);
+    const size_t out_size = static_cast<size_t>(out_h * out_w);
+    approx->resize(out_size);
     detail->h = out_h;
     detail->w = out_w;
-    detail->cH.assign(static_cast<size_t>(out_h * out_w), 0.0);
-    detail->cV.assign(static_cast<size_t>(out_h * out_w), 0.0);
-    detail->cD.assign(static_cast<size_t>(out_h * out_w), 0.0);
+    if (keep_detail) {
+        detail->cH.resize(out_size);
+        detail->cV.resize(out_size);
+        detail->cD.resize(out_size);
+    }
 
+    // Accumulate one source row per tap into the whole output row: each
+    // element still sums its taps in order, but memory is read sequentially.
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
     for (ssize_t y = 0; y < out_h; ++y) {
-        for (ssize_t x = 0; x < out_w; ++x) {
-            double ll = 0.0;
-            double hl = 0.0;
-            double lh = 0.0;
-            double hh = 0.0;
-            for (ssize_t j = 0; j < DB8_FILTER_LEN; ++j) {
-                const ssize_t src_y = symmetric_index(2 * y + j + DB8_DWT_OFFSET, h);
-                const ssize_t rev_j = DB8_FILTER_LEN - 1 - j;
-                const double row_lo_value = row_lo[static_cast<size_t>(src_y * out_w + x)];
-                const double row_hi_value = row_hi[static_cast<size_t>(src_y * out_w + x)];
-                ll += DB8_DEC_LO[static_cast<size_t>(rev_j)] * row_lo_value;
-                hl += DB8_DEC_HI[static_cast<size_t>(rev_j)] * row_lo_value;
-                lh += DB8_DEC_LO[static_cast<size_t>(rev_j)] * row_hi_value;
-                hh += DB8_DEC_HI[static_cast<size_t>(rev_j)] * row_hi_value;
+        const ssize_t* taps = src_y.data() + y * DB8_FILTER_LEN;
+        double* ll = approx->data() + y * out_w;
+        double* hl = keep_detail ? detail->cH.data() + y * out_w : nullptr;
+        double* lh = keep_detail ? detail->cV.data() + y * out_w : nullptr;
+        double* hh = keep_detail ? detail->cD.data() + y * out_w : nullptr;
+        std::fill(ll, ll + out_w, 0.0);
+        if (keep_detail) {
+            std::fill(hl, hl + out_w, 0.0);
+            std::fill(lh, lh + out_w, 0.0);
+            std::fill(hh, hh + out_w, 0.0);
+        }
+        for (ssize_t j = 0; j < DB8_FILTER_LEN; ++j) {
+            const ssize_t rev_j = DB8_FILTER_LEN - 1 - j;
+            const double dec_lo = DB8_DEC_LO[static_cast<size_t>(rev_j)];
+            const double dec_hi = DB8_DEC_HI[static_cast<size_t>(rev_j)];
+            const double* lo_src = row_lo.data() + taps[j] * out_w;
+            for (ssize_t x = 0; x < out_w; ++x) {
+                ll[x] += dec_lo * lo_src[x];
             }
-            const size_t offset = static_cast<size_t>(y * out_w + x);
-            (*approx)[offset] = ll;
-            detail->cH[offset] = hl;
-            detail->cV[offset] = lh;
-            detail->cD[offset] = hh;
+            if (keep_detail) {
+                const double* hi_src = row_hi.data() + taps[j] * out_w;
+                for (ssize_t x = 0; x < out_w; ++x) {
+                    hl[x] += dec_hi * lo_src[x];
+                    lh[x] += dec_lo * hi_src[x];
+                    hh[x] += dec_hi * hi_src[x];
+                }
+            }
         }
     }
 }
 
-void crop_to(std::vector<double>* data, ssize_t* h, ssize_t* w, const ssize_t target_h,
-             const ssize_t target_w) {
+void crop_to(Buffer* data, ssize_t* h, ssize_t* w, const ssize_t target_h, const ssize_t target_w) {
     if (*h == target_h && *w == target_w) {
         return;
     }
     if (*h < target_h || *w < target_w) {
         throw std::runtime_error("wavelet_dec_rec_cpu: invalid reconstruction shape");
     }
-    std::vector<double> cropped(static_cast<size_t>(target_h * target_w));
+    Buffer cropped(static_cast<size_t>(target_h * target_w));
     for (ssize_t y = 0; y < target_h; ++y) {
         std::copy_n(data->begin() + static_cast<size_t>(y * (*w)), static_cast<size_t>(target_w),
                     cropped.begin() + static_cast<size_t>(y * target_w));
@@ -152,59 +214,76 @@ void crop_to(std::vector<double>* data, ssize_t* h, ssize_t* w, const ssize_t ta
     *w = target_w;
 }
 
-std::vector<double> idwt2(const std::vector<double>& approx, const DetailLevel& detail,
-                          const bool zero_detail, ssize_t* out_h_ptr, ssize_t* out_w_ptr) {
+// zero_detail marks the finest level, whose detail bands were never kept: its
+// vertical/diagonal column pass is identically zero and is skipped.
+Buffer idwt2(const Buffer& approx, const DetailLevel& detail, const bool zero_detail,
+             ssize_t* out_h_ptr, ssize_t* out_w_ptr) {
     const ssize_t h = detail.h;
     const ssize_t w = detail.w;
     const ssize_t out_h = idwt_len(h);
     const ssize_t out_w = idwt_len(w);
-    std::vector<double> col_lo(static_cast<size_t>(out_h * w), 0.0);
-    std::vector<double> col_hi(static_cast<size_t>(out_h * w), 0.0);
+    const std::vector<ssize_t> src_y = idwt_source_indices(out_h, h);
+    const std::vector<ssize_t> src_x = idwt_source_indices(out_w, w);
+    Buffer col_lo(static_cast<size_t>(out_h * w));
+    Buffer col_hi(zero_detail ? 0 : static_cast<size_t>(out_h * w));
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
     for (ssize_t y = 0; y < out_h; ++y) {
-        for (ssize_t x = 0; x < w; ++x) {
-            double lo = 0.0;
-            double hi = 0.0;
-            for (ssize_t j = 0; j < DB8_FILTER_LEN; ++j) {
-                const ssize_t t = y + DB8_IDWT_OFFSET - j;
-                if ((t & 1) != 0) {
-                    continue;
+        const ssize_t* taps = src_y.data() + y * IDWT_TAPS;
+        const ssize_t first_tap = y & 1;
+        double* lo = col_lo.data() + y * w;
+        double* hi = zero_detail ? nullptr : col_hi.data() + y * w;
+        std::fill(lo, lo + w, 0.0);
+        if (!zero_detail) {
+            std::fill(hi, hi + w, 0.0);
+        }
+        for (ssize_t m = 0; m < IDWT_TAPS; ++m) {
+            const ssize_t j = first_tap + 2 * m;
+            const double rec_lo = DB8_REC_LO[static_cast<size_t>(j)];
+            const double rec_hi = DB8_REC_HI[static_cast<size_t>(j)];
+            const size_t row_offset = static_cast<size_t>(taps[m] * w);
+            const double* cA = approx.data() + row_offset;
+            if (zero_detail) {
+                const double cH = 0.0;
+                for (ssize_t x = 0; x < w; ++x) {
+                    lo[x] += rec_lo * cA[x] + rec_hi * cH;
                 }
-                const ssize_t src_y = symmetric_index(t / 2, h);
-                const size_t offset = static_cast<size_t>(src_y * w + x);
-                const double cA = approx[offset];
-                const double cH = zero_detail ? 0.0 : detail.cH[offset];
-                const double cV = zero_detail ? 0.0 : detail.cV[offset];
-                const double cD = zero_detail ? 0.0 : detail.cD[offset];
-                lo += DB8_REC_LO[static_cast<size_t>(j)] * cA +
-                      DB8_REC_HI[static_cast<size_t>(j)] * cH;
-                hi += DB8_REC_LO[static_cast<size_t>(j)] * cV +
-                      DB8_REC_HI[static_cast<size_t>(j)] * cD;
+            } else {
+                const double* cH = detail.cH.data() + row_offset;
+                const double* cV = detail.cV.data() + row_offset;
+                const double* cD = detail.cD.data() + row_offset;
+                for (ssize_t x = 0; x < w; ++x) {
+                    lo[x] += rec_lo * cA[x] + rec_hi * cH[x];
+                    hi[x] += rec_lo * cV[x] + rec_hi * cD[x];
+                }
             }
-            col_lo[static_cast<size_t>(y * w + x)] = lo;
-            col_hi[static_cast<size_t>(y * w + x)] = hi;
         }
     }
 
-    std::vector<double> output(static_cast<size_t>(out_h * out_w), 0.0);
+    // Output x reads source columns x / 2 + 7 - m for m = 0..7, all inside the
+    // row (no symmetric extension) while x / 2 + 7 < w.
+    const ssize_t interior_end = 2 * (w - IDWT_TAPS + 1);
+    Buffer output(static_cast<size_t>(out_h * out_w));
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
     for (ssize_t y = 0; y < out_h; ++y) {
+        const double* lo_row = col_lo.data() + y * w;
+        const double* hi_row = zero_detail ? nullptr : col_hi.data() + y * w;
         for (ssize_t x = 0; x < out_w; ++x) {
+            const ssize_t* taps = src_x.data() + x * IDWT_TAPS;
+            const bool interior = x < interior_end;
+            const ssize_t base = x / 2 + IDWT_TAPS - 1;
+            const ssize_t first_tap = x & 1;
             double value = 0.0;
-            for (ssize_t j = 0; j < DB8_FILTER_LEN; ++j) {
-                const ssize_t t = x + DB8_IDWT_OFFSET - j;
-                if ((t & 1) != 0) {
-                    continue;
-                }
-                const ssize_t src_x = symmetric_index(t / 2, w);
-                const size_t offset = static_cast<size_t>(y * w + src_x);
-                value += DB8_REC_LO[static_cast<size_t>(j)] * col_lo[offset] +
-                         DB8_REC_HI[static_cast<size_t>(j)] * col_hi[offset];
+            for (ssize_t m = 0; m < IDWT_TAPS; ++m) {
+                const ssize_t j = first_tap + 2 * m;
+                const ssize_t source = interior ? base - m : taps[m];
+                const double hi_value = zero_detail ? 0.0 : hi_row[source];
+                value += DB8_REC_LO[static_cast<size_t>(j)] * lo_row[source] +
+                         DB8_REC_HI[static_cast<size_t>(j)] * hi_value;
             }
             output[static_cast<size_t>(y * out_w + x)] = value;
         }
@@ -219,12 +298,14 @@ hnw::wavelet::CpuImage wavelet_dec_rec_cpu_core(const double* input, const ssize
                                                 const ssize_t width, const ssize_t level) {
     ssize_t current_h = height;
     ssize_t current_w = width;
-    std::vector<double> current(input, input + static_cast<size_t>(height * width));
+    Buffer current;
     std::vector<DetailLevel> details(static_cast<size_t>(level));
 
     for (ssize_t idx = 0; idx < level; ++idx) {
-        std::vector<double> approx;
-        dwt2(current, current_h, current_w, &approx, &details[static_cast<size_t>(idx)]);
+        Buffer approx;
+        // The reconstruction below zeroes the finest detail band.
+        dwt2(idx == 0 ? input : current.data(), current_h, current_w, &approx,
+             &details[static_cast<size_t>(idx)], idx != 0);
         current = std::move(approx);
         current_h = details[static_cast<size_t>(idx)].h;
         current_w = details[static_cast<size_t>(idx)].w;

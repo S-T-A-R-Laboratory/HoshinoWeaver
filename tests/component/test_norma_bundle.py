@@ -138,7 +138,8 @@ def test_bundle_solver_applies_camera_bounds_and_leaves_poses_unbounded(
 def test_bundle_falls_back_to_focal_only_without_rebuilding_edges(monkeypatch):
     camera = _camera()
     requested = CameraOptimizationPolicy(True, True, False, 4)
-    candidate = AlignmentCameraCandidate(camera, requested, "manual")
+    candidate = AlignmentCameraCandidate(camera, requested, "manual",
+                                         focal_metadata_ratio=1.42)
     stars = DetectedStars(np.empty((0, 2)), np.empty(0))
     frames = [BundleFrame(index, stars, candidate) for index in range(2)]
     edge_calls = []
@@ -172,6 +173,8 @@ def test_bundle_falls_back_to_focal_only_without_rebuilding_edges(monkeypatch):
     assert plan.camera_fallback_reason == (
         "shared camera parameters are rank deficient")
     assert plan.active_camera_parameter_count == 1
+    # the reference frame's EXIF cross-check factor reaches the plan verbatim
+    assert plan.focal_metadata_ratio == 1.42
 
 
 def test_plan_frame_access():
@@ -463,3 +466,44 @@ def test_select_edge_pairs_dense_vs_multiscale():
     assert multiscale == bundle_module._multiscale_edge_pairs(50, None)
     with pytest.raises(BundleAdjustmentError):
         bundle_module._select_edge_pairs(50, (), "bogus", None)
+
+
+@pytest.mark.parametrize("frame_count", [33, 49])
+def test_two_stage_plan_skips_segments_without_free_poses(
+        monkeypatch, frame_count):
+    """Staged rotation recovery must survive adjacent camera anchors.
+
+    `camera_solve_frames` samples evenly spaced anchors, which for a sequence
+    only a little longer than that count includes consecutive frames. Such a
+    segment holds nothing but its two gauge-fixed ends, so it has no free pose:
+    solving it would build an empty optimization vector.
+    """
+    camera = CameraModel(Intrinsics(20.0, 36.0, 24.0, 6000, 4000), Distortion())
+    candidate = AlignmentCameraCandidate(
+        camera, CameraOptimizationPolicy(True, False, False, 0), "provided")
+    rng = np.random.default_rng(4)
+    pixels = np.stack([rng.uniform(0, 6000, 240), rng.uniform(0, 4000, 240)], 1)
+    rays = camera.unproject(pixels)
+    rotations = {}
+    for index in range(frame_count):
+        angle = 0.004 * index
+        tilt = np.array([[1.0, 0.0, 0.0],
+                         [0.0, np.cos(angle / 2), -np.sin(angle / 2)],
+                         [0.0, np.sin(angle / 2), np.cos(angle / 2)]])
+        rotations[index] = _rotation_z(angle) @ tilt
+
+    def fake_edge(first, second, random_seed, bootstrap_scales):
+        first_pts = camera.project((rotations[first.index] @ rays.T).T)
+        second_pts = camera.project((rotations[second.index] @ rays.T).T)
+        relative = rotations[second.index] @ rotations[first.index].T
+        return _BundleEdge(first.index, second.index, first_pts, second_pts,
+                           relative)
+
+    monkeypatch.setattr(bundle_module, "_make_edge", fake_edge)
+    stars = DetectedStars(np.empty((0, 2)), np.empty(0))
+    frames = [BundleFrame(index, stars, candidate)
+              for index in range(frame_count)]
+    plan = build_bundle_plan(frames, frame_count // 2, pair_offsets=(1, 2, 4),
+                             camera_solve_frames=32, edge_topology="dense")
+    assert [item.status for item in plan.frames] == [
+        FrameAlignmentStatus.SOLVED] * frame_count

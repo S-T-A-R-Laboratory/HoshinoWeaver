@@ -62,9 +62,24 @@ class TestBackendRegistry(CustomOpsTestCase):
         feature_candidates = backend_registry.registered_backend_candidates(
             "extract_point_features"
         )
-        self.assertEqual(len(feature_candidates), 1)
-        self.assertEqual(feature_candidates[0].backend, "openmp_cpu")
-        self.assertEqual(feature_candidates[0].kernel_name, "extract_point_features")
+        self.assertEqual(
+            {(candidate.backend, candidate.kernel_name) for candidate in feature_candidates},
+            {
+                ("cuda_host_io", "extract_point_features_cuda"),
+                ("openmp_cpu", "extract_point_features"),
+            },
+        )
+
+        asterism_candidates = backend_registry.registered_backend_candidates(
+            "asterism_mutual_nearest"
+        )
+        self.assertEqual(
+            {(candidate.backend, candidate.kernel_name) for candidate in asterism_candidates},
+            {
+                ("cuda_host_io", "asterism_mutual_nearest_cuda"),
+                ("openmp_cpu", "asterism_mutual_nearest_cpu"),
+            },
+        )
 
         matching_candidates = backend_registry.registered_backend_candidates(
             "matching_cosine_bidirectional_nearest"
@@ -165,7 +180,9 @@ class TestBackendRegistry(CustomOpsTestCase):
         self.assertEqual(
             {candidate.logical_op for candidate in cuda_candidates},
             {
+                "asterism_mutual_nearest",
                 "camera_model_remap",
+                "extract_point_features",
                 "huber_weighted_chunk",
                 "matching_cosine_bidirectional_nearest",
                 "sigma_clip_fused_chunk",
@@ -209,7 +226,7 @@ class TestBackendRegistry(CustomOpsTestCase):
         # Pins which ops have a Metal kernel, so widening coverage is deliberate.
         self.assertEqual(
             sorted(candidate.logical_op for candidate in metal_candidates),
-            ["star_mask_dog", "star_shrink_dog_process", "star_shrink_process"],
+            ["median_star_mask", "star_mask_dog", "star_shrink_dog_process", "star_shrink_process"],
         )
         extra_estimate_args = {
             "star_mask_dog": {"small_kernel_size": 9, "large_kernel_size": 73},
@@ -228,7 +245,7 @@ class TestBackendRegistry(CustomOpsTestCase):
                     candidate.logical_op,
                     height=32,
                     width=48,
-                    channels=3,
+                    channels=1 if candidate.logical_op == "median_star_mask" else 3,
                     dtype_bytes=2,
                     **extra_estimate_args.get(candidate.logical_op, {}),
                 )
@@ -236,6 +253,7 @@ class TestBackendRegistry(CustomOpsTestCase):
 
     def test_registered_cuda_non_chunk_models_are_consumable(self) -> None:
         sample_args = {
+            "asterism_mutual_nearest": {"n1": 17, "n2": 19},
             "camera_model_remap": {
                 "source_height": 8,
                 "source_width": 10,
@@ -244,6 +262,7 @@ class TestBackendRegistry(CustomOpsTestCase):
                 "out_height": 6,
                 "out_width": 7,
             },
+            "extract_point_features": {"n_points": 40, "k": 8},
             "matching_cosine_bidirectional_nearest": {
                 "n1": 17,
                 "n2": 19,

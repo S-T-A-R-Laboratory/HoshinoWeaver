@@ -39,7 +39,6 @@
 
 - [ ] 自动化天地分割（替代手动蒙版）
 - [ ] 流星 Filter 算子
-- [ ] 鱼眼对齐
 
 5. 序列功能特性
 
@@ -114,6 +113,8 @@
 
 ### ✅ Improvements
 
+- **Norma 光心与残差优化**：双图和 BA 默认联合优化共享光心，普通输入限制为每轴最多偏移 5%，并提供“中心偏移”选项处理明显裁切；全路径默认使用 directional Cross residual。
+- **Norma 初解选择改进**：多尺度候选在通过 RANSAC 门禁后，综合残差、匹配数量、覆盖率、边缘点和扇区分布评分，降低局部低 P90 候选对结果的支配。
 - **Remap 性能优化**：新增融合 CPU/CUDA camera-model remap，支持四种 perspective/fisheye 源目标组合；重用 pinned staging/workspace，并支持稀疏坐标 map 计算后插值，以降低高分辨率图像的内存和计算开销。
 - **Custom Op 分发收口**：重构 backend registry、wrapper dispatch 和错误元数据，集中处理 runtime unavailable、resource exhausted、forced NumPy 与 native validation，移除旧 CUDA hybrid aliases 和失效路径。
 - **Native 内核结构整理**：按逻辑算子和 CPU/CUDA/Metal 后端重组源码，共享 median histogram、Gaussian kernel、camera-model math、host-I/O workspace 和参数校验，降低重复实现。

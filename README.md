@@ -99,6 +99,30 @@ HoshinoWeaver (织此星辰, HNW) 是一个为天文摄影设计的通用图像�
 - 运行 `python "HoshinoWeaver desktop.py"` 启动图形界面，或运行 `python launcher.py --help` 查看 CLI 的运行参数。
 - 项目包含可选的 C++/CUDA 加速算子，可以通过 `python csrc/build_ops.py` 构建加速算子。无编译环境时会自动回退到 NumPy 实现。
 
+#### 命令行（CLI）
+
+```powershell
+python launcher.py <pipeline.yaml> [image_dir] [--route KEY=VALUE] [--input KEY=VALUE] [--config KEY=VALUE]
+```
+
+`--input KEY=VALUE` 的 `KEY` 是 pipeline YAML 中声明的输入名（如 `fnames`、`light_fnames`），`VALUE` 支持三种写法：
+
+| 写法 | 含义 |
+|------|------|
+| `D:\lights` | 目录：展开为目录内经文件名排序的受支持图像 |
+| `@lights.txt` | 清单文件：一行一个路径（UTF-8，支持空行与 `#` 注释），顺序即投递顺序 |
+| `["a.tif","b.tif"]` | JSON 数组：显式路径列表 |
+
+`@清单文件` 适合超长输入集（规避命令行长度上限）或固定"前 N 帧"。清单内的相对路径按**启动 launcher 时的当前目录**解析，建议直接写绝对路径。`--route` 选择路由（如 `--route stacker=sigma_clip`），`--config` 覆盖全局配置（如 `--config output_filename=D:\out\stack.tif`）。完整参数以 `python launcher.py --help` 为准。
+
+
+自动化运行可设置 `--preflight {ask,apply,ignore,abort}`：默认 `ask` 交互询问，其余模式分别自动应用建议、忽略警告继续或中止。`--log-path PATH` 指定日志文件；`--no-progress` 关闭进度条。
+
+```powershell
+python launcher.py <pipeline.yaml> --inspect
+```
+
+`--inspect` 仅显示工作流参数 schema 后退出，不启动处理。
 
 ## 技术特性
 
