@@ -78,7 +78,7 @@ HoshinoWeaver (织此星辰, HNW) 是一个为天文摄影设计的通用图像�
 
 ### 运行发行版本
 
-目前的最新版本是 `v1.0.0-rc "Vega"`。可以从 [官方网站](https://hoshinoweaver.springcitystudio.top/) 或 [GitHub Release 页](https://github.com/S-T-A-R-Laboratory/HoshinoWeaver/releases) 获取。下载安装后，双击运行 `HoshinoWeaver.exe` 即可启动图形界面。
+目前的最新版本是 `v1.1.0 "Lyra"`。可以从 [官方网站](https://hoshinoweaver.springcitystudio.top/) 或 [GitHub Release 页](https://github.com/S-T-A-R-Laboratory/HoshinoWeaver/releases) 获取。下载安装后，双击运行 `HoshinoWeaver.exe` 即可启动图形界面。
 
 > [!NOTE]
 > 
