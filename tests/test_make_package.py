@@ -1,62 +1,67 @@
-import unittest
+from types import SimpleNamespace
+import sys
 
-import make_package
+import pytest
 
-
-class TestGeneratedSpec(unittest.TestCase):
-    """Guard the PyInstaller spec generator's native-artifact collection.
-
-    The spec is generated source, so a template mistake only surfaces during a
-    real packaging run. These checks keep that failure at test time instead.
-    """
-
-    def setUp(self) -> None:
-        self.spec = make_package._generate_spec(
-            "/work",
-            "/compile",
-            "HoshinoWeaver",
-            "/work/icon.ico",
-        )
-
-    def test_generated_spec_is_valid_python(self) -> None:
-        compile(self.spec, "<generated.spec>", "exec")
-
-    def test_spec_collects_compiled_extension(self) -> None:
-        self.assertIn("hoshicore._custom_op._C", self.spec)
-
-    def test_spec_does_not_upx_compress_native_extensions(self) -> None:
-        self.assertIn("'hoshicore/_custom_op/_C*.pyd'", self.spec)
-        self.assertEqual(
-            self.spec.count("upx_exclude=_native_upx_exclude"), 3)
-
-    def test_spec_collects_metal_extension_and_shader_library(self) -> None:
-        self.assertIn("hoshicore._custom_op._metal", self.spec)
-        self.assertIn("_metal_kernels.metallib", self.spec)
-        # The runtime locates the shader library next to the loaded extension,
-        # so the data destination must be the package dir, not the bundle root.
-        self.assertIn("shared_datas.append((_metallib, 'hoshicore/_custom_op'))",
-                      self.spec)
-
-    def test_spec_fails_loudly_when_shader_library_is_missing(self) -> None:
-        self.assertIn("if not _osp_metal.exists(_metallib):", self.spec)
-        self.assertIn("raise RuntimeError(", self.spec)
-        self.assertIn("is missing; rebuild with", self.spec)
-
-    def test_spec_keeps_the_load_bearing_pyexiv2_import(self) -> None:
-        # Looks unused, but its side effect is what makes the top-level
-        # `exiv2api` resolvable at analysis time.
-        self.assertIn("import pyexiv2 as _pyexiv2", self.spec)
-        self.assertIn("LOAD-BEARING", self.spec)
-
-    def test_metal_collection_is_conditional(self) -> None:
-        # Non-macOS builds have no _metal module; collection must stay guarded
-        # so Linux/Windows packaging is unaffected.
-        self.assertIn(
-            "_metal_spec = _imputil.find_spec('hoshicore._custom_op._metal')",
-            self.spec,
-        )
-        self.assertIn("if _metal_spec is not None and _metal_spec.origin:", self.spec)
+from hoshicore.packaging import common, pyinstaller
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.mark.parametrize("native", [True, False])
+@pytest.mark.parametrize("debug_gui", [True, False])
+def test_generated_spec_executes_with_manifest_and_correct_console_modes(monkeypatch, tmp_path, native, debug_gui):
+    shader = tmp_path / "_metal_kernels.metallib"
+    manifest = common.PackageManifest(
+        native, ((tmp_path / "dag", "hoshicore/dag"),),
+        ((shader, "hoshicore/_custom_op/_metal_kernels.metallib"),),
+        tmp_path / "ops", (tmp_path / "libgomp-1.dll",) if native else (), shader, True,
+        (tmp_path / "turbojpeg.dll",))
+    options = common.BuildOptions(root=tmp_path, debug_gui=debug_gui, apply_upx=True)
+    spec = pyinstaller.generate_spec(options, manifest)
+    analyses, executables, merges, collections = [], [], [], []
+
+    def analysis(scripts, **kwargs):
+        analyses.append(kwargs)
+        return SimpleNamespace(pure=(), scripts=scripts, zipfiles=[],
+                               binaries=kwargs["binaries"], datas=kwargs["datas"])
+
+    def exe(*args, **kwargs):
+        executables.append(kwargs)
+        return kwargs["name"]
+
+    def collect(*args, **kwargs):
+        collections.append(kwargs)
+        return "collection"
+
+    hooks = SimpleNamespace(collect_all=lambda name: ([], [], ["exiv2api"]),
+                            copy_metadata=lambda name: [], collect_submodules=lambda name: [name])
+    monkeypatch.setitem(sys.modules, "PyInstaller.utils.hooks", hooks)
+    monkeypatch.setitem(sys.modules, "pyexiv2", SimpleNamespace())
+    namespace = dict(Analysis=analysis, EXE=exe, COLLECT=collect, BUNDLE=lambda *a, **kw: None,
+                     PYZ=lambda pure: pure, MERGE=lambda *args: merges.append(args))
+    exec(compile(spec, "<generated.spec>", "exec"), namespace)
+    assert [e["console"] for e in executables] == [debug_gui, True]
+    assert [e["name"] for e in executables] == [common.GUI_NAME, common.CLI_NAME]
+    assert all(e["upx"] for e in executables)
+    assert all("hoshicore/_custom_op/_C*.pyd" in e["upx_exclude"] for e in executables)
+    assert collections[0]["name"] == options.release_name
+    assert len(merges[0]) == 2
+    for a in analyses:
+        assert ("hoshicore._custom_op._C" in a["hiddenimports"]) is native
+        assert ("hoshicore._custom_op._C" in a["excludes"]) is not native
+        assert "hoshicore._custom_op._metal" in a["hiddenimports"]
+        assert "exiv2api" in a["hiddenimports"]
+        assert "turbojpeg" in a["hiddenimports"]
+        assert "hoshicore.packaging" in a["excludes"]
+        assert (str(shader), "hoshicore/_custom_op") in a["datas"]
+        assert (str(tmp_path / "turbojpeg.dll"), ".") in a["binaries"]
+    assert "PySide6" in analyses[1]["excludes"]
+
+
+def test_macos_spec_builds_app_only_for_release_gui(monkeypatch, tmp_path):
+    monkeypatch.setattr(pyinstaller.sys, "platform", "darwin")
+    monkeypatch.setattr(common.platform, "mac_ver", lambda: ("14.0", (), ""))
+    manifest = common.PackageManifest(True, (), (), tmp_path)
+    for debug, bundle in ((False, True), (True, False)):
+        spec = pyinstaller.generate_spec(common.BuildOptions(root=tmp_path, debug_gui=debug), manifest)
+        compile(spec, "<generated.spec>", "exec")
+        assert ("app = BUNDLE(" in spec) is bundle
