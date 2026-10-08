@@ -190,8 +190,8 @@ CI 使用同一入口。
 
 ## 打包约定
 
-最终发布为 PyInstaller single-folder 模式。CUDA runtime 静态链接到 `_C`；
-OpenMP 在 Linux/Windows 为动态链接（PyInstaller 自动收集），macOS 为静态链接。
+发布支持 PyInstaller single-folder 和 Nuitka standalone 两种工具。打包中，CUDA runtime 静态链接到 `_C`；
+OpenMP 在 Linux/Windows 为动态链接（自动收集），macOS 为静态链接。
 Metal、Foundation 与 CoreGraphics 使用 macOS 系统 framework，不需要随应用捆绑第三方 GPU runtime；
 项目自己的 `_metal_kernels.metallib` 必须随 `_metal` 一起收集。
 
@@ -302,6 +302,17 @@ CPU 检测灰度的 `detection_gray` candidate 只并行化 OpenCV 前后的类�
 因此无需链接 C++ OpenCV 或假设特定 IPP/SIMD 实现。该路径面向 uint8/uint16
 图像；其他 dtype 沿用 NumPy 参考实现。转换循环按现有线程设置取最多 8 线程，
 小数组串行执行。
+
+### 运行时控制
+
+| 环境变量 | 值与用途 |
+|----------|----------|
+| `HNW_CUSTOM_OPS_FALLBACK` | `auto` 自动选择；`cpu` 禁用 GPU、保留 OpenMP；`numpy` 强制参考路径 |
+| `HNW_CUSTOM_OPS_THREADS` | `auto` 或正整数，控制 native CPU 线程数 |
+| `HNW_CUSTOM_OPS_DEBUG` | `0` / `1`，关闭或开启分发调试信息 |
+
+多数 wrapper 的参考路径为 NumPy；fused 星点检测的最终回退位于 Norma 组件层。
+灰度输入兼容性和该回退的细节见 [对齐加速记录](../docs/custom_op_alignment_acceleration.md)。
 
 运行时可通过 `HNW_CUSTOM_OPS_FALLBACK=cpu` 禁用 Metal/CUDA 并保留 OpenMP，或在
 pipeline 启动前调用 `hoshicore._custom_op.set_backend_preference("cpu")`。传入

@@ -6,7 +6,6 @@ import zipfile
 import pytest
 
 import make_package
-import make_package_nuitka
 from hoshicore.packaging import common
 
 
@@ -158,7 +157,6 @@ def test_build_directory_cannot_write_into_release_tree(tmp_path, relative):
 @pytest.mark.parametrize("entry,arguments,expected", [
     (make_package.main, [], "pyinstaller"),
     (make_package.main, ["--backend", "nuitka"], "nuitka"),
-    (make_package_nuitka.main, [], "nuitka"),
 ])
 def test_entrypoints_select_backend_and_share_options(monkeypatch, entry, arguments, expected):
     calls = []

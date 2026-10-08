@@ -35,6 +35,21 @@ median 图直接复用；float 输入沿用原来的最大值归一化语义。�
 `HNW_CUSTOM_OPS_FALLBACK=numpy` 时走参考实现，CPU native 真实错误传播。
 OpenMP 使用已有线程配置、转换循环最多 8 线程；没有改全局线程策略。
 
+### 灰度输入与最终回退
+
+`GraySource` 携带原始 uint8/uint16 帧及主机灰度转换入口，主机结果按需缓存。仅在兼容性
+自检确认设备转换与当前 OpenCV 转换逐位一致时，CUDA 才上传原图并在设备上
+转灰度；其余路径使用主机灰度。自检按 OpenCV 的 IPP/optimization 配置缓存，
+这些开关改变后重新检查。
+
+`detection_gray_f64` / `detection_gray_u16` 在当前 OpenCV 颜色转换前后使用
+OpenMP 完成类型转换、归一化和最近偶数取整，保留各平台 IPP/非 IPP 的数值语义。
+浮点输入、缺失 native kernel 或强制 NumPy 时沿用原转换路径。
+
+`star_detect_fused_pixel_components` 有 CUDA/OpenMP 后端，但没有独立的 NumPy
+实现。native 后端不可用时，最终生产回退由 Norma 组件层的 OpenCV contour
+检测器承担；不能将“项目无需编译也能运行”理解为每个 wrapper 都有 NumPy 实现。
+
 ## 本轮修复与数值约束
 
 - asterism 网格 cell 下溢为零时转全扫描，避免无限扩格；有子进程超时回归测试。

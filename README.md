@@ -116,6 +116,14 @@ python launcher.py <pipeline.yaml> [image_dir] [--route KEY=VALUE] [--input KEY=
 `@清单文件` 适合超长输入集（规避命令行长度上限）或固定"前 N 帧"。清单内的相对路径按**启动 launcher 时的当前目录**解析，建议直接写绝对路径。`--route` 选择路由（如 `--route stacker=sigma_clip`），`--config` 覆盖全局配置（如 `--config output_filename=D:\out\stack.tif`）。完整参数以 `python launcher.py --help` 为准。
 
 
+自动化运行可设置 `--preflight {ask,apply,ignore,abort}`：默认 `ask` 交互询问，其余模式分别自动应用建议、忽略警告继续或中止。`--log-path PATH` 指定日志文件；`--no-progress` 关闭进度条。
+
+```powershell
+python launcher.py <pipeline.yaml> --inspect
+```
+
+`--inspect` 仅显示工作流参数 schema 后退出，不启动处理。
+
 ## 技术特性
 
 以下特性使 HoshinoWeaver 能够在普通硬件上高效处理大量高分辨率图像：

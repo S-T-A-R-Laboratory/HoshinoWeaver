@@ -18,6 +18,8 @@ hoshicore 是 HoshinoWeaver (HNW) 的核心计算库，是星空序列图像的�
 **架构改造参考**：
 
 - [框架层改造建议](./framework_refactor_notes.md)：记录执行引擎、配置解析、YAML 编译、Op schema、GUI/后端解耦等框架层风险与建议路线图。
+- [统一打包入口](./packaging.md)：PyInstaller/Nuitka 后端、公共发行流程与验证。
+- [长度广播协议](./length_protocol.md)：`set_length()` / `get_length()` 的传播路径、四层一致检查、新增 Op 契约，以及 9 项已登记缺陷（含 1 项 P0 静默挂死）与加固顺序。
 
 ---
 
@@ -67,6 +69,14 @@ executor.DAGExecutor.execute()     →  所有节点并发启动，由队列背�
    ▼
 收集 output 队列结果                →  dict[str, Any]
 ```
+
+### GUI 与工作流文件
+
+GUI 入口为 `HoshinoWeaver desktop.py`，界面代码位于 `ui/`，使用 PySide6 和 `qasync` 将 Qt 与 asyncio 事件循环整合。`MODE_MAP` 为不同模式选择工作流文件， `ui/panel_builder.py` 中的 `PanelSchema` / `DynamicConfigPanel` 根据 YAML 动态生成参数面板。
+
+- `<name>.meta.yaml`：顶层工作流，声明路由、参数和节点开关。
+- `hoshicore/dag/base/<name>.yaml`：可复用子图；节点 `op` 可引用算子类名或子图文件名。
+- `<name>.ui.yaml`：前端标签、控件、取值范围和分组等显示提示，与 Meta YAML 配对。
 
 ---
 
@@ -229,7 +239,7 @@ Feeder（全局数据注入）
 **关键机制**：
 
 - **背压控制**：队列 `maxsize=1`（默认），上游生产速度自动适配下游消费速度
-- **长度协调**：生产者通过 `set_length()` 广播序列长度，消费者通过 `get_length()` 等待就绪
+- **长度协调**：生产者通过 `set_length()` 广播序列长度，消费者通过 `get_length()` 等待就绪（协议细节、一致检查与已知缺陷见[长度广播协议](./length_protocol.md)）
 - **信号传播**：正常结束发送 `SENTINEL`，异常发送 `CancellationToken`，下游自动感知
 - **Sentinel 驱动**：Filter 类 Op 输出长度未知时，下游通过 sentinel 信号感知序列结束（而非预知长度）
 - **接口透明**：Op 代码仅依赖 `BaseQueue` 接口，无需区分进程内/跨进程队列
@@ -633,11 +643,34 @@ hoshicore/
 
 ---
 
-## 6. 相关文档
+## 6. 开发环境与测试
+
+源码语法基线为 Python 3.10+（使用 `X | Y` 类型注解）；实际依赖的版本要求以
+`requirements.txt` 和 `requirements-dev.txt` 为准。主要技术包括 NumPy、OpenCV、
+SciPy、PyWavelets（图像计算），NetworkX（DAG 拓扑），PySide6 + qasync（GUI），
+rawpy、tifffile、pyexiv2（图像 I/O 与 EXIF）。引擎使用 asyncio，部分 CPU 工作经
+`asyncio.to_thread` 调度；可选 native 加速使用 pybind11、CMake、Ninja、OpenMP
+和 CUDA，编译器与平台要求见 `csrc/README.md`。
+
+测试位于 `tests/`，使用 pytest、pytest-asyncio 和 pytest-cov：
+
+```powershell
+python -m pytest tests/ -v --tb=short --cov=hoshicore --cov-report=term-missing -x
+python -m pytest tests/test_yaml_loader.py -v
+```
+
+GitHub Actions 的 Python 3.11/3.12 与平台矩阵、native/NumPy 回退检查以
+`.github/workflows/test.yaml` 为准。
+
+## 7. 相关文档
 
 | 文档 | 内容 |
 |------|------|
 | [DAG 节点定义规范](./dag_node_definition.md) | YAML DAG 的完整 schema 说明，包含字段定义、link 语法和校验规则 |
+| [Meta YAML v2](./meta_yaml_v2_spec.md) | 路由、参数声明与节点开关的设计细节 |
+| [DAG Engine 架构](./dag_engine.md) | 编译链路、模块职责、资源规划与运行时执行模型 |
 | [Op 算子设计](./op.md) | Op 基类设计、队列机制、信号传播、异常处理的详细说明 |
+| [长度广播协议](./length_protocol.md) | 序列长度如何在 DAG 中先行传播、四层一致检查、新增 Op 合同、缺陷清单与加固路线 |
 | [噪声均匀化方案](./noise-equalization.md) | 最大值叠加噪声均匀化的数学推导和算法流程 |
+| [对齐与稳定化](./bundle_adjustment_and_stabilization.md) | 星点对齐叠加的几何模型与 bundle adjustment |
 | [开发者日志](./dev-log.md) | 成像模型推导、噪声分析等技术背景 |
