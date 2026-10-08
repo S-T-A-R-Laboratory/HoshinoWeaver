@@ -206,6 +206,8 @@ configs:
     hidden: true
   frame_rotations_output_path:
     hidden: true
+  star_detection_mode:
+    hidden: true
 
 route_configs:
   sigma_clip:

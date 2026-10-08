@@ -92,6 +92,8 @@ configs:
     hidden: true
   png_compressing:
     hidden: true
+  star_detection_mode:
+    hidden: true
 
 route_configs:
   "!include": fragments/stacker_route_configs.ui.yaml
