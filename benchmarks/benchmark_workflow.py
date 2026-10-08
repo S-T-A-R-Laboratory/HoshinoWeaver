@@ -117,14 +117,15 @@ def _jsonable(value: Any) -> Any:
 def _machine_lines(hardware: Mapping[str, Any],
                    software: Mapping[str, Any]) -> list[str]:
     cpu = hardware.get("cpu", {})
+    frequency = cpu.get("max_frequency_mhz")
+    frequency_text = f", {frequency} MHz" if frequency else ""
     lines = [
         "[Machine]",
         f"  host        : {hardware.get('hostname')} "
         f"({hardware.get('platform')})",
         f"  cpu         : {cpu.get('model')} "
         f"[{cpu.get('physical_cores')}C/{cpu.get('logical_cores')}T"
-        f"{', ' + str(cpu.get('max_frequency_mhz')) + ' MHz'
-           if cpu.get('max_frequency_mhz') else ''}]"
+        f"{frequency_text}]"
         f" (source: {cpu.get('model_source')})",
         f"  ram         : {_format_bytes(hardware.get('ram_total_bytes'))}"
         f"   swap: {_format_bytes(hardware.get('swap_total_bytes'))}",
