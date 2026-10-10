@@ -412,6 +412,7 @@ class TestBackendRegistry(CustomOpsTestCase):
         selection = backend_registry.select_backend(
             "median_reduce_chunk",
             load_module=lambda: (module, None),
+            module_loaders={"metal": lambda: (None, None)},
         )
 
         self.assertTrue(selection.native)
@@ -759,6 +760,7 @@ class TestBackendRegistry(CustomOpsTestCase):
         selection = backend_registry.select_backend(
             "median_reduce_chunk",
             load_module=lambda: (Module(), None),
+            module_loaders={"metal": lambda: (None, None)},
         )
 
         payload = selection.to_decision("median_reduce_chunk").to_dict()

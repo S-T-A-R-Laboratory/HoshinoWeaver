@@ -158,7 +158,25 @@ jobs:
       - name: Run tests (compiled backend)
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: python -m pytest tests/ -v --tb=short
+        run: python -m pytest tests/ -v --tb=short --junitxml=metal-pytest.xml
+
+      - name: Surface test failures for CI branch
+        if: failure()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          report = Path("metal-pytest.xml")
+          if report.exists():
+              for case in ET.parse(report).iter("testcase"):
+                  for tag in ("failure", "error"):
+                      failure = case.find(tag)
+                      if failure is not None:
+                          name = f"{case.get('classname')}.{case.get('name')}"
+                          message = failure.get("message", "").splitlines()[0]
+                          print(f"::error::{name}: {message}")
+          PY
 
       - name: Run tests (numpy fallback)
         env:
