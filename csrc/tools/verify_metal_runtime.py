@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 
 import numpy as np
@@ -349,6 +350,13 @@ def main() -> None:
     dog["timing"] = _dog_paired_timing()
     fused = _verify_fused_dog_shrink()
     timing = _paired_timing()
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(
+            "::notice title=Metal median stack timing::"
+            f"OpenMP {median_stack['openmp_seconds']}s, "
+            f"Metal {median_stack['metal_seconds']}s, "
+            f"speedup {median_stack['metal_speedup']}x"
+        )
     print(
         "HNW_METAL_RUNTIME_OK "
         + json.dumps(
