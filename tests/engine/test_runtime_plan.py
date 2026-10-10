@@ -291,7 +291,7 @@ def test_runtime_planner_uses_preflight_formula(tmp_path, monkeypatch):
     path = tmp_path / "frame.tif"
     tifffile.imwrite(str(path), np.zeros((512, 10), dtype=np.uint16))
     non_chunk_mem = 1000
-    # 灰度图 row_bytes = 10 * 1 * 2，Median cost = (4 + 1) * 20 = 100 bytes/row.
+    # 灰度图 row_bytes = 20；源块、工作块和输出共 (2 * 4 + 1) * 20 = 180 bytes/row。
     _mock_available_memory(monkeypatch, budget=12800, non_chunk_mem=non_chunk_mem)
 
     plan = plan_runtime(
@@ -302,7 +302,7 @@ def test_runtime_planner_uses_preflight_formula(tmp_path, monkeypatch):
         preflight_report=_report(non_chunk_mem),
     )
 
-    assert plan.config_overrides["chunk_rows"] == 128
+    assert plan.config_overrides["chunk_rows"] == 64
 
 
 def test_runtime_planner_sums_multiple_chunk_op_costs(tmp_path, monkeypatch):
@@ -661,7 +661,7 @@ def test_chunk_cost_per_row_formulas():
     float64_row = row_bytes // dtype_bytes * 8
 
     assert MedianReduceOp.chunk_cost_per_row(
-        n_frames, row_bytes, dtype_bytes) == (n_frames + 1) * row_bytes
+        n_frames, row_bytes, dtype_bytes) == (2 * n_frames + 1) * row_bytes
     assert SigmaClipFusedChunkOp.chunk_cost_per_row(
         n_frames, row_bytes, dtype_bytes) == (
             2 * n_frames * row_bytes +

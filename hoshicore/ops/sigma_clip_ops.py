@@ -32,7 +32,7 @@ import cv2
 import numpy as np
 from loguru import logger
 
-from .._custom_op import median_reduce_chunk as custom_median_reduce_chunk
+from .._custom_op.ops.median import median_reduce_frames as custom_median_reduce_frames
 from .._custom_op.cuda_memory import chunk_host_cost_per_row
 from .._custom_op.ops.fgp import (
     huber_weighted_chunk_native_available as custom_huber_weighted_chunk_available,
@@ -823,7 +823,7 @@ class MedianReduceOp(ChunkIteratorBaseOp):
     @classmethod
     def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
         _ = dtype_bytes
-        return (n_frames + 1) * row_bytes
+        return (2 * n_frames + 1) * row_bytes
 
     def _init_chunk_state(self, configs, row_start, row_end, w):
         return {'result': None}
@@ -832,12 +832,9 @@ class MedianReduceOp(ChunkIteratorBaseOp):
         return 1
 
     def _run_pass(self, state, chunk_stack):
-        n_frames = len(chunk_stack)
-        first_data = chunk_stack[0][0]
-        stack = np.empty((n_frames, *first_data.shape), dtype=first_data.dtype)
-        for f, (chunk_data, _) in enumerate(chunk_stack):
-            stack[f] = chunk_data
-        state['result'] = custom_median_reduce_chunk(stack)
+        state['result'] = custom_median_reduce_frames(
+            [chunk_data for chunk_data, _ in chunk_stack]
+        )
 
     def _check_convergence(self, state, pass_idx):
         return True

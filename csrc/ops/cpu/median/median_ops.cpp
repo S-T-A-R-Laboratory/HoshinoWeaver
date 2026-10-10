@@ -1,5 +1,6 @@
 #include "median_ops.h"
 
+#include "common/compat.h"
 #include "common/cpu_compat.h"
 
 #include <pybind11/numpy.h>
@@ -49,8 +50,7 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
                 out_ptr[idx] = high;
                 continue;
             }
-            std::nth_element(scratch.begin(), scratch.begin() + (mid - 1), scratch.begin() + mid);
-            const T low = scratch[static_cast<size_t>(mid - 1)];
+            const T low = *std::max_element(scratch.begin(), scratch.begin() + mid);
             out_ptr[idx] = median_average(low, high);
         }
     }
@@ -67,8 +67,7 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
             out_ptr[idx] = high;
             continue;
         }
-        std::nth_element(scratch.begin(), scratch.begin() + (mid - 1), scratch.begin() + mid);
-        const T low = scratch[static_cast<size_t>(mid - 1)];
+        const T low = *std::max_element(scratch.begin(), scratch.begin() + mid);
         out_ptr[idx] = median_average(low, high);
     }
 #endif

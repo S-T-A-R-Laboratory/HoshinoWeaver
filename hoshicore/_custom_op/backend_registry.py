@@ -166,6 +166,16 @@ _CANDIDATES: tuple[BackendCandidate, ...] = (
     ),
     BackendCandidate("max_combine", "openmp_cpu", "max_combine"),
     BackendCandidate("threshold_max_merge", "openmp_cpu", "threshold_max_merge"),
+    BackendCandidate(
+        "median_reduce_chunk", "cuda_host_io", "median_reduce_chunk_cuda",
+        priority=10, fallback="openmp_cpu", build_flag="cuda",
+        dtypes=("uint8", "uint16"), memory_model="static_estimator",
+    ),
+    BackendCandidate(
+        "median_reduce_chunk", "metal_host_io", "median_reduce_chunk_metal",
+        priority=9, fallback="openmp_cpu", module_key="metal", build_flag="metal",
+        dtypes=("uint8", "uint16"), memory_model="static_estimator",
+    ),
     BackendCandidate("median_reduce_chunk", "openmp_cpu", "median_reduce_chunk"),
     BackendCandidate("equalize_noise_correct", "openmp_cpu", "equalize_noise_correct"),
     BackendCandidate("noise_fill_local_mean", "openmp_cpu", "noise_fill_local_mean"),

@@ -47,10 +47,14 @@ class TestBackendRegistry(CustomOpsTestCase):
             "median_reduce_chunk"
         )
 
-        self.assertEqual(len(candidates), 1)
+        self.assertEqual(len(candidates), 3)
         self.assertEqual(candidates[0].logical_op, "median_reduce_chunk")
-        self.assertEqual(candidates[0].backend, "openmp_cpu")
-        self.assertEqual(candidates[0].kernel_name, "median_reduce_chunk")
+        self.assertEqual(candidates[0].backend, "cuda_host_io")
+        self.assertEqual(candidates[0].kernel_name, "median_reduce_chunk_cuda")
+        self.assertEqual(candidates[1].backend, "metal_host_io")
+        self.assertEqual(candidates[1].kernel_name, "median_reduce_chunk_metal")
+        self.assertEqual(candidates[2].backend, "openmp_cpu")
+        self.assertEqual(candidates[2].kernel_name, "median_reduce_chunk")
 
         filter_candidates = backend_registry.registered_backend_candidates(
             "median_filter_2d"
@@ -185,6 +189,7 @@ class TestBackendRegistry(CustomOpsTestCase):
                 "extract_point_features",
                 "huber_weighted_chunk",
                 "matching_cosine_bidirectional_nearest",
+                "median_reduce_chunk",
                 "sigma_clip_fused_chunk",
                 "star_detect_fused_pixel_components",
                 "star_mask_dog",
@@ -226,7 +231,7 @@ class TestBackendRegistry(CustomOpsTestCase):
         # Pins which ops have a Metal kernel, so widening coverage is deliberate.
         self.assertEqual(
             sorted(candidate.logical_op for candidate in metal_candidates),
-            ["median_star_mask", "star_mask_dog", "star_shrink_dog_process", "star_shrink_process"],
+            ["median_reduce_chunk", "median_star_mask", "star_mask_dog", "star_shrink_dog_process", "star_shrink_process"],
         )
         extra_estimate_args = {
             "star_mask_dog": {"small_kernel_size": 9, "large_kernel_size": 73},
@@ -241,14 +246,20 @@ class TestBackendRegistry(CustomOpsTestCase):
                     candidate.memory_model,
                     metal_memory_model_kind(candidate.logical_op),
                 )
-                estimate = metal_memory_estimate(
-                    candidate.logical_op,
-                    height=32,
-                    width=48,
-                    channels=1 if candidate.logical_op == "median_star_mask" else 3,
-                    dtype_bytes=2,
-                    **extra_estimate_args.get(candidate.logical_op, {}),
-                )
+                if candidate.logical_op == "median_reduce_chunk":
+                    estimate = metal_memory_estimate(
+                        candidate.logical_op, n_frames=16, plane_size=32 * 48 * 3,
+                        dtype_bytes=2,
+                    )
+                else:
+                    estimate = metal_memory_estimate(
+                        candidate.logical_op,
+                        height=32,
+                        width=48,
+                        channels=1 if candidate.logical_op == "median_star_mask" else 3,
+                        dtype_bytes=2,
+                        **extra_estimate_args.get(candidate.logical_op, {}),
+                    )
                 self.assertGreater(estimate.peak_device_bytes, 0)
 
     def test_registered_cuda_non_chunk_models_are_consumable(self) -> None:
@@ -267,6 +278,11 @@ class TestBackendRegistry(CustomOpsTestCase):
                 "n1": 17,
                 "n2": 19,
                 "feature_dim": 11,
+            },
+            "median_reduce_chunk": {
+                "n_frames": 16,
+                "plane_size": 1024,
+                "dtype_bytes": 2,
             },
             "star_detect_fused_pixel_components": {
                 "height": 64,
@@ -379,6 +395,7 @@ class TestBackendRegistry(CustomOpsTestCase):
         selection = backend_registry.select_backend(
             "median_reduce_chunk",
             load_module=lambda: (None, "mock import error"),
+            module_loaders={"metal": lambda: (None, None)},
         )
 
         self.assertFalse(selection.native)

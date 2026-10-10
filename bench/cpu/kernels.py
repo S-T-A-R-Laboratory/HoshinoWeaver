@@ -104,6 +104,11 @@ FRAME_PASS_CASE_NAMES = {
 MEDIAN_CHUNK_CASE_NAMES = {
     "median_reduce_chunk_numpy",
     "median_reduce_chunk_compiled",
+    "median_reduce_chunk_cuda",
+    "median_reduce_chunk_metal",
+    "median_reduce_frames_cpu",
+    "median_reduce_frames_cuda",
+    "median_reduce_frames_metal",
 }
 SIGMA_CHUNK_CASE_NAMES = {
     "sigma_clip_chunk_numpy",
@@ -160,6 +165,11 @@ CASE_NAMES = [
     "huber_pass",
     "median_reduce_chunk_numpy",
     "median_reduce_chunk_compiled",
+    "median_reduce_chunk_cuda",
+    "median_reduce_chunk_metal",
+    "median_reduce_frames_cpu",
+    "median_reduce_frames_cuda",
+    "median_reduce_frames_metal",
     "median_filter_2d_numpy",
     "median_filter_2d_compiled",
     "extract_point_features_numpy",
@@ -776,9 +786,22 @@ def bench_median_reduce_chunk_backend(
     reduce_chunk = {
         "numpy": median_ops.median_reduce_chunk_numpy,
         "compiled": median_ops.median_reduce_chunk_compiled,
+        "cuda": median_ops.median_reduce_chunk_cuda,
+        "metal": median_ops.median_reduce_chunk_metal,
     }[backend]
     for stack in stacks:
         _ = reduce_chunk(stack)
+
+
+def bench_median_reduce_frames_backend(stacks: list[np.ndarray], *, backend: str) -> None:
+    for stack in stacks:
+        frames = [stack[frame] for frame in range(stack.shape[0])]
+        if backend == "cpu":
+            _ = median_ops.median_reduce_chunk_compiled(np.stack(frames))
+        elif backend == "cuda":
+            _ = median_ops.median_reduce_frames_cuda(frames)
+        else:
+            _ = median_ops.median_reduce_frames_metal(frames)
 
 
 def bench_median_filter_2d_backend(
@@ -1484,6 +1507,23 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "median_reduce_chunk_compiled": lambda: bench_median_reduce_chunk_backend(
             get_median_chunk_stacks(),
             backend="compiled",
+        ),
+        "median_reduce_chunk_cuda": lambda: bench_median_reduce_chunk_backend(
+            get_median_chunk_stacks(),
+            backend="cuda",
+        ),
+        "median_reduce_chunk_metal": lambda: bench_median_reduce_chunk_backend(
+            get_median_chunk_stacks(),
+            backend="metal",
+        ),
+        "median_reduce_frames_cpu": lambda: bench_median_reduce_frames_backend(
+            get_median_chunk_stacks(), backend="cpu"
+        ),
+        "median_reduce_frames_cuda": lambda: bench_median_reduce_frames_backend(
+            get_median_chunk_stacks(), backend="cuda"
+        ),
+        "median_reduce_frames_metal": lambda: bench_median_reduce_frames_backend(
+            get_median_chunk_stacks(), backend="metal"
         ),
         "median_filter_2d_numpy": lambda: bench_median_filter_2d_backend(
             frames[0],

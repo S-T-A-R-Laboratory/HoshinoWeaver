@@ -30,6 +30,7 @@ def main() -> None:
     from hoshicore._custom_op import build_info
     from hoshicore._custom_op._dispatch import load_metal_module
     from hoshicore._custom_op.ops import star_shrink as star_shrink_ops
+    from hoshicore._custom_op.ops import median as median_ops
 
     info = build_info()
     if info.get("openmp") is not True:
@@ -56,6 +57,15 @@ def main() -> None:
     direct = star_shrink_ops.star_shrink_process_compiled(image, mask, *PARAMS)
     np.testing.assert_array_equal(dispatched, direct)
     np.testing.assert_array_equal(dispatched[mask == 0], image[mask == 0])
+
+    frames = [np.full((256, 256), frame, dtype=np.uint16) for frame in range(8)]
+    selected = median_ops._resolve_median_selection("auto", 8, frames[0].size, frames[0].dtype)
+    if selected.backend != "openmp_cpu":
+        raise SystemExit(f"expected OpenMP median fallback, got {selected.backend}")
+    np.testing.assert_array_equal(
+        median_ops.median_reduce_frames(frames),
+        median_ops.median_reduce_chunk_compiled(np.stack(frames)),
+    )
 
     print("HNW_NO_METAL_FALLBACK_OK")
 
