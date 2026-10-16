@@ -325,13 +325,13 @@ class BundleAdjustmentOp(BaseOp):
         _ = n_frames
         # Only compact star observations survive collection; pixel memory is
         # bounded by the frame currently being detected.
-        if configs.get("star_detection_recovery", True):
-            # Recovery materializes float64 gray/wavelet work even when the
-            # strict detector stays native. Treat all source elements as gray
-            # pixels conservatively because this interface has no channel count.
-            element_bytes = max(1, int(dtype_bytes or 1))
-            return (frame_bytes * max(2, (64 + element_bytes - 1) // element_bytes), 0)
-        return (frame_bytes * 2, 0)
+        # Budget the host wavelet fallback even when recovery is disabled.
+        # TODO: Pass spatial shape/channel count through resource estimation.
+        # Assume RGB temporarily; dividing by 3 underestimates mono inputs and
+        # overestimates RGBA inputs. Keep source bytes separate from float64 work.
+        element_bytes = max(1, int(dtype_bytes or 1))
+        gray_pixels = frame_bytes // element_bytes // 3
+        return (frame_bytes + 64 * gray_pixels, 0)
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         if configs.get("method", "distortion") != "distortion":
@@ -514,6 +514,19 @@ class BundleAdjustmentOp(BaseOp):
             plan = dataclasses.replace(
                 plan, star_detection_profile=recovery_profile,
                 star_recovery_probe_fractions=tuple(p.stats.recoverable_fraction for p in recovery_probes))
+        camera = plan.shared_camera
+        intrinsics = camera.intrinsics
+        cx, cy = intrinsics.principal_point_px
+        distortion = ", ".join(
+            f"{field.name}={getattr(camera.distortion, field.name):.9g}"
+            for field in dataclasses.fields(camera.distortion))
+        logger.info(
+            "{}: BA final camera: model={} solve_mode={} "
+            "focal_mm={:.6f} focal_px=(fx={:.6f}, fy={:.6f}) "
+            "principal_point_px=(cx={:.6f}, cy={:.6f}) distortion={}({})",
+            self.name, type(camera).__name__, plan.camera_solve_mode,
+            intrinsics.focal_length_mm, intrinsics.K[0, 0], intrinsics.K[1, 1],
+            cx, cy, type(camera.distortion).__name__, distortion)
         await self._broadcast_outputs({"alignment_plan": plan})
         if self.length is not None:
             self.tracker.close_bar(self.name)

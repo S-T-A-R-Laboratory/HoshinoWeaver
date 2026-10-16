@@ -299,7 +299,9 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
             mask = raw_mask
             if mask.ndim == 3:
                 mask = mask[..., 0]
-            static_mask_chunk = (mask > 0.5)[row_start:row_end]
+            # Slice first: saved chunk states must not retain a full-image
+            # boolean allocation for every chunk (especially chunk_rows=1).
+            static_mask_chunk = mask[row_start:row_end] > 0.5
 
         # Check if C++ kernel can be used for this chunk
         first_frame_dtype = fgp_total.source_dtype
@@ -445,6 +447,9 @@ class SigmaClipIteratorOp(ChunkIteratorBaseOp):
             state['accepted'] = accepted
         return state['accepted'].mu
 
+    def _chunk_output_state(self, state):
+        return {'accepted': state['accepted']}
+
     def _wrap_output(self, result, configs):
         fgp_total: FastGaussianParam = configs['fgp_total']
 
@@ -547,7 +552,9 @@ class SigmaClipFusedChunkOp(ChunkIteratorBaseOp):
             mask = raw_mask
             if mask.ndim == 3:
                 mask = mask[..., 0]
-            static_mask_chunk = (mask > 0.5)[row_start:row_end]
+            # Slice first: saved chunk states must not retain a full-image
+            # boolean allocation for every chunk (especially chunk_rows=1).
+            static_mask_chunk = mask[row_start:row_end] > 0.5
 
         return {
             'row_start': row_start,
@@ -615,6 +622,9 @@ class SigmaClipFusedChunkOp(ChunkIteratorBaseOp):
 
     def _finalize_chunk(self, state):
         return state['accepted'].mu
+
+    def _chunk_output_state(self, state):
+        return {'accepted': state['accepted']}
 
     def _wrap_output(self, result, configs):
         chunk_states = self._chunk_states

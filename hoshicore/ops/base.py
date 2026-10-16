@@ -442,7 +442,11 @@ class ChunkIteratorBaseOp(BaseOp):
 
                 chunk_result = self._finalize_chunk(state)
                 result_chunks.append(chunk_result[out_start:out_end])
-                self._chunk_states.append(state)
+                output_state = self._chunk_output_state(state)
+                if output_state is not None:
+                    self._chunk_states.append(output_state)
+                # Working buffers belong to this chunk, not to the final output.
+                del state, output_state
                 self.tracker.update(self.name)
                 chunk_idx += 1
 
@@ -450,6 +454,7 @@ class ChunkIteratorBaseOp(BaseOp):
             await self._broadcast_outputs(
                 self._wrap_output(result, configs))
         finally:
+            self._chunk_states.clear()
             self.tracker.close_bar(self.name)
             frame_buffer.cleanup()
 
@@ -474,6 +479,15 @@ class ChunkIteratorBaseOp(BaseOp):
 
     def _finalize_chunk(self, state: Any) -> np.ndarray:
         raise NotImplementedError
+
+    def _chunk_output_state(self, state: Any) -> Any:
+        """Return only extra data needed by _wrap_output; release work by default.
+
+        Image chunks are already collected separately. Subclasses producing
+        additional outputs may retain their finalized data here, but must not
+        retain masks, reference images, mergers or other chunk working buffers.
+        """
+        return None
 
     def _wrap_output(self, result: np.ndarray,
                      configs: dict[str, Any]) -> dict[str, Any]:

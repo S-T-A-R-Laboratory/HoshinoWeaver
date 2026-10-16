@@ -78,12 +78,15 @@ class StarAlignmentOp(FilterBaseOp):
     @classmethod
     def estimate_resources(cls, configs, frame_bytes, n_frames,
                            dtype_bytes=None):
-        if (configs.get("star_detection_recovery", True)
-                and configs.get("method", "distortion") != "homography"
+        if (configs.get("method", "distortion") != "homography"
                 and configs.get("matching_path", DEFAULT_MATCHING_PATH) != MATCHING_PATH_MEDIAN):
-            # Current-frame wavelet work plus the reference's cached gray.
+            # Include host fallback work regardless of the recovery switch:
+            # 64 bytes/pixel for detection, 8 for the reference's cached gray.
+            # TODO: Pass spatial shape/channel count through resource estimation.
+            # Assume RGB temporarily; mono is underestimated, RGBA overestimated.
             element_bytes = max(1, int(dtype_bytes or 1))
-            return (frame_bytes * max(2, (72 + element_bytes - 1) // element_bytes), 0)
+            gray_pixels = frame_bytes // element_bytes // 3
+            return (2 * frame_bytes + 72 * gray_pixels, 0)
         # 持有 1 张参考帧 + 1 张当前帧的对齐输出
         # TODO: 对齐本身资源未计算
         return (2 * frame_bytes, 0)
