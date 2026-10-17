@@ -36,6 +36,7 @@ routes:
       sigma_clip: { label: "Sigma 裁剪" }
 
 configs:
+  "!include": fragments/video_configs.ui.yaml
   camera_setup_mode:
     label: "焦距信息"
     description: "读取 EXIF 时，信息不完整则使用默认等效焦距；手动指定会覆盖 EXIF 焦距。"
@@ -295,9 +296,11 @@ layout:
 
 outputs:
   - filename_key: output_dir
+    enable_key: enable_sequence_export
     label: "输出序列"
     type: sequence
     dtype_key: output_dtype
     formats: ["PNG", "TIFF", "JPG"]
     dtype_options: ["uint8", "uint16", "uint32"]
     template_key: output_template
+  - "!include": fragments/video_output.ui.yaml

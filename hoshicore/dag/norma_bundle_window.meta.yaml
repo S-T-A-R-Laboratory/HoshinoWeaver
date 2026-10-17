@@ -61,7 +61,22 @@ configs:
   remap_map_scale:          { type: float, default: 0.5 }
   mask:                     { type: str, default: null }
   enable_ground:            { type: bool, default: true }
-  output_dir:               { type: str, required: true }
+  enable_sequence_export: { type: bool, default: true }
+  enable_video_export: { type: bool, default: false }
+  video_output_filename: { type: str, default: null }
+  video_codec: { type: str, default: "h264" }
+  ffmpeg_path: { type: str, default: null }
+  video_fps: { type: float, default: 25.0 }
+  video_width: { type: int, default: 0 }
+  video_height: { type: int, default: 0 }
+  video_chroma: { type: str, default: "420" }
+  video_rate_control: { type: str, default: "crf" }
+  video_crf: { type: float, default: 18.0 }
+  video_bitrate_kbps: { type: int, default: 12000 }
+  video_preset: { type: str, default: "medium" }
+  video_color_range: { type: str, default: "limited" }
+  video_input_color: { type: str, default: "auto" }
+  output_dir:               { type: str, default: null }
   output_template:          { type: str, default: "frame_{index:05d}.png" }
   output_dtype:             { type: str, default: "uint16" }
   jpg_quality:              { type: int, default: 85 }
@@ -233,6 +248,7 @@ nodes:
 
   batch_saver:
     op: BatchImageSaveOp
+    enable: configs.enable_sequence_export
     inputs:
       data: star_shrink.result
       frame_indices: window_filter.center_indices
@@ -244,6 +260,28 @@ nodes:
       jpg_quality: configs.jpg_quality
       png_compressing: configs.png_compressing
     outputs: { result: { type: sequence } }
+
+  video_saver:
+    op: VideoSaveOp
+    enable: configs.enable_video_export
+    inputs:
+      data: star_shrink.result
+      exifs: window_filter.aligned_exifs
+    configs:
+      output_filename: configs.video_output_filename
+      codec: configs.video_codec
+      ffmpeg_path: configs.ffmpeg_path
+      fps: configs.video_fps
+      width: configs.video_width
+      height: configs.video_height
+      chroma: configs.video_chroma
+      rate_control: configs.video_rate_control
+      crf: configs.video_crf
+      bitrate_kbps: configs.video_bitrate_kbps
+      preset: configs.video_preset
+      color_range: configs.video_color_range
+      input_color: configs.video_input_color
+    outputs: { result: { type: object } }
 
   report_display:
     op: BundleWindowReportDisplayOp
@@ -267,7 +305,8 @@ nodes:
     outputs: { result: { type: str } }
 
 outputs:
-  result: batch_saver.result
+  result: { src: batch_saver.result, required: false }
+  video: { src: video_saver.result, required: false }
   summary: report_display.summary
   frame_rotations: frame_rotation_export.export
   frame_rotations_path: { src: frame_rotation_export_save.result, required: false }

@@ -13,24 +13,50 @@ avoids re-prompting.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QComboBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QSizePolicy, QSlider, QStyle, QStyleOptionGroupBox, QVBoxLayout, QWidget,
 )
 
 from ui.output_presets import (
-    IMAGE_FORMAT_PRESETS, all_format_keys, detect_format_by_path,
+    IMAGE_FORMAT_PRESETS, VIDEO_CODEC_PRESETS, VIDEO_FORMAT_PRESETS,
+    all_format_keys, detect_format_by_path,
 )
 from ui.panel_builder import OutputSpec
-from ui.styles import (
-    COMBOBOX_STYLE, GROUP_HEADER_STYLE, LABEL_STYLE, LINEEDIT_STYLE,
-)
+from ui.widgets import ConfigSpec, create_config_row
+from ui.styles import GROUP_HEADER_STYLE, LABEL_STYLE
 
 
 # ─── Single output region ────────────────────────────────────────────────────
+
+
+def _select_row(label: str, values: list[str], parent: QWidget) -> tuple[QFrame, QComboBox]:
+    row, _getter, _setter = create_config_row(
+        ConfigSpec(key=label, label=label, widget="select",
+                   options=[(value, value) for value in values]), parent)
+    return row, row.findChild(QComboBox)
+
+
+def _path_row(label: str, parent: QWidget, browse: Callable, *,
+              on_change: Callable | None = None, read_only: bool = True,
+              placeholder: str = "") -> tuple[QFrame, QLineEdit]:
+    row, _getter, _setter = create_config_row(
+        ConfigSpec(key=label, label=label), parent, on_change=on_change)
+    line = row.findChild(QLineEdit)
+    line.setReadOnly(read_only)
+    line.setPlaceholderText(placeholder)
+    button = QPushButton("...", row)
+    button.setFixedWidth(28)
+    button.setToolTip(f"选择{label}")
+    button.clicked.connect(browse)
+    row.layout().addWidget(button)
+    return row, line
 
 
 class _OutputRegion(QFrame):
@@ -52,7 +78,7 @@ class _OutputRegion(QFrame):
         outer.setSpacing(4)
 
         # Label header
-        if spec.label:
+        if spec.label and not spec.enable_key:
             header = QLabel(spec.label, self)
             header.setStyleSheet(GROUP_HEADER_STYLE)
             outer.addWidget(header)
@@ -70,59 +96,19 @@ class _OutputRegion(QFrame):
                 f"intersecting workflow constraints with IMAGE_FORMAT_PRESETS")
 
         # Row 1: format selector
-        row_fmt = QFrame(self)
-        row_fmt_l = QHBoxLayout(row_fmt)
-        row_fmt_l.setContentsMargins(5, 0, 5, 0)
-        row_fmt_l.setSpacing(6)
-        fmt_label = QLabel("文件格式", row_fmt)
-        fmt_label.setMinimumWidth(60)
-        fmt_label.setMaximumWidth(80)
-        fmt_label.setStyleSheet(LABEL_STYLE)
-        row_fmt_l.addWidget(fmt_label)
-        self._format_combo = QComboBox(row_fmt)
-        self._format_combo.setStyleSheet(COMBOBOX_STYLE)
-        for fmt in self._allowed_formats:
-            self._format_combo.addItem(fmt)
+        row_fmt, self._format_combo = _select_row("文件格式", self._allowed_formats, self)
         self._format_combo.currentTextChanged.connect(self._on_format_changed)
-        row_fmt_l.addWidget(self._format_combo, 1)
         outer.addWidget(row_fmt)
 
         # Row 2: path + browse
-        row_path = QFrame(self)
-        row_path_l = QHBoxLayout(row_path)
-        row_path_l.setContentsMargins(5, 0, 5, 0)
-        row_path_l.setSpacing(6)
-        path_label = QLabel("输出路径", row_path)
-        path_label.setMinimumWidth(60)
-        path_label.setMaximumWidth(80)
-        path_label.setStyleSheet(LABEL_STYLE)
-        row_path_l.addWidget(path_label)
-        self._path_edit = QLineEdit(row_path)
-        self._path_edit.setReadOnly(True)
-        self._path_edit.setStyleSheet(LINEEDIT_STYLE)
-        row_path_l.addWidget(self._path_edit, 1)
-        browse_btn = QPushButton("...", row_path)
-        browse_btn.setMaximumWidth(28)
-        browse_btn.clicked.connect(self._on_browse)
-        row_path_l.addWidget(browse_btn)
+        row_path, self._path_edit = _path_row("输出路径", self, self._on_browse)
         outer.addWidget(row_path)
 
         # Row 3: dtype selector (optional)
         self._dtype_combo: QComboBox | None = None
         if spec.dtype_key:
-            row_dtype = QFrame(self)
-            row_dtype_l = QHBoxLayout(row_dtype)
-            row_dtype_l.setContentsMargins(5, 0, 5, 0)
-            row_dtype_l.setSpacing(6)
-            dtype_label = QLabel("输出位深", row_dtype)
-            dtype_label.setMinimumWidth(60)
-            dtype_label.setMaximumWidth(80)
-            dtype_label.setStyleSheet(LABEL_STYLE)
-            row_dtype_l.addWidget(dtype_label)
-            self._dtype_combo = QComboBox(row_dtype)
-            self._dtype_combo.setStyleSheet(COMBOBOX_STYLE)
+            row_dtype, self._dtype_combo = _select_row("输出位深", [], self)
             self._dtype_combo.currentTextChanged.connect(lambda _: self.changed.emit())
-            row_dtype_l.addWidget(self._dtype_combo, 1)
             outer.addWidget(row_dtype)
 
         # Row 4+: format-specific params (one widget per preset_param declared
@@ -346,7 +332,7 @@ class _SequenceOutputRegion(QFrame):
         outer.setContentsMargins(4, 4, 4, 4)
         outer.setSpacing(4)
 
-        if spec.label:
+        if spec.label and not spec.enable_key:
             header = QLabel(spec.label, self)
             header.setStyleSheet(GROUP_HEADER_STYLE)
             outer.addWidget(header)
@@ -357,78 +343,29 @@ class _SequenceOutputRegion(QFrame):
             f for f in allowed_formats if f in IMAGE_FORMAT_PRESETS
         ]
 
-        row_fmt = QFrame(self)
-        row_fmt_l = QHBoxLayout(row_fmt)
-        row_fmt_l.setContentsMargins(5, 0, 5, 0)
-        row_fmt_l.setSpacing(6)
-        fmt_label = QLabel("文件格式", row_fmt)
-        fmt_label.setMinimumWidth(60)
-        fmt_label.setMaximumWidth(80)
-        fmt_label.setStyleSheet(LABEL_STYLE)
-        row_fmt_l.addWidget(fmt_label)
-        self._format_combo = QComboBox(row_fmt)
-        self._format_combo.setStyleSheet(COMBOBOX_STYLE)
-        for fmt in self._allowed_formats:
-            self._format_combo.addItem(fmt)
+        row_fmt, self._format_combo = _select_row("文件格式", self._allowed_formats, self)
         self._format_combo.currentTextChanged.connect(self._on_format_changed)
-        row_fmt_l.addWidget(self._format_combo, 1)
         outer.addWidget(row_fmt)
 
         # Row 2: output directory + browse
-        row_dir = QFrame(self)
-        row_dir_l = QHBoxLayout(row_dir)
-        row_dir_l.setContentsMargins(5, 0, 5, 0)
-        row_dir_l.setSpacing(6)
-        dir_label = QLabel("输出目录", row_dir)
-        dir_label.setMinimumWidth(60)
-        dir_label.setMaximumWidth(80)
-        dir_label.setStyleSheet(LABEL_STYLE)
-        row_dir_l.addWidget(dir_label)
-        self._dir_edit = QLineEdit(row_dir)
-        self._dir_edit.setReadOnly(True)
-        self._dir_edit.setStyleSheet(LINEEDIT_STYLE)
-        row_dir_l.addWidget(self._dir_edit, 1)
-        browse_btn = QPushButton("...", row_dir)
-        browse_btn.setMaximumWidth(28)
-        browse_btn.clicked.connect(self._on_browse_dir)
-        row_dir_l.addWidget(browse_btn)
+        row_dir, self._dir_edit = _path_row("输出目录", self, self._on_browse_dir)
         outer.addWidget(row_dir)
 
         # Row 3: template name (editable)
         self._template_edit: QLineEdit | None = None
         if spec.template_key:
-            row_tpl = QFrame(self)
-            row_tpl_l = QHBoxLayout(row_tpl)
-            row_tpl_l.setContentsMargins(5, 0, 5, 0)
-            row_tpl_l.setSpacing(6)
-            tpl_label = QLabel("文件名模板", row_tpl)
-            tpl_label.setMinimumWidth(60)
-            tpl_label.setMaximumWidth(80)
-            tpl_label.setStyleSheet(LABEL_STYLE)
-            row_tpl_l.addWidget(tpl_label)
-            self._template_edit = QLineEdit(row_tpl)
-            self._template_edit.setStyleSheet(LINEEDIT_STYLE)
+            row_tpl, _getter, _setter = create_config_row(
+                ConfigSpec(key=spec.template_key, label="文件名模板"), self,
+                on_change=self.changed.emit)
+            self._template_edit = row_tpl.findChild(QLineEdit)
             self._template_edit.setPlaceholderText("frame_{index:05d}.png")
-            self._template_edit.textChanged.connect(lambda _: self.changed.emit())
-            row_tpl_l.addWidget(self._template_edit, 1)
             outer.addWidget(row_tpl)
 
         # Row 4: dtype selector
         self._dtype_combo: QComboBox | None = None
         if spec.dtype_key:
-            row_dtype = QFrame(self)
-            row_dtype_l = QHBoxLayout(row_dtype)
-            row_dtype_l.setContentsMargins(5, 0, 5, 0)
-            row_dtype_l.setSpacing(6)
-            dtype_label = QLabel("输出位深", row_dtype)
-            dtype_label.setMinimumWidth(60)
-            dtype_label.setMaximumWidth(80)
-            dtype_label.setStyleSheet(LABEL_STYLE)
-            row_dtype_l.addWidget(dtype_label)
-            self._dtype_combo = QComboBox(row_dtype)
-            self._dtype_combo.setStyleSheet(COMBOBOX_STYLE)
+            row_dtype, self._dtype_combo = _select_row("输出位深", [], self)
             self._dtype_combo.currentTextChanged.connect(lambda _: self.changed.emit())
-            row_dtype_l.addWidget(self._dtype_combo, 1)
             outer.addWidget(row_dtype)
 
         # Initialize format (also sets default template text)
@@ -518,7 +455,179 @@ class _SequenceOutputRegion(QFrame):
                 self._dtype_combo.setCurrentText(dtype)
 
 
+class _VideoOutputRegion(QFrame):
+    """Preset-driven video container, path and encoder controls."""
+
+    changed = Signal()
+
+    def __init__(self, spec: OutputSpec, parent=None):
+        super().__init__(parent)
+        self.spec = spec
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        self._allowed_formats = spec.formats or list(VIDEO_FORMAT_PRESETS)
+        self._current_format = self._allowed_formats[0]
+        self._path_cache = {}
+        self._codec_cache = {}
+        format_row, self._format_combo = _select_row("文件格式", self._allowed_formats, self)
+        layout.addWidget(format_row)
+        #self._description = QLabel(self)
+        #self._description.setStyleSheet(LABEL_STYLE)
+        #self._description.setWordWrap(True)
+        #layout.addWidget(self._description)
+        path_row, self._path_edit = _path_row(
+            "视频文件", self, self._browse, on_change=self._on_path_change,
+            read_only=False, placeholder="output.mp4")
+        layout.addWidget(path_row)
+        self._open_button = QPushButton("打开已导出视频", self)
+        self._open_button.hide()
+        self._result_path = None
+        self._open_button.clicked.connect(self._open_result)
+        layout.addWidget(self._open_button)
+        self._getters = {}
+        self._rows = {}
+        for param in spec.params:
+            row, getter, _setter = create_config_row(
+                param, self, on_change=self._on_param_change)
+            self._getters[param.key] = getter
+            self._rows[param.key] = row
+            if param.key == "video_codec":
+                layout.insertWidget(1, row)
+            else:
+                layout.addWidget(row)
+        self._format_combo.currentTextChanged.connect(self._on_format_changed)
+        self._on_format_changed(self._current_format)
+
+    def _on_format_changed(self, fmt):
+        codec_getter = self._getters.get("video_codec", lambda: "h264")
+        old_codec = codec_getter()
+        self._codec_cache[self._current_format] = old_codec
+        old_path = self._path_edit.text()
+        if not old_path or detect_format_by_path(old_path, VIDEO_FORMAT_PRESETS) == self._current_format:
+            self._path_cache[self._current_format] = old_path
+        self._current_format = fmt
+        preset = VIDEO_FORMAT_PRESETS[fmt]
+        path = self._path_cache.get(fmt)
+        if path is None:
+            path = str(Path(old_path).with_suffix(preset["default_ext"])) if old_path else ""
+        self._path_edit.blockSignals(True)
+        self._path_edit.setText(path)
+        self._path_edit.setPlaceholderText("output" + preset["default_ext"])
+        self._path_edit.blockSignals(False)
+        codec_row = self._rows.get("video_codec")
+        if codec_row is not None:
+            combo = codec_row.findChild(QComboBox)
+            codec = self._codec_cache.get(fmt, old_codec)
+            if codec not in preset["codecs"]:
+                codec = preset["default_codec"]
+            combo.blockSignals(True)
+            combo.clear()
+            for key in preset["codecs"]:
+                combo.addItem(VIDEO_CODEC_PRESETS[key]["label"], key)
+            combo.setCurrentIndex(combo.findData(codec))
+            combo.setToolTip(combo.currentText())
+            combo.blockSignals(False)
+        self._update_visibility()
+        self.changed.emit()
+
+    def _on_path_change(self):
+        path = self._path_edit.text()
+        fmt = detect_format_by_path(path, VIDEO_FORMAT_PRESETS)
+        if fmt in self._allowed_formats and fmt != self._current_format:
+            self._path_cache[fmt] = path
+            self._format_combo.setCurrentText(fmt)
+        else:
+            self.changed.emit()
+
+    def _update_visibility(self):
+        codec = self._getters.get("video_codec", lambda: "h264")()
+        format_preset = VIDEO_FORMAT_PRESETS[self._current_format]
+        codec_preset = VIDEO_CODEC_PRESETS[codec]
+        supported = format_preset["params"] & codec_preset["params"]
+        #self._description.setText(f"{format_preset['description']} · {codec_preset['description']}")
+        for param in self.spec.params:
+            self._rows[param.key].setEnabled(param.key in supported)
+            visible = param.key in supported
+            condition = param.visible_when
+            if condition and "key" in condition and param.key in self._rows:
+                getter = self._getters.get(condition["key"])
+                visible = visible and getter is not None and getter() == condition.get("eq")
+            self._rows[param.key].setVisible(visible)
+
+    def _on_param_change(self):
+        self._update_visibility()
+        self.changed.emit()
+
+    def _browse(self):
+        filters = [f"{fmt} 视频 (*{VIDEO_FORMAT_PRESETS[fmt]['default_ext']})"
+                   for fmt in self._allowed_formats]
+        path, chosen_filter = QFileDialog.getSaveFileName(
+            self, "导出视频", self._path_edit.text(), ";;".join(filters),
+            filters[self._allowed_formats.index(self._current_format)])
+        if path:
+            fmt = chosen_filter.split(" ", 1)[0] if chosen_filter else self._current_format
+            suffix = VIDEO_FORMAT_PRESETS[fmt]["default_ext"]
+            if Path(path).suffix.lower() != suffix:
+                path = str(Path(path).with_suffix(suffix))
+            self._path_edit.setText(path)
+
+    def _open_result(self):
+        if self._result_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._result_path))
+
+    def set_result(self, receipt):
+        self._result_path = receipt.get("path") if receipt else None
+        self._open_button.setVisible(bool(self._result_path))
+
+    def collect(self):
+        codec = self._getters.get("video_codec", lambda: "h264")()
+        supported = (VIDEO_FORMAT_PRESETS[self._current_format]["params"] &
+                     VIDEO_CODEC_PRESETS[codec]["params"])
+        return {self.spec.filename_key: self._path_edit.text(),
+                **{key: getter() for key, getter in self._getters.items() if key in supported}}
+
+    def is_ready(self):
+        return self.missing_reason() is None
+
+    def missing_reason(self):
+        if not self._path_edit.text():
+            return "请选择视频输出文件"
+        fmt = detect_format_by_path(self._path_edit.text(), VIDEO_FORMAT_PRESETS)
+        if fmt != self._current_format:
+            return f"视频输出文件必须使用 {VIDEO_FORMAT_PRESETS[self._current_format]['default_ext']} 扩展名"
+        return None
+
+    def apply_defaults(self, defaults):
+        pass
+
+
 # ─── OutputPanel (container) ─────────────────────────────────────────────────
+
+
+class _OutputGroup(QGroupBox):
+    """Keep the checked indicator visible under the desktop's inherited QSS."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        option = QStyleOptionGroupBox()
+        self.initStyleOption(option)
+        rect = self.style().subControlRect(
+            QStyle.CC_GroupBox, option, QStyle.SC_GroupBoxCheckBox, self).adjusted(1, 1, -1, -1)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = QColor("#218bb8") if self.isChecked() else QColor("#8b969e")
+        painter.setPen(QPen(color, 1.2))
+        painter.setBrush(color if self.isChecked() else QColor("white"))
+        painter.drawRoundedRect(rect, 2, 2)
+        if self.isChecked():
+            painter.setPen(QPen(QColor("white"), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+            painter.drawLine(round(x + w * .22), round(y + h * .52),
+                             round(x + w * .43), round(y + h * .73))
+            painter.drawLine(round(x + w * .43), round(y + h * .73),
+                             round(x + w * .80), round(y + h * .28))
+        painter.end()
 
 
 class OutputPanel(QWidget):
@@ -536,6 +645,7 @@ class OutputPanel(QWidget):
 
         self._path_cache: dict[str, dict[str, str]] = {}
         self._regions: list[_OutputRegion] = []
+        self._enable_groups: dict[str, QGroupBox] = {}
 
     def load_specs(self, specs: list[OutputSpec]):
         # Clear existing
@@ -545,15 +655,38 @@ class OutputPanel(QWidget):
             if w:
                 w.deleteLater()
         self._regions.clear()
+        self._enable_groups.clear()
 
         for spec in specs:
             if spec.type == "sequence":
                 region = _SequenceOutputRegion(spec, parent=self)
+            elif spec.type == "video":
+                region = _VideoOutputRegion(spec, parent=self)
             else:
                 region = _OutputRegion(spec, parent=self,
                                        path_cache=self._path_cache.setdefault(spec.filename_key, {}))
             region.changed.connect(self.values_changed.emit)
-            self._main_layout.addWidget(region)
+            if spec.enable_key:
+                group = _OutputGroup(spec.label, self)
+                font = group.font()
+                font.setBold(True)
+                group.setFont(font)
+                region.setFont(self.font())
+                group.setCheckable(True)
+                group.setChecked(spec.enabled_default)
+                group_layout = QVBoxLayout(group)
+                # Reserve the title/checkbox line instead of placing content
+                # underneath it. Account for the active font and DPI.
+                group_layout.setContentsMargins(4, group.fontMetrics().height() + 12, 4, 8)
+                group_layout.setSpacing(4)
+                group_layout.addWidget(region)
+                region.setVisible(spec.enabled_default)
+                group.toggled.connect(region.setVisible)
+                group.toggled.connect(lambda _checked: self.values_changed.emit())
+                self._enable_groups[spec.enable_key] = group
+                self._main_layout.addWidget(group)
+            else:
+                self._main_layout.addWidget(region)
             self._regions.append(region)
 
         self._main_layout.addStretch()
@@ -561,14 +694,29 @@ class OutputPanel(QWidget):
     def collect_outputs(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for region in self._regions:
+            key = region.spec.enable_key
+            if key:
+                result[key] = self._enable_groups[key].isChecked()
+                if not result[key]:
+                    continue
             result.update(region.collect())
         return result
 
+    def set_video_result(self, receipt):
+        for region in self._regions:
+            if isinstance(region, _VideoOutputRegion):
+                region.set_result(receipt)
+
     def is_ready(self) -> bool:
-        return all(region.is_ready() for region in self._regions)
+        return self.missing_reason() is None
 
     def missing_reason(self) -> str | None:
-        for region in self._regions:
+        active = [region for region in self._regions
+                  if not region.spec.enable_key or
+                  self._enable_groups[region.spec.enable_key].isChecked()]
+        if self._regions and not active:
+            return "请至少选择一种输出"
+        for region in active:
             reason = region.missing_reason()
             if reason:
                 return reason

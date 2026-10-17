@@ -45,6 +45,12 @@ temp_path:
   description: "磁盘缓冲的临时文件存放路径，留空使用系统默认 (tempfile.gettempdir())"
   widget: dir_picker
 
+ffmpeg_path:
+  label: "FFmpeg 可执行文件"
+  description: "用于导出 MP4 视频。留空时自动查找 external/ffmpeg.exe 和 PATH"
+  widget: file_picker
+  accept: "可执行文件 (*.exe);;所有文件 (*)"
+
 log_level:
   label: "日志级别"
   description: "控制台和文件日志的最低输出级别"

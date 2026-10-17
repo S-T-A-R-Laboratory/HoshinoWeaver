@@ -1,7 +1,7 @@
 """Shared UI style constants for dynamic panels."""
 
-LINEEDIT_STYLE = (
-    "QLineEdit {"
+TEXT_INPUT_STYLE = (
+    "QLineEdit, QSpinBox, QDoubleSpinBox {"
     "  border: 1px solid rgba(220,220,220,200);"
     "  border-radius: 3px;"
     "  background-color: rgba(250,250,250,200);"
@@ -9,6 +9,8 @@ LINEEDIT_STYLE = (
     "  font-size: 11px;"
     "}"
 )
+
+LINEEDIT_STYLE = TEXT_INPUT_STYLE
 
 COMBOBOX_STYLE = (
     "QComboBox {"

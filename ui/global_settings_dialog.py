@@ -249,7 +249,7 @@ class GlobalSettingsDialog(uQDialog):
             setter = lambda v, s=slider: s.setValue(int(v))
             return getter, setter, [slider, val_lbl]
 
-        elif widget_type == "dir_picker":
+        elif widget_type in ("dir_picker", "file_picker"):
             line = QLineEdit(parent)
             line.setReadOnly(True)
             line.setPlaceholderText("留空使用系统默认...")
@@ -261,8 +261,13 @@ class GlobalSettingsDialog(uQDialog):
             btn.setFixedWidth(28)
 
             def _browse():
-                path = QFileDialog.getExistingDirectory(
-                    parent, hint.get("label", "选择目录"), line.text() or "")
+                if widget_type == "file_picker":
+                    path, _ = QFileDialog.getOpenFileName(
+                        parent, hint.get("label", "选择文件"), line.text() or "",
+                        hint.get("accept", "所有文件 (*)"))
+                else:
+                    path = QFileDialog.getExistingDirectory(
+                        parent, hint.get("label", "选择目录"), line.text() or "")
                 if path:
                     line.setText(path)
 

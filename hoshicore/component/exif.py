@@ -11,13 +11,13 @@ from .utils import SUPPORT_COLOR_SPACE, SOFTWARE_NAME, VERSION
 
 # FocalPlaneResolutionUnit: EXIF 标准定义
 _RESOLUTION_UNIT_FACTORS = {
-    "2": 25.4,    # inch → mm
-    "3": 10.0,    # cm → mm
-    "4": 1.0,     # mm
-    "5": 0.001,   # μm → mm
+    "2": 25.4,  # inch → mm
+    "3": 10.0,  # cm → mm
+    "4": 1.0,  # mm
+    "5": 0.001,  # μm → mm
 }
 
-_EXIF_MANU_BLACKLIST  = {
+_EXIF_MANU_BLACKLIST = {
     "makernote", "sony", "canon", "nikon", "fujifilm", "olympus", "panasonic",
     "minolta", "samsung", "subimage"
 }
@@ -90,7 +90,7 @@ class ExifData:
             logger.warning(f"Trying to set a new EXIF tag {key} that does "
                            "not exist in the original image.")
         self.exif[key] = value
-    
+
     def get_exif(self, key: str):
         """获取EXIF属性值。
         
@@ -126,7 +126,9 @@ def read_exif_data(fname: str):
         return None
 
 
-def encode_exif_data(buf: NDArray, exifdata: ExifData, skip_blacklist: bool = True) -> bytes:
+def encode_exif_data(buf: NDArray,
+                     exifdata: ExifData,
+                     skip_blacklist: bool = True) -> bytes:
     """Write EXIF and icc_profile information to the given image file.
 
     Args:
@@ -137,8 +139,10 @@ def encode_exif_data(buf: NDArray, exifdata: ExifData, skip_blacklist: bool = Tr
     exifdata.set_exif(CommonExifTags.Software, f"{SOFTWARE_NAME} V{VERSION}")
     colorprofile = exifdata.colorprofile
     if skip_blacklist:
-        exif = {k: v for k, v in exifdata.exif.items()
-                         if not _is_in_blacklist(k)}
+        exif = {
+            k: v
+            for k, v in exifdata.exif.items() if not _is_in_blacklist(k)
+        }
     else:
         exif = exifdata.exif
     with pyexiv2.ImageData(buf.tobytes()) as image_data:

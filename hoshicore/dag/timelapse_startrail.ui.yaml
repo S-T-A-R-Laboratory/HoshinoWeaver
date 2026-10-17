@@ -20,6 +20,7 @@ routes:
         description: "滑窗内按渐入渐出取最大值，轨迹自然淡入淡出。可控性高，计算速度较慢"
 
 configs:
+  "!include": fragments/video_configs.ui.yaml
   enable_star_shrink:
     label: "缩星"
     description: "缩小星点，使轨迹更稀疏。"
@@ -165,9 +166,11 @@ layout:
 
 outputs:
   - filename_key: output_dir
+    enable_key: enable_sequence_export
     label: "输出序列"
     type: sequence
     dtype_key: output_dtype
     formats: ["PNG", "TIFF", "JPG"]
     dtype_options: ["uint8", "uint16", "uint32"]
     template_key: output_template
+  - "!include": fragments/video_output.ui.yaml

@@ -34,6 +34,9 @@ runtime_planner:
 temp_path:
   enabled: false
   value: null
+ffmpeg_path:
+  enabled: false
+  value: null
 log_level:
   enabled: false
   value: DEBUG

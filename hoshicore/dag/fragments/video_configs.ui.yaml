@@ -1,0 +1,86 @@
+enable_sequence_export: { hidden: true }
+enable_video_export: { hidden: true }
+video_output_filename: { hidden: true }
+video_codec:
+  hidden: true
+  label: "编码方式"
+  widget: select
+  options:
+    - { value: h264, label: "H.264" }
+    - { value: raw_rgb, label: "无压缩 RGB" }
+ffmpeg_path: { hidden: true }
+video_fps:
+  hidden: true
+  label: "视频帧率"
+  widget: input
+  min: 0.1
+  max: 240
+  step: 1
+video_width:
+  hidden: true
+  label: "目标宽度"
+  description: "0 表示自动；同时指定宽高时按边界等比例缩放。H.264 按色度采样要求调整为偶数。"
+  widget: input
+  min: 0
+  max: 32768
+video_height:
+  hidden: true
+  label: "目标高度"
+  description: "0 表示自动；宽高均为 0 时使用原始尺寸。"
+  widget: input
+  min: 0
+  max: 32768
+video_chroma:
+  hidden: true
+  label: "色度采样"
+  widget: select
+  options:
+    - { value: "420", label: "4:2:0（兼容优先）" }
+    - { value: "422", label: "4:2:2" }
+    - { value: "444", label: "4:4:4" }
+video_rate_control:
+  hidden: true
+  label: "质量控制"
+  widget: select
+  options:
+    - { value: "crf", label: "恒定质量（CRF）" }
+    - { value: "bitrate", label: "目标平均码率" }
+video_crf:
+  hidden: true
+  label: "CRF"
+  description: "数值越小质量越高；默认 18。"
+  widget: input
+  min: 0
+  max: 51
+  step: 1
+  visible_when: { key: video_rate_control, eq: crf }
+video_bitrate_kbps:
+  hidden: true
+  label: "码率（kbps）"
+  widget: input
+  min: 1
+  max: 1000000
+  visible_when: { key: video_rate_control, eq: bitrate }
+video_preset:
+  hidden: true
+  label: "编码速度"
+  widget: select
+  options: [ultrafast, veryfast, fast, medium, slow, slower, veryslow]
+video_color_range:
+  hidden: true
+  label: "数值范围"
+  widget: select
+  options:
+    - { value: limited, label: "Limited（16-255）" }
+    - { value: full, label: "Full（0-255）" }
+video_input_color:
+  hidden: true
+  label: "输入色彩"
+  description: "输入图像的色彩空间。如果图像缺少ICC或不使用色彩配置文件的色彩空间，须在此处指定输入色彩。输出固定为 Rec.709。"
+  widget: select
+  options:
+    - { value: auto, label: "自动（图像的 ICC）" }
+    - { value: srgb, label: "sRGB" }
+    - { value: linear_srgb, label: "线性 sRGB" }
+    - { value: bt709, label: "Rec.709 RGB" }
+    - { value: rawpy_prophoto, label: "ProPhoto＋BT.709 近似曲线" }

@@ -384,6 +384,9 @@ class HNW_window(QMainWindow, Ui_HNW):
 
     def _setup_output_panel(self):
         """Replace static output tab widgets with OutputPanel."""
+        # Dynamic rows supply their own styles. The legacy tab stylesheet
+        # fixes combo widths at 50px and references an obsolete arrow image.
+        self.star_trail_output.setStyleSheet("")
         layout = self.star_trail_output.layout()
         if layout:
             while layout.count():

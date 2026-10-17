@@ -1,4 +1,4 @@
-"""Image format presets for OutputPanel.
+"""Image and video format presets for OutputPanel.
 
 Encodes physical constraints of each image format:
 - Allowed dtypes (e.g. JPG only supports uint8)
@@ -51,16 +51,55 @@ IMAGE_FORMAT_PRESETS: dict[str, dict[str, Any]] = {
 }
 
 
+_H264_PARAMS = frozenset({
+    "video_codec",
+    "video_fps", "video_width", "video_height", "video_chroma",
+    "video_rate_control", "video_crf", "video_bitrate_kbps", "video_preset",
+    "video_color_range", "video_input_color",
+})
+VIDEO_CODEC_PRESETS: dict[str, dict[str, Any]] = {
+    "h264": {
+        "label": "H.264",
+        "description": "   H.264 · 8 位 · Rec.709 SDR",
+        "params": _H264_PARAMS,
+    },
+    "raw_rgb": {
+        "label": "无压缩 RGB",
+        "description": "   无压缩 RGB8 · Full · Rec.709",
+        "params": frozenset({"video_codec", "video_fps", "video_width",
+                             "video_height", "video_input_color"}),
+    },
+}
+VIDEO_FORMAT_PRESETS: dict[str, dict[str, Any]] = {
+    "MP4": {
+        "ext": [".mp4"],
+        "default_ext": ".mp4",
+        "description": "MP4",
+        "codecs": ["h264"],
+        "default_codec": "h264",
+        "params": _H264_PARAMS,
+    },
+    "AVI": {
+        "ext": [".avi"],
+        "default_ext": ".avi",
+        "description": "AVI",
+        "codecs": ["h264", "raw_rgb"],
+        "default_codec": "h264",
+        "params": _H264_PARAMS,
+    },
+}
+
+
 def all_format_keys() -> list[str]:
     return list(IMAGE_FORMAT_PRESETS.keys())
 
 
-def detect_format_by_path(path: str) -> str | None:
+def detect_format_by_path(path: str, presets: dict | None = None) -> str | None:
     """Return preset key matching the file extension, or None."""
     if not path:
         return None
     lower = path.lower()
-    for fmt, preset in IMAGE_FORMAT_PRESETS.items():
+    for fmt, preset in (IMAGE_FORMAT_PRESETS if presets is None else presets).items():
         for ext in preset["ext"]:
             if lower.endswith(ext):
                 return fmt

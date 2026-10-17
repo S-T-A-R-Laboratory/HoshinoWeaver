@@ -72,6 +72,21 @@ def test_failed_verification_keeps_existing_release_and_cleans_stage(tmp_path, m
     assert sorted(p.name for p in options.release_dir.parent.iterdir()) == [options.release_name]
 
 
+def test_external_tools_are_copied_before_verification(tmp_path, monkeypatch):
+    prepare_pipeline(monkeypatch)
+    tools = tmp_path / "external"
+    tools.mkdir()
+    (tools / "ffmpeg.exe").write_bytes(b"external tool")
+    options = common.BuildOptions(root=tmp_path, verify=True)
+
+    def verify(result, **kwargs):
+        assert (result.directory / "external/ffmpeg.exe").read_bytes() == b"external tool"
+
+    monkeypatch.setattr(common, "verify_distribution", verify)
+    assert common.run_packaging(options, fake_backend([])) == 0
+    assert (options.release_dir / "external/ffmpeg.exe").read_bytes() == b"external tool"
+
+
 def test_publish_rolls_back_when_stage_rename_fails(tmp_path, monkeypatch):
     final, stage = tmp_path / "release", tmp_path / "stage"
     final.mkdir()

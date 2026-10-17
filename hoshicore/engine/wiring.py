@@ -592,6 +592,10 @@ async def run_from_yaml(
     # Preflight and runtime planning need the same YAML defaults as wiring.
     global_configs = _resolve_configs(dag.global_configs, global_configs)
 
+    # Export dependencies are hard requirements, checked before expensive work.
+    await asyncio.to_thread(_validate_export_setup, dag, global_configs,
+                            op_registry or REGISTERED_OP)
+
     # ── 预检 ──
     preflight_report, check_results = run_preflight_checks(
         dag,
@@ -654,6 +658,32 @@ async def run_from_yaml(
 # ────────────────────────────────────────────────────────────────
 # 内部工具
 # ────────────────────────────────────────────────────────────────
+
+
+def _validate_export_setup(
+    dag: ValidatedDag,
+    configs: dict[str, Any],
+    registry: dict[str, type[BaseOp]],
+) -> None:
+    """Check required export settings and dependencies before processing frames."""
+    from ..component.video_io import VideoExportOptions, probe_ffmpeg
+    from ..ops.video_saver import VideoSaveOp
+    from .preflight import _resolve_node_configs
+
+    export_keys = {"enable_sequence_export", "enable_video_export"}
+    if export_keys <= dag.global_configs.keys():
+        if not any(configs.get(key) for key in export_keys):
+            raise ValueError("At least one of image sequence or video export must be enabled")
+        if configs.get("enable_sequence_export") and not configs.get("output_dir"):
+            raise ValueError("output_dir is required when image sequence export is enabled")
+    for name in dag.exec_order:
+        node = dag.nodes[name]
+        cls = registry.get(node["op"])
+        if cls is None or not issubclass(cls, VideoSaveOp):
+            continue
+        options = VideoExportOptions.from_mapping(
+            _resolve_node_configs(node, configs, cls))
+        probe_ffmpeg(options.ffmpeg_path, options.chroma, options.container, options.codec)
 
 
 def _spec_needs_meta_resolve(spec: dict[str, Any]) -> bool:

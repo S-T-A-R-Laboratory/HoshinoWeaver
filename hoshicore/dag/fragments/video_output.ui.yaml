@@ -1,0 +1,17 @@
+filename_key: video_output_filename
+enable_key: enable_video_export
+label: "导出视频"
+type: video
+formats: [MP4, AVI]
+params:
+  - video_codec
+  - video_fps
+  - video_width
+  - video_height
+  - video_chroma
+  - video_rate_control
+  - video_crf
+  - video_bitrate_kbps
+  - video_preset
+  - video_color_range
+  - video_input_color

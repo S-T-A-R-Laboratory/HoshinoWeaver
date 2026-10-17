@@ -562,6 +562,7 @@ class SlotHandler(QMainWindow):
     async def start_task(self):
         # 清空预览
         self.view_file()
+        self.window.output_panel.set_video_result(None)
         # 设置界面不可操作
         self.set_widget_handleable(handleable=False, task_type='star_trail')
         self.window._status = 'running'
@@ -586,6 +587,8 @@ class SlotHandler(QMainWindow):
         global_configs.update(output_collected)
         # 缓存主输出路径供进度条完成提示使用
         self.window._last_output_path = global_configs.get("output_filename", "")
+        if not self.window._last_output_path and global_configs.get("enable_video_export"):
+            self.window._last_output_path = global_configs.get("video_output_filename", "")
 
         try:
             cli_parts = ["python launcher.py", f'"{yaml_path}"']
@@ -603,7 +606,7 @@ class SlotHandler(QMainWindow):
             for k, v in global_configs.items():
                 cli_parts.append(f"--config {k}={v}")
             logger.info("Equivalent command line:\n  " + " \\\n    ".join(cli_parts))
-            await run_from_yaml(yaml_path,
+            results = await run_from_yaml(yaml_path,
                                 global_inputs,
                                 global_configs,
                                 tracker=qt_tracker,
@@ -615,7 +618,8 @@ class SlotHandler(QMainWindow):
             # 执行成功
             output_path = global_configs.get("output_filename", "")
             if not output_path:
-                output_dir = global_configs.get("output_dir", "")
+                output_dir = (global_configs.get("output_dir", "")
+                              if global_configs.get("enable_sequence_export", True) else "")
                 if output_dir and os.path.isdir(output_dir):
                     _IMG_EXTS = {'.png', '.jpg', '.jpeg', '.tif', '.tiff'}
                     frames = sorted(
@@ -626,6 +630,10 @@ class SlotHandler(QMainWindow):
                         output_path = str(frames[-1])
             self.window._preview_useable = True
             self.view_file(output_path)
+            video = results.get("video")
+            self.window.output_panel.set_video_result(video)
+            if video and not output_path:
+                self.window._last_output_path = video["path"]
             self.window._status = 'successed'
             self.window._status_n['status'] = '任务完成'
             self.window._status_n['tips_2'] = ''

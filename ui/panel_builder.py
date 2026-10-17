@@ -31,6 +31,9 @@ class OutputSpec:
     format_params: dict[str, str] = field(
         default_factory=dict)  # preset_param → config_key
     template_key: str | None = None  # sequence output: config key for filename template
+    enable_key: str | None = None
+    enabled_default: bool = True
+    params: list[ConfigSpec] = field(default_factory=list)
 
 
 @dataclass
@@ -59,7 +62,7 @@ class PanelSchema:
         schema._parse_routes(meta, ui)
         schema._parse_configs(meta, ui)
         schema._parse_route_configs(meta, ui)
-        schema._parse_outputs(ui)
+        schema._parse_outputs(ui, meta)
         schema._resolve_bind_defaults()
         schema.layout = ui.get("layout", {})
         return schema
@@ -83,8 +86,9 @@ class PanelSchema:
             for _opt, specs in opt_map.items():
                 _resolve(specs)
 
-    def _parse_outputs(self, ui: dict):
-        from ui.output_presets import IMAGE_FORMAT_PRESETS
+    def _parse_outputs(self, ui: dict, meta: dict | None = None):
+        from ui.output_presets import IMAGE_FORMAT_PRESETS, VIDEO_FORMAT_PRESETS
+        meta_configs = (meta or {}).get("configs", {})
         for entry in ui.get("outputs", []) or []:
             if not isinstance(entry, dict) or "filename_key" not in entry:
                 raise ValueError(
@@ -99,7 +103,19 @@ class PanelSchema:
                 dtype_options=entry.get("dtype_options"),
                 format_params=entry.get("format_params", {}) or {},
                 template_key=entry.get("template_key"),
+                enable_key=entry.get("enable_key"),
+                enabled_default=meta_configs.get(entry.get("enable_key"), {}).get("default", True),
             )
+            if spec.type not in ("image", "sequence", "video"):
+                raise ValueError(f"Unknown output type: {spec.type}")
+            if spec.enable_key and spec.enable_key not in meta_configs:
+                raise ValueError(f"Unknown output enable_key: {spec.enable_key}")
+            for key in entry.get("params", []):
+                if key not in meta_configs:
+                    raise ValueError(f"Unknown output parameter: {key}")
+                overlay = dict(ui.get("configs", {}).get(key, {}))
+                overlay["hidden"] = False
+                spec.params.append(_build_config_spec(key, meta_configs[key], overlay))
             # Validate format_params keys exist in presets
             for preset_param in spec.format_params:
                 found = any(preset_param in preset["params"]
@@ -111,8 +127,9 @@ class PanelSchema:
                     )
             # Validate formats list against presets
             if spec.formats is not None:
+                presets = VIDEO_FORMAT_PRESETS if spec.type == "video" else IMAGE_FORMAT_PRESETS
                 for fmt in spec.formats:
-                    if fmt not in IMAGE_FORMAT_PRESETS:
+                    if fmt not in presets:
                         raise ValueError(
                             f"OutputSpec '{spec.filename_key}': format '{fmt}' "
                             f"is not declared in IMAGE_FORMAT_PRESETS")

@@ -272,6 +272,11 @@ def run_packaging(options: BuildOptions, backend: ModuleType) -> int:
     try:
         result = backend.build(options, manifest, stage)
         backend.postprocess(result, options)
+        # External executables are opaque runtime tools, copied after compiler
+        # analysis so neither packager interprets them as Python/native modules.
+        external = options.root / "external"
+        if external.is_dir():
+            shutil.copytree(external, result.directory / "external", dirs_exist_ok=True)
         if options.verify:
             verify_distribution(result, native=native)
         publish_release(stage, final, overwrite=options.overwrite)
@@ -393,5 +398,4 @@ def verify_distribution(result: BuildResult, *, native: bool) -> None:
                 if gui_log_root.is_dir() and not any(gui_log_root.iterdir()):
                     gui_log_root.rmdir()
     print("Package verification passed: CLI args, DAG, EXIF, native backend, exact stacking, GUI startup.")
-
 

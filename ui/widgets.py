@@ -8,13 +8,13 @@ from typing import Any, Callable
 from PySide6.QtCore import QLocale, Qt, Signal
 from PySide6.QtGui import QColor, QDoubleValidator, QPalette
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
+    QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from ui.UILibs import DoubleSlider
-from ui.styles import COMBOBOX_STYLE, LABEL_STYLE, LINEEDIT_STYLE
+from ui.styles import COMBOBOX_STYLE, LABEL_STYLE, LINEEDIT_STYLE, TEXT_INPUT_STYLE
 from ui.transforms import apply_inverse
 
 
@@ -154,12 +154,17 @@ def create_config_row(
     elif spec.widget == "select":
         combo = QComboBox(row)
         combo.setStyleSheet(COMBOBOX_STYLE)
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(1)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         items: list[tuple[Any, str]] = spec.options or []
         for value, label in items:
             combo.addItem(label, value)
         values = [v for v, _ in items]
         if spec.default is not None and spec.default in values:
             combo.setCurrentIndex(values.index(spec.default))
+        combo.setToolTip(combo.currentText())
+        combo.currentTextChanged.connect(combo.setToolTip)
         if on_change:
             combo.currentIndexChanged.connect(lambda _: on_change())
         getter = lambda: combo.currentData()
@@ -328,6 +333,8 @@ def create_config_row(
 
     elif spec.widget == "input" and spec.type == "int":
         spin = QSpinBox(row)
+        spin.setStyleSheet(TEXT_INPUT_STYLE)
+        spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         spin.setMinimum(int(spec.min) if spec.min is not None else -999999)
         spin.setMaximum(int(spec.max) if spec.max is not None else 999999)
         spin.setSingleStep(int(spec.step) if spec.step else 1)
@@ -336,8 +343,7 @@ def create_config_row(
             spin.valueChanged.connect(lambda _: on_change())
         getter = spin.value
         setter = spin.setValue
-        layout.addWidget(spin)
-        layout.addStretch()
+        layout.addWidget(spin, 1)
 
     elif spec.widget == "input" and spec.type == "float":
         if spec.nullable:
@@ -372,6 +378,8 @@ def create_config_row(
             layout.addWidget(line, 1)
         else:
             spin = QDoubleSpinBox(row)
+            spin.setStyleSheet(TEXT_INPUT_STYLE)
+            spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
             spin.setMinimum(
                 spec.min if spec.min is not None else -999999.0)
             spin.setMaximum(
@@ -384,8 +392,7 @@ def create_config_row(
                 spin.valueChanged.connect(lambda _: on_change())
             getter = spin.value
             setter = spin.setValue
-            layout.addWidget(spin)
-            layout.addStretch()
+            layout.addWidget(spin, 1)
 
     else:
         line = QLineEdit(row)
