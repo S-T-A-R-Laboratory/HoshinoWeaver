@@ -33,7 +33,7 @@ from .utils import (ASTRO_SUFFIX, COMMON_SUFFIX, NOT_RECOM_SUFFIX, RAW_SUFFIX,
 def load_img(file_path: str) -> Optional[np.ndarray]:
     """ Using OpenCV API to load a single image from the given path.
     
-    If necessary, the image will be converted to the given dtype.
+    Encoded files are read as bytes; their headers determine the pixel dtype.
 
     Args:
         file_path (str): /path/to/the/image.suffix
@@ -71,14 +71,8 @@ def load_img(file_path: str) -> Optional[np.ndarray]:
                     # 暂时丢弃A维度
                     img = img[:, :, [2, 1, 0]].copy()
         elif (suffix in COMMON_SUFFIX) or (suffix in NOT_RECOM_SUFFIX):
-            img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint16),
+            img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
                                cv2.IMREAD_UNCHANGED)
-            if img is None:
-                # TODO: 需要确认是否还有其他数据可能fallback到uint8。
-                logger.warning(
-                    "Uint16 decoding failed. Fallback to uint8 loading...")
-                img = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8),
-                                   cv2.IMREAD_UNCHANGED)
         elif suffix in ASTRO_SUFFIX:
             data = fits.getdata(file_path)
             if hasattr(data, 'data') and not isinstance(data, np.ndarray):

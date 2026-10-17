@@ -27,7 +27,7 @@ SAME_SUFFIX_MAPPING = {"tiff": "tif", "jpeg": "jpg"}
 
 SUPPORT_COLOR_SPACE = ["Adobe RGB", "ProPhoto RGB", "sRGB"]
 COMMON_SUFFIX = ["tiff", "tif", "jpg", "png", "jpeg"]
-NOT_RECOM_SUFFIX = ["bmp", "gif", "fits"]
+NOT_RECOM_SUFFIX = ["bmp", "gif"]
 RAW_SUFFIX = ["cr2", "cr3", "arw", "nef", "dng", "rw2", "raf", "orf"]
 ASTRO_SUFFIX = ["fits", "fts"]
 SUPPORT_BITS = [8, 16]
