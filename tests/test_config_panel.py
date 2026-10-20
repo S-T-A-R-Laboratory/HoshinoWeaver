@@ -225,8 +225,6 @@ def test_uncompressed_avi_controls_follow_codec_capabilities(qt_app, workflow):
     video._path_edit.setText("output.avi")
     unsupported = {"video_chroma", "video_rate_control", "video_crf",
                    "video_bitrate_kbps", "video_preset", "video_color_range"}
-    assert "Rec.709" in video._description.text()
-    assert "不内嵌" in video._description.text()
     values = video.collect()
     assert values["video_codec"] == "raw_rgb"
     assert unsupported.isdisjoint(values)

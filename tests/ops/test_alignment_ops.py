@@ -194,7 +194,13 @@ def test_bundle_adjustment_uses_reference_camera_for_every_frame(
     async def run_cpu(function, *args, **kwargs):
         return function(*args, **kwargs)
 
-    shared_candidate = object()
+    shared_candidate = SimpleNamespace(
+        camera=CameraModel(Intrinsics(expected_focal, 36, 24, 12, 8), Distortion()),
+        init_source="manual",
+    )
+    expected_plan = _plan(
+        shared_candidate.camera, [_frame(i) for i in range(4)],
+        reference=expected_reference)
     candidate_calls = []
     detection_masks = []
 
@@ -209,7 +215,7 @@ def test_bundle_adjustment_uses_reference_camera_for_every_frame(
         captured["kwargs"] = kwargs
         for _ in range(5):
             kwargs["edge_completed"]()
-        return "plan"
+        return expected_plan
 
     async def broadcast(result):
         captured["output"] = result
@@ -259,7 +265,8 @@ def test_bundle_adjustment_uses_reference_camera_for_every_frame(
         "max_pair_offset": None,
         "max_nfev": 2000,
     }
-    assert captured["output"] == {"alignment_plan": "plan"}
+    assert set(captured["output"]) == {"alignment_plan"}
+    assert captured["output"]["alignment_plan"] is expected_plan
     op.tracker.create_bar.assert_called_once_with(
         "bundle", 10, desc="Bundle adjustment")
     op.tracker.reset_bar.assert_not_called()
@@ -301,7 +308,8 @@ def test_auto_recovery_locks_one_profile_for_all_frames(monkeypatch, profile):
     def build(frames, **kwargs):
         observed["positions"] = [f.stars.positions[0, 0] for f in frames]
         for _ in range(5):kwargs["edge_completed"]()
-        return _plan(_Camera([]), [_frame(i) for i in range(4)])
+        camera = CameraModel(Intrinsics(20, 36, 24, 12, 8), Distortion())
+        return _plan(camera, [_frame(i) for i in range(4)])
     monkeypatch.setattr(op, "_async_convert_inputs", inputs)
     monkeypatch.setattr(op, "_run_cpu", run_cpu)
     monkeypatch.setattr(op, "_broadcast_outputs", broadcast)
