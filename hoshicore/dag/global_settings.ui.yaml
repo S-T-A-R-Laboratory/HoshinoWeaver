@@ -9,12 +9,11 @@ int_weight:
 
 buffer_mode:
   label: "中间帧缓冲模式"
-  description: "memory=内存缓冲，disk=磁盘缓冲，replay=源重放"
+  description: "memory=内存缓冲，disk=磁盘缓冲"
   widget: select
   options:
     - {value: "memory", label: "内存缓冲"}
     - {value: "disk",   label: "磁盘缓冲"}
-    - {value: "replay", label: "源重放"}
 
 star_detection_mode:
   label: "星点检测策略"

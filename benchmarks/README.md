@@ -96,7 +96,7 @@ D:\data\lights\light_0002.cr3
 
 - `pipeline`：相对路径按仓库根解析，绝对路径直接使用。解释器、launcher、工作目录可在套件 `defaults` 或命令行设置；输出/缓存根目录只可在 `defaults` 设置。这些运行环境选项均不支持逐例覆盖。
 - `inputs`：目录路径、`@列表文件`（UTF-8、逐行、支持 `#` 注释）或路径数组三种写法等价（详见上文"手跑 launcher 时的 `@` 清单文件"）。三种写法都会在**计划阶段**被展开或读取成显式清单（仅目录输入按文件名排序，列表文件与数组保留原顺序），`input_limit` 在展开后截断，随后冻结写入`cases/<case_id>/run<k>/inputs_<name>.txt`，并以 `--input <name>=@<该文件>` 启动；清单指纹写入 `config.input_list_sha1`，包含输入名和实际投递顺序；它用于核对输入，不单独决定两次耗时能否比较。因此用例**不需要自己写 `@`**，除非希望清单由外部文件维护。
-- 注入的配置按 pipeline schema 决定：声明了 `output_filename` 且用例未给值时注入 `{输出根}/{case_id}.tif`（并预建输出根目录，`save_img` 不会自建）；声明了 `output_dir` 且用例未给值时注入 `{输出根}/{case_id}`。两种输出路径都支持用例占位符。当生效的 `buffer_mode` 为 `disk`/`replay` 且未给 `temp_path` 时注入并预建独立的 cache 目录。
+- 注入的配置按 pipeline schema 决定：声明了 `output_filename` 且用例未给值时注入 `{输出根}/{case_id}.tif`（并预建输出根目录，`save_img` 不会自建）；声明了 `output_dir` 且用例未给值时注入 `{输出根}/{case_id}`。两种输出路径都支持用例占位符。当生效的 `buffer_mode` 为 `disk` 且未给 `temp_path` 时注入并预建独立的 cache 目录。
 - 未指定 `expected_outputs` 时，若存在生效的 `output_filename`，默认检查该文件是否生成；序列输出工作流应显式列出需要检查的文件，文件名须与 `output_template` 一致（`{index}` / `{frame_index}` 属于保存算子的模板占位符，不由 benchmark 展开）。
 - 占位符：`{case_id}`、`{run_index}`、`{output_root}`、`{cache_root}`、`{run_dir}`、`{output_dir}`、`{working_dir}`；替换后仍含 `{` 视为错误。
 - `configs` 值为 `null` 视为错误（请直接省略该键）；`dict`/`list` 会按 JSON 传递。

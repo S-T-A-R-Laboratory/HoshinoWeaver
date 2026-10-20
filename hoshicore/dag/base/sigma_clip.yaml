@@ -5,7 +5,6 @@ version: "1"
 # 与原 SigmaClippingStackerOp 的 INPUTS 对齐
 inputs:
   data: { type: sequence }
-  fnames: { type: sequence, required: false }  # 可选：提供时启用 replay 模式
 
 # ── 全局配置 ──
 # 与原 SigmaClippingStackerOp 的 CONFIGS 对齐
@@ -16,7 +15,7 @@ configs:
   rej_low: { type: float, default: 3.0 }
   max_iter: { type: int, default: 5 }
   early_converge_ratio: { type: float, default: 0.99 }
-  buffer_mode: { type: str, default: "disk", global: true }  # disk/memory/replay
+  buffer_mode: { type: str, default: "disk", global: true }  # disk/memory
 
 # ── 节点 ──
 #
@@ -40,7 +39,6 @@ nodes:
     op: DiskBufferWriterOp
     inputs:
       data: inputs.data
-      fnames: inputs.fnames
     configs:
       buffer_mode: configs.buffer_mode
     outputs:

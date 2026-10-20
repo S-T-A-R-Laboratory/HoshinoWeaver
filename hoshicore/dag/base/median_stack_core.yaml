@@ -4,12 +4,11 @@ version: "1"
 # ── 全局输入 ──
 inputs:
   data: { type: sequence }
-  fnames: { type: sequence, required: false }  # 可选：提供时启用 replay 模式
 
 # ── 全局配置 ──
 configs:
   chunk_rows: { type: int, default: 32 }
-  buffer_mode: { type: str, default: "disk", global: true }  # disk/memory/replay
+  buffer_mode: { type: str, default: "disk", global: true }  # disk/memory
 
 # ── 节点 ──
 #
@@ -20,7 +19,6 @@ nodes:
     op: DiskBufferWriterOp
     inputs:
       data: inputs.data
-      fnames: inputs.fnames
     configs:
       buffer_mode: configs.buffer_mode
     outputs:

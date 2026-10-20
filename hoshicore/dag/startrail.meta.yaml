@@ -122,9 +122,6 @@ nodes:
     inputs:
       data: star_shrink.result
       weight: weight_generator.result
-    route_inputs:
-      mix: {fnames: inputs.fnames}
-      tmax: {fnames: inputs.fnames}
     route_configs:
       fifo:
         int_weight: configs.int_weight

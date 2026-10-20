@@ -4,7 +4,6 @@ version: "1"
 # ── 全局输入 ──
 inputs:
   data: { type: sequence }
-  fnames: { type: sequence, required: false }
 
 # ── 全局配置 ──
 configs:
@@ -23,7 +22,6 @@ nodes:
     op: DiskBufferWriterOp
     inputs:
       data: inputs.data
-      fnames: inputs.fnames
     configs:
       buffer_mode: configs.buffer_mode
     outputs:

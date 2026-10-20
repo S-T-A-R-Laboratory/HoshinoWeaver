@@ -12,10 +12,9 @@
 
 DiskBufferWriterOp：
     消费序列输入，逐帧缓存供下游多 pass 算法重放。
-    支持三种缓冲策略（通过 buffer_mode config 控制）：
-        - disk（默认）：将解码后的帧写入 DiskFrameBuffer（临时 .npz），读取快但占磁盘
+    支持两种缓冲策略（通过 buffer_mode config 控制）：
+        - disk（默认）：将解码后的帧写入 DiskFrameBuffer（临时 .npy），读取快但占磁盘
         - memory：帧直接保存在 RAM 中（MemoryFrameBuffer），零 I/O 但占内存
-        - replay：保留原始文件路径到 SourceReplayBuffer，零临时文件但每 pass 重新 decode
     清理策略：
         - 正常完成：buffer 由下游 SigmaClipIteratorOp 在 finally 中清理
         - 自身异常：在 except 中立即清理，防止泄漏
@@ -45,7 +44,7 @@ from .._custom_op.ops.sigma_clip import (
 )
 from ..component.data_container import FastGaussianParam, FloatImage
 from ..component.frame_buffer import (BaseFrameBuffer, DiskFrameBuffer,
-                                      MemoryFrameBuffer, SourceReplayBuffer)
+                                      MemoryFrameBuffer)
 from ..component.merger import HuberWeightedMerger, SigmaClippingMerger
 from ..component.noise_equalization import (compute_adaptive_n_sigma,
                                             threshold_max_merge)
@@ -58,10 +57,9 @@ from .base import BaseOp, ChunkIteratorBaseOp
 class DiskBufferWriterOp(BaseOp):
     """将序列帧缓存供下游多 pass 算法重放。
 
-    支持三种缓冲策略（通过 buffer_mode 配置）：
-        - "disk"（默认）：解码后的帧写入 DiskFrameBuffer（临时 .npz 文件）
+    支持两种缓冲策略（通过 buffer_mode 配置）：
+        - "disk"（默认）：解码后的帧写入 DiskFrameBuffer（临时 .npy 文件）
         - "memory"：帧直接保存在 RAM 中（MemoryFrameBuffer），零 I/O 但占内存
-        - "replay"：保留原始文件路径到 SourceReplayBuffer（需要 fnames 输入）
     """
 
     EXECUTOR = "cpu"
@@ -73,10 +71,6 @@ class DiskBufferWriterOp(BaseOp):
             "required": True,
         },
         "weight": {
-            "type": "sequence",
-            "required": False,
-        },
-        "fnames": {
             "type": "sequence",
             "required": False,
         },
@@ -99,38 +93,35 @@ class DiskBufferWriterOp(BaseOp):
         },
     }
 
+    @staticmethod
+    def _buffer_mode(configs):
+        mode = configs.get("buffer_mode", "disk")
+        if mode not in ("memory", "disk"):
+            raise ValueError(f"Unsupported buffer_mode: {mode!r}; use memory or disk")
+        return mode
+
     @classmethod
     def estimate_resources(cls, configs, frame_bytes, n_frames,
                            dtype_bytes=None):
         _ = dtype_bytes
         if n_frames is None:
             n_frames = 0
-        mode = configs.get("buffer_mode", "disk")
+        mode = cls._buffer_mode(configs)
         if mode == "memory":
             return (n_frames * frame_bytes, 0)
-        elif mode == "disk":
-            return (0, n_frames * frame_bytes)
-        return (0, 0)
+        return (0, n_frames * frame_bytes)
 
     async def _async_execute(self, configs: dict[str, Any]) -> None:
         tot_num = self.length
 
         has_weight = self.inputs['weight'].active
-        has_fnames = self.inputs['fnames'].active
-        buffer_mode = configs.get("buffer_mode", "disk")
+        buffer_mode = self._buffer_mode(configs)
         temp_path = configs.get("temp_path", None)
 
         # 确定缓冲策略
         if buffer_mode == "memory":
             frame_buffer = MemoryFrameBuffer()
             mode_label = "Memory"
-        elif buffer_mode == "replay":
-            if not has_fnames:
-                raise ValueError(
-                    f"{self.name}: replay mode requires 'fnames' input, "
-                    f"but fnames is not wired.")
-            frame_buffer = SourceReplayBuffer()
-            mode_label = "Replay"
         else:
             frame_buffer = DiskFrameBuffer(temp_path=temp_path)
             mode_label = "Disk"
@@ -148,7 +139,6 @@ class DiskBufferWriterOp(BaseOp):
                 try:
                     upper = self._async_convert_inputs()
                     cur_img = await upper['data']
-                    fname = (await upper['fnames']) if has_fnames else None
                     weight = (await upper['weight']) if has_weight else None
                 except StreamExhausted:
                     logger.warning(
@@ -162,10 +152,7 @@ class DiskBufferWriterOp(BaseOp):
                     self.tracker.update(self.name)
                     continue
 
-                if buffer_mode == "replay":
-                    frame_buffer.append(fname, weight)
-                else:
-                    frame_buffer.append(cur_img, weight)
+                frame_buffer.append(cur_img, weight)
                 stacked_num += 1
                 self.tracker.update(self.name)
 

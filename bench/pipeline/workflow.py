@@ -362,8 +362,7 @@ async def _run_workflow_async(
 ) -> dict[str, Any]:
     configs: dict[str, Any] = {
         "runtime_planner": True,
-        # memory_frames case 里的 fnames 只供 preflight/runtime planner peek shape。
-        # stacker 子图本身消费内存帧，不支持被资源 fallback 改写成 replay 输入。
+        # 保持基准指定的缓冲策略，不应用资源自动降级。
         "auto_fallback": False,
         "temp_path": str(temp_dir),
     }

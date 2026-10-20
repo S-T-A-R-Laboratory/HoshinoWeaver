@@ -557,7 +557,7 @@ def effective_configs(case: CaseSpec, paths: Mapping[str, Path],
         if key in configs:
             configs[key] = substitute_placeholders(str(configs[key]), mapping)
     buffer_mode = configs.get("buffer_mode")
-    if buffer_mode in ("disk", "replay") and not configs.get("temp_path"):
+    if buffer_mode == "disk" and not configs.get("temp_path"):
         configs["temp_path"] = str(paths["cache_root"])
     return configs
 

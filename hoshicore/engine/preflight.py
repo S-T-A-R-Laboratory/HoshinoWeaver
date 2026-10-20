@@ -335,15 +335,6 @@ def _resource_check(
         ))
 
     if total_disk > avail_disk:
-        fix = None
-        if effective_configs.get("buffer_mode") == "disk":
-            has_fnames = "fnames" in global_inputs and global_inputs["fnames"]
-            if has_fnames:
-                fix = PreflightFix(
-                    config_key="buffer_mode",
-                    current_value="disk",
-                    proposed_value="replay",
-                    reason="磁盘空间不足")
         issues.append(PreflightIssue(
             severity="warning",
             code="resource.disk",
@@ -351,7 +342,7 @@ def _resource_check(
                 f"预估磁盘缓存 {total_disk / 1e9:.2f} GB，"
                 f"可用空间 {avail_disk / 1e9:.2f} GB"
                 f"（不足 {(total_disk - avail_disk) / 1e9:.2f} GB）"),
-            fix=fix,
+            fix=None,
         ))
 
     # 5. 预测 fix 后是否仍然超限
@@ -462,7 +453,14 @@ def config_validity_check(
                 ))
 
     buffer_mode = effective_configs.get("buffer_mode", "disk")
-    if buffer_mode in ("memory", "replay"):
+    if buffer_mode not in ("memory", "disk"):
+        issues.append(PreflightIssue(
+            severity="error",
+            code="config.buffer_mode.invalid",
+            message=f"不支持的缓冲模式: {buffer_mode!r}，请选择 memory 或 disk。",
+        ))
+        return CheckResult(check_name=CONFIG_VALIDITY_CHECK_NAME, issues=issues)
+    if buffer_mode == "memory":
         return CheckResult(
             check_name=CONFIG_VALIDITY_CHECK_NAME, issues=issues)
 

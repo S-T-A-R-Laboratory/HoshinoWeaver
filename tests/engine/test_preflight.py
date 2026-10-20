@@ -106,12 +106,6 @@ class TestEstimateResources:
         assert mem == 60000
         assert disk == 0
 
-    def test_disk_buffer_writer_replay_mode(self):
-        mem, disk = DiskBufferWriterOp.estimate_resources(
-            {"buffer_mode": "replay"}, 2000, 30)
-        assert mem == 0
-        assert disk == 0
-
     def test_disk_buffer_writer_none_frames(self):
         mem, disk = DiskBufferWriterOp.estimate_resources(
             {"buffer_mode": "disk"}, 1000, None)
@@ -359,12 +353,6 @@ class TestConfigValidityCheck:
         dag = self._make_dag()
         result = config_validity_check(
             dag, {"buffer_mode": "memory", "temp_path": "/nonexistent/path"}, {})
-        assert result.issues == []
-
-    def test_replay_mode_skips_check(self, tmp_path):
-        dag = self._make_dag()
-        result = config_validity_check(
-            dag, {"buffer_mode": "replay", "temp_path": "/nonexistent/path"}, {})
         assert result.issues == []
 
     def test_satellite_manual_mode_requires_focal_length(self):

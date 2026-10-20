@@ -5,7 +5,6 @@ version: "1"
 inputs:
   data: { type: sequence }
   weight: { type: sequence, required: false }
-  fnames: { type: sequence, required: false }
 
 # ── 全局配置 ──
 configs:
@@ -23,7 +22,6 @@ configs:
 #                    ├──► disk_buffer ───────────┤                      │
 #                    │                    │      └──► threshold_max ────► result
 #  inputs.weight ────┘                   └─────────────────┘
-#  inputs.fnames ────┘
 
 nodes:
   mean_stacker:
@@ -41,7 +39,6 @@ nodes:
     inputs:
       data: inputs.data
       weight: inputs.weight
-      fnames: inputs.fnames
     configs:
       buffer_mode: configs.buffer_mode
     outputs:

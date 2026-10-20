@@ -3,10 +3,9 @@ from __future__ import annotations
 """
 帧缓冲：支持按索引随机读取的帧存储，用于 SigmaClipping 等多 pass 算法。
 
-提供三种实现：
-    - DiskFrameBuffer:    将解码后的帧写入临时 .npz 文件，读取快但占磁盘空间。
+提供两种实现，均保存进入缓冲时的实际像素：
+    - DiskFrameBuffer:    将解码后的帧写入临时 .npy 文件，读取快但占磁盘空间。
     - MemoryFrameBuffer:  将帧直接保存在 RAM 中，零 I/O 但占内存。
-    - SourceReplayBuffer: 保留原始文件路径，每次访问重新解码，零临时文件但每 pass 有 decode 开销。
 """
 
 import asyncio
@@ -18,8 +17,6 @@ from typing import AsyncIterator, Optional, Union
 
 import numpy as np
 from loguru import logger
-
-from .image_io import load_img
 
 
 class BaseFrameBuffer:
@@ -68,7 +65,7 @@ class BaseFrameBuffer:
         使 IO 等待与调用方的 CPU 计算（await _run_cpu(...)）并行执行。
 
         对 MemoryFrameBuffer 无额外开销（to_thread 调用极快）；
-        对 DiskFrameBuffer / SourceReplayBuffer 可有效隐藏 IO 延迟。
+        对 DiskFrameBuffer 可有效隐藏 IO 延迟。
 
         用法::
 
@@ -362,68 +359,3 @@ class MemoryFrameBuffer(BaseFrameBuffer):
         self._frames.clear()
         self._cleaned = True
         logger.debug("MemoryFrameBuffer cleaned up.")
-
-
-class SourceReplayBuffer(BaseFrameBuffer):
-    """源文件重放缓冲：保留原始文件路径，每次访问重新解码。
-
-    省磁盘空间（零临时文件），代价是每 pass 都有一次完整 decode 开销。
-    适用于硬盘空间受限、图片文件本身已在磁盘上的场景。
-
-    用法：
-        buffer = SourceReplayBuffer()
-        buffer.append("/path/to/img1.tif", weight=1.0)
-        buffer.append("/path/to/img2.tif")
-
-        frame, weight = buffer[0]   # 从原始文件重新解码
-        buffer.cleanup()
-    """
-
-    def __init__(self):
-        super().__init__()
-        self._entries: list[tuple[str, Optional[Union[float, np.ndarray]]]] = []
-        self._cleaned = False
-
-    def append(self, source_path: str,
-               weight: Optional[Union[float, np.ndarray]] = None) -> None:
-        """记录一个帧的原始文件路径和可选权重。
-
-        Args:
-            source_path: 原始图片文件路径。
-            weight: 可选权重，标量或 ndarray。
-        """
-        self._entries.append((source_path, weight))
-
-    def __getitem__(self, idx: int) -> tuple[np.ndarray, Optional[Union[float, np.ndarray]]]:
-        """按索引从原始文件重新解码帧。
-
-        Args:
-            idx: 帧索引。
-
-        Returns:
-            (frame, weight) 元组。weight 为 None 表示该帧无权重。
-
-        Raises:
-            IndexError: 索引越界。
-            IOError: 原始文件解码失败。
-        """
-        if idx < 0 or idx >= len(self._entries):
-            raise IndexError(
-                f"SourceReplayBuffer index {idx} out of range "
-                f"[0, {len(self._entries)})")
-        path, weight = self._entries[idx]
-        frame = load_img(path)
-        if frame is None:
-            raise IOError(f"Failed to decode source file: {path}")
-        return frame, weight
-
-    def __len__(self) -> int:
-        return len(self._entries)
-
-    def _do_cleanup(self) -> None:
-        """清理内部状态（无临时文件需要删除）。"""
-        if self._cleaned:
-            return
-        self._entries.clear()
-        self._cleaned = True
-        logger.debug("SourceReplayBuffer cleaned up.")

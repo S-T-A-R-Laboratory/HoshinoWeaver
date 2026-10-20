@@ -5,7 +5,6 @@ version: "1"
 inputs:
   data:   { type: sequence }
   weight: { type: sequence, required: false }
-  fnames: { type: sequence, required: false }
 
 # ── 全局配置 ──
 configs:
@@ -22,7 +21,6 @@ configs:
 #                │                                                  ▲
 #                ├──► sigma_clip ──► statistics ───────────────────┤
 #  inputs.weight ┘                                                  │
-#  inputs.fnames                                              load_mask
 
 nodes:
   trailstacker:
@@ -39,7 +37,6 @@ nodes:
     op: sigma_clip_fused.yaml
     inputs:
       data: inputs.data
-      fnames: inputs.fnames
     configs:
       rej_high: configs.rej_high
       rej_low: configs.rej_low
