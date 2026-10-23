@@ -37,6 +37,9 @@ temp_path:
 ffmpeg_path:
   enabled: false
   value: null
+photoshop_path:
+  enabled: false
+  value: null
 log_level:
   enabled: false
   value: DEBUG

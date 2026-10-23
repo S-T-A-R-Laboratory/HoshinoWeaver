@@ -1,5 +1,6 @@
 import asyncio
 import os
+from pathlib import Path
 from typing import Any, Union
 
 import av
@@ -8,8 +9,10 @@ from loguru import logger
 from numpy.typing import NDArray
 
 from .image_io import load_img
+from .exif import read_exif_data
 from .queue import RichContextQueue
-from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, is_support_format
+from .utils import COMMON_SUFFIX, NOT_RECOM_SUFFIX, RAW_SUFFIX, is_support_format
+from ..services import ServiceScope
 
 Frame = Union[NDArray[np.uint8], NDArray[np.uint16], None]
 
@@ -17,13 +20,40 @@ Frame = Union[NDArray[np.uint8], NDArray[np.uint16], None]
 class BaseLoader(object):
 
     def __init__(self, src: RichContextQueue, length: int, config: dict[str,
-                                                                        Any]):
+                                                                        Any],
+                 *, services: ServiceScope | None = None):
         self.src = src
         self.length = length
         self.config = config
+        self.services = services
 
     def load(self, item: Any) -> Any:
         raise NotImplementedError("Subclass must implement this method")
+
+    async def _run_worker(self, function, *args):
+        worker = asyncio.create_task(asyncio.to_thread(function, *args))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # Cancelling to_thread does not stop its thread. Drain it before
+            # releasing the PS gate or closing the process/files it is using.
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue  # Multiple failing nodes can cancel us again.
+                except Exception:
+                    break
+            if not worker.cancelled():
+                worker.exception(
+                )  # Retrieve a worker failure without masking cancellation.
+            raise
+
+    async def aload(self, item: Any, *, with_exif=False):
+        return await self._run_worker(self.load, item), None
+
+    async def aclose(self):
+        pass
 
     def __aiter__(self):
         self._idx = 0
@@ -32,15 +62,38 @@ class BaseLoader(object):
     async def __anext__(self):
         if self._idx >= self.length:
             raise StopAsyncIteration
-        img = await asyncio.to_thread(self.load, await self.src.get())
+        img, _ = await self.aload(await self.src.get())
         self._idx += 1
         return img
 
 
 class ImgFileListLoader(BaseLoader):
 
+    def __init__(self, src, length, config, *, services=None):
+        super().__init__(src, length, config, services=services)
+        self.raw_backend = config.get('raw_backend', 'native')
+        if self.raw_backend not in ('native', 'photoshop'):
+            raise ValueError(f'Unsupported RAW backend: {self.raw_backend}')
+
+    def _uses_photoshop(self, item):
+        return (self.raw_backend == 'photoshop'
+                and Path(item).suffix.lower().lstrip('.') in RAW_SUFFIX)
+
+    def _load_frame(self, item, with_exif):
+        return load_img(
+            os.fspath(item)), read_exif_data(item) if with_exif else None
+
     def load(self, item: str):
-        return load_img(item)
+        if self._uses_photoshop(item):
+            raise RuntimeError('Photoshop RAW loading requires await loader.aload()')
+        return self._load_frame(item, False)[0]
+
+    async def aload(self, item, *, with_exif=False):
+        if self._uses_photoshop(item):
+            if self.services is None:
+                raise RuntimeError('Photoshop RAW loading requires a service scope')
+            return await self.services.photoshop.render(item)
+        return await self._run_worker(self._load_frame, item, with_exif)
 
 
 class ArrayLoader(BaseLoader):

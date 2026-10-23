@@ -27,14 +27,18 @@ import yaml
 from loguru import logger
 
 from ..component.progress import DummyTracker, ProgressTracker
-from ..component.queue import BaseQueue, CancellationError, RichContextQueue, StreamExhausted
+from ..component.queue import (BaseQueue, CancellationError, RichContextQueue,
+                               StreamExhausted)
 from ..component.utils import time_cost_warpper
 from ..ops.base import BaseOp
+from ..services import DEFAULT_SERVICES, ServiceRegistry, ServiceScope
+from ..services.registry import _drain_on_cancel
+from .buffering import plan_input_buffers
 from .build import ValidatedDag, _iter_node_src_links, _parse_link
 from .executor import DAGExecutionError, DAGExecutor
 from .flatten import INACTIVE_MARKER
-from .preflight import (PreflightAbortError, PreflightAction, CheckResult,
-                        RESOURCE_CHECK_NAME, apply_check_fixes,
+from .preflight import (RESOURCE_CHECK_NAME, CheckResult, PreflightAbortError,
+                        PreflightAction, apply_check_fixes,
                         config_validity_check, run_preflight_checks)
 from .registry import REGISTERED_OP
 from .runtime_plan import apply_runtime_plan, plan_runtime
@@ -353,6 +357,14 @@ def instantiate_and_wire(
         raise ValueError(f"Global config(s) required but not provided "
                          f"(and no default): {missing_configs}")
 
+
+    for (name, port), capacity in plan_input_buffers(
+            dag, registry, effective_configs).items():
+        queue = instances[name].inputs[port]
+        if capacity != queue.maxsize:
+            queue.configure_capacity(capacity)
+            logger.debug('Lookahead buffer {}.{}: {} slots', name, port, capacity)
+
     # ══════ 4) 创建 feeder 协程 ══════
     feeders: list[Awaitable[None]] = []
     for name, targets in seq_targets.items():
@@ -405,6 +417,31 @@ async def run_dag(
     dag_search_paths: Optional[list[Path]] = None,
     tracker: Optional[DummyTracker] = None,
     cancel_event: Optional[asyncio.Event] = None,
+    service_registry: ServiceRegistry | None = None,
+) -> dict[str, Any]:
+    """Execute a root DAG with lazy service leases shared by all its Ops.
+
+    Pass an application-owned service_registry to register extensions or isolate
+    tests. The default registry coordinates overlapping graphs in this process.
+    Service creation options come from a snapshot of effective global configs.
+    """
+    registry = service_registry if service_registry is not None else DEFAULT_SERVICES
+    async with registry.scope(_resolve_configs(dag.global_configs, global_configs)) as services:
+        return await _run_dag(dag, global_inputs, global_configs, op_registry,
+                              progress, dag_search_paths, tracker, cancel_event,
+                              services=services)
+
+
+async def _run_dag(
+    dag: ValidatedDag,
+    global_inputs: dict[str, Any],
+    global_configs: dict[str, Any],
+    op_registry: Optional[dict[str, type[BaseOp]]] = None,
+    progress: bool = True,
+    dag_search_paths: Optional[list[Path]] = None,
+    tracker: Optional[DummyTracker] = None,
+    cancel_event: Optional[asyncio.Event] = None,
+    *, services: ServiceScope,
 ) -> dict[str, Any]:
     """
     端到端执行 DAG：实例化 → 布线 → 并发执行 → 收集结果。
@@ -432,6 +469,8 @@ async def run_dag(
 
     ops, feeders, output_queues, variable_input_nodes = instantiate_and_wire(
         dag, global_inputs, global_configs, op_registry)
+    for op in ops:
+        op._services = services
 
     # 注入进度追踪器：仅限速节点获得真实 tracker，其余保留 DummyTracker
     real_tracker = tracker if tracker is not None else (
@@ -502,29 +541,35 @@ async def run_dag(
         except (CancellationError, asyncio.CancelledError):
             pass
 
+    execution_tasks = []
     try:
         watcher_task = asyncio.create_task(_watch_external_cancel())
-        await asyncio.gather(_run_feeders(), executor.execute(),
-                             _collect_outputs())
+        execution_tasks = [asyncio.create_task(coro) for coro in
+                           (_run_feeders(), executor.execute(), _collect_outputs())]
+        await asyncio.gather(*execution_tasks)
     except DAGExecutionError:
         raise
     except (CancellationError, asyncio.CancelledError):
         logger.info("DAG cancelled by external request")
         raise asyncio.CancelledError("DAG cancelled by external request")
     finally:
-        for feeder_task in feeder_tasks:
-            if not feeder_task.done():
-                feeder_task.cancel()
-        if feeder_tasks:
-            await asyncio.gather(*feeder_tasks, return_exceptions=True)
-        if watcher_task is not None and not watcher_task.done():
-            watcher_task.cancel()
-            try:
-                await watcher_task
-            except asyncio.CancelledError:
-                pass
-        if tracker is not None:
-            tracker.close_all()
+        async def cleanup():
+            # gather() may raise cancellation before a to_thread/native worker
+            # has drained. Finish every node before releasing graph services.
+            if any(not task.done() for task in execution_tasks):
+                executor.cancel_all()
+            tasks = [*execution_tasks, *feeder_tasks,
+                     *executor._node_tasks.values()]
+            if watcher_task is not None:
+                tasks.append(watcher_task)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if tracker is not None:
+                tracker.close_all()
+
+        await _drain_on_cancel(asyncio.create_task(cleanup()))
 
     logger.info("DAG execution completed. Results collected.")
     return results
@@ -542,6 +587,7 @@ async def run_from_yaml(
     cancel_event: Optional[asyncio.Event] = None,
     route_choices: Optional[dict[str, str]] = None,
     preflight_callback=None,
+    service_registry: ServiceRegistry | None = None,
 ) -> dict[str, Any]:
     """
     便捷入口：从 YAML 文件加载、校验、并端到端执行 DAG。
@@ -652,7 +698,8 @@ async def run_from_yaml(
                          progress=progress,
                          dag_search_paths=dag_search_paths,
                          tracker=tracker,
-                         cancel_event=cancel_event)
+                         cancel_event=cancel_event,
+                         service_registry=service_registry)
 
 
 # ────────────────────────────────────────────────────────────────

@@ -16,6 +16,8 @@ routes:
 
 # ── 全局配置 ──
 configs:
+  raw_backend: { type: str, default: "native" }
+  photoshop_path: { type: str, default: null }
   enable_star_shrink:     { type: bool, default: false }
   star_shrink_mode:       { type: str,  default: "moderate" }
   enable_satellite_clean: { type: bool, default: false }
@@ -74,6 +76,7 @@ nodes:
       configs: configs.loader_configs
     outputs:
       result: { type: sequence }
+      exifs: { type: sequence }
 
   satellite_clean:
     op: satellite_clean.yaml
@@ -81,21 +84,13 @@ nodes:
     bypass: data
     inputs:
       data: data_loader.result
-      exifs: satellite_exif_loader.result
+      exifs: data_loader.exifs
     configs:
       window_size: configs.sat_window_size
       mask: configs.mask
       camera_mode: configs.sat_camera_mode
       focal_length_mm: configs.sat_focal_length_mm
       crop_factor: configs.sat_crop_factor
-    outputs:
-      result: { type: sequence }
-
-  satellite_exif_loader:
-    op: ExifReadOp
-    enable: configs.enable_satellite_clean
-    inputs:
-      fnames: inputs.fnames
     outputs:
       result: { type: sequence }
 
@@ -127,6 +122,7 @@ nodes:
     enable: configs.enable_sequence_export
     inputs:
       data: core_algo.result
+      exifs: data_loader.exifs
     configs:
       output_dir: configs.output_dir
       output_template: configs.output_template
@@ -134,18 +130,12 @@ nodes:
     outputs:
       result: { type: sequence }
 
-  video_exif_loader:
-    op: ExifReadOp
-    enable: configs.enable_video_export
-    inputs: { fnames: inputs.fnames }
-    outputs: { result: { type: sequence } }
-
   video_saver:
     op: VideoSaveOp
     enable: configs.enable_video_export
     inputs:
       data: core_algo.result
-      exifs: video_exif_loader.result
+      exifs: data_loader.exifs
     configs:
       output_filename: configs.video_output_filename
       codec: configs.video_codec

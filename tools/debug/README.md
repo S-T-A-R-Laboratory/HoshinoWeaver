@@ -42,3 +42,24 @@ The scripts may change together with internal APIs. Keep reusable algorithmic
 behavior in `hoshicore/` and test it there; the tracked test suite must not
 import these tools. Local datasets and generated results remain outside version
 control.
+
+## Photoshop RAW experiment
+
+```powershell
+python tools/debug/photoshop_raw_poc.py "C:/photos/example.CR2" --hide
+python tools/debug/photoshop_raw_poc.py --show
+```
+
+One standalone script opens RAW through Photoshop/ACR, using the adjacent
+same-name XMP and default render settings. TIFF is the temporary pixel exchange;
+`render_raw()` returns RGB pixels plus EXIF, XMP and the rendered TIFF's ICC.
+`to_exif_data()` adapts the result to the project's `ExifData`.
+
+Windows defaults to the local CC2018 executable. On macOS, pass the installed
+`.app` path with `--photoshop`; the AppleScript/AppKit branch is experimental
+and has not been run on a Mac. Platform differences stay in this script.
+
+`--output-dir` selects a new output directory; otherwise results go under
+`benchmarks/local/`. `--timeout` stops waiting without quitting PS. Hidden runs
+attempt to reveal PS on failure. Use disposable RAW/XMP copies for experiments.
+Dependencies are numpy, tifffile, psutil and pyexiv2 (already project dependencies).

@@ -108,6 +108,8 @@ async def execute(self) -> None:
 
 算子的输入/配置队列使用 [RichContextQueue](../hoshicore/component/queue.py)。`BaseOp.MAX_SIZE` 默认为 1，目标输出收集队列也使用 `maxsize=1`。
 
+对于有限预读的保序等长流，Op 可通过 `required_lookahead(configs)` 声明输出位置所需后续输入帧数的上界。wiring 在启动任务前沿 sequence 路径传播该上界，在具有共同生产节点的分支汇合处扩大消费端输入队列。普通节点默认预读为 0。该策略不保证最小内存，但容量不随序列长度增长；预检将额外容量计入队列内存估算。
+
 - **背压**：满队列会阻塞生产者，限制队列中的待处理数据数量；整体内存还包括算子状态、并发任务、帧缓存和输出收集。
 - **Length 先行**：生产者先 `set_length()`，消费者通过 `get_length()` 等待长度就绪。整数表示已知长度，`None` 表示未知长度，不表示结束。
 - **Sentinel**：正常结束使用专用对象 `BaseQueue._SENTINEL`；`get()` 回填该信号后抛出 `StreamExhausted`，其他并发消费者也能感知结束。数据值 `None` 可正常传递。

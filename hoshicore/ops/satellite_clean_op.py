@@ -40,6 +40,11 @@ class SatelliteCleanOp(BaseOp):
     中位数天然排斥单帧异常（卫星线），保留多帧一致信号（星点）。
     """
 
+    @classmethod
+    def required_lookahead(cls, configs):
+        # The first output waits for a full window, including at the boundary.
+        return max(0, int(configs['window_size']) - 1)
+
     EXECUTOR = "cpu"
     REPORTS_PROGRESS = True
     INPUTS: dict[str, Any] = {

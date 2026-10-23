@@ -21,6 +21,7 @@ hoshicore 是 HoshinoWeaver (HNW) 的核心计算库，是星空序列图像的�
 | --- | --- | --- |
 | 引擎 | `hoshicore/engine/` | 编译与执行 DAG，见 [DAG Engine 架构](./dag_engine.md) |
 | 算子 | `hoshicore/ops/` | 定义处理步骤与扩展接口，见 [Operator 目录与设计](./op.md) |
+| 服务 | `hoshicore/services/` | 复用外部程序与模型，见 [服务与外部资源](./services.md) |
 | 组件 | `hoshicore/component/` | 提供底层能力，如图像算法、几何求解、数据容器和基础设施等 |
 | 工作流 | `hoshicore/dag/` | YAML 流程定义，见 [DAG 节点定义规范](./dag_node_definition.md) |
 | 界面 | `ui/` | GUI、参数面板、进度与结果展示 |

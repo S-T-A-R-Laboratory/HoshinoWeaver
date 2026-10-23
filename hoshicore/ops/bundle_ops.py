@@ -651,6 +651,10 @@ class BundleReferenceRemapOp(FilterBaseOp):
 class _BundleWindowStackOp(BaseOp):
     """Length-preserving window execution for aligned or identity streams."""
 
+    @classmethod
+    def required_lookahead(cls, configs):
+        return max(0, int(configs['window_size']) // 2)
+
     EXECUTOR = "cpu"
     INPUTS: dict[str, Any] = {
         "data": {"type": "sequence"},

@@ -50,6 +50,11 @@ ffmpeg_path:
   widget: file_picker
   accept: "可执行文件 (*.exe);;所有文件 (*)"
 
+photoshop_path:
+  label: "Photoshop 程序路径"
+  description: "实验性 RAW 后端使用的 Windows Photoshop.exe 或 macOS Photoshop.app；仅在读取 RAW 时检查。"
+  widget: file_picker
+
 log_level:
   label: "日志级别"
   description: "控制台和文件日志的最低输出级别"

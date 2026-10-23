@@ -1,4 +1,3 @@
-import asyncio
 from typing import Any, Awaitable, Mapping
 
 from loguru import logger
@@ -24,35 +23,71 @@ class ImgDataLoaderOp(ParallelBaseOp):
     CONFIGS: dict[str, Any] = {
         "loader_type": {
             "type": "str",
-            "description": "数据加载器类型"
+            "description": "数据加载器类型",
+            "default": "img_file_list",
         },
         "configs": {
             "type": "dict",
-            "description": "加载器配置"
+            "description": "加载器配置",
+            "default": {},
+        },
+        "raw_backend": {
+            "type": "str",
+            "default": "native",
+            "global": True,
+            "description": "RAW 解码方式：native / photoshop",
         }
     }
     OUTPUTS: dict[str, Any] = {
         "result": {
             "type": "sequence",
             "description": "数据序列"
-        }
+        },
+        "exifs": {
+            "type": "sequence",
+            "description": "与解码像素对应的 EXIF 和 ICC"
+        },
     }
     CONCURRENCY = 4
 
     @classmethod
-    def estimate_resources(cls, configs, frame_bytes, n_frames,
+    def estimate_resources(cls,
+                           configs,
+                           frame_bytes,
+                           n_frames,
                            dtype_bytes=None):
         _ = dtype_bytes
         return (cls.CONCURRENCY * frame_bytes, 0)
 
+    async def _async_execute(self, configs):
+        loader_cls = self.build_loader_class(configs['loader_type'])
+        self._loader = loader_cls(self.inputs['src'], self.length, configs,
+                                  services=self._services)
+        failed = False
+        try:
+            if self.length != 0:
+                await super()._async_execute(configs)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                await self._loader.aclose()
+            except Exception as error:
+                if not failed:
+                    raise
+                logger.warning('Loader cleanup failed after an error: {}',
+                               error)
+
     async def _async_execute_single(self, data: Mapping[str, Awaitable[Any]],
                                     configs: dict[str, Any]) -> dict[str, Any]:
         src_val = await data['src']
-        loader_cls = self.build_loader_class(configs['loader_type'])
-        result = await asyncio.to_thread(loader_cls.load, None, src_val)
-        return {"result": result}
+        result, exif = await self._loader.aload(src_val,
+                                                with_exif=bool(
+                                                    self.outputs['exifs']))
+        return {"result": result, "exifs": exif}
 
-    def build_loader_class(self, loader_type: str) -> BaseLoader:
+    def build_loader_class(self, loader_type: str) -> type[BaseLoader]:
         mapping = {
             "img_file_list": ImgFileListLoader,
             "img_array": ArrayLoader

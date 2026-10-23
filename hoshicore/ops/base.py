@@ -13,6 +13,7 @@ from ..component.progress import DummyTracker
 from ..component.queue import (BaseQueue, CancellationError, FileCacheQueue,
                                RichContextQueue, StreamExhausted)
 from ..component.utils import time_cost_warpper
+from ..services import ServiceScope
 
 
 P = ParamSpec("P")
@@ -29,6 +30,15 @@ class BaseOp(object):
     REPORTS_PROGRESS: bool = False  # True 时该 Op 被视为限速节点，注入真实 tracker
     CHUNK_PLANNED: bool = False  # True 时 chunk_rows 由 runtime planner 管理
     BACKEND_LOGICAL_OP: str | None = None  # backend registry 中对应的 logical op
+
+    @classmethod
+    def required_lookahead(cls, configs: dict[str, Any]) -> int:
+        """Future frames needed per output position, for ordered equal-length streams.
+
+        Wiring supplies resolved static configs. Batch barriers require explicit
+        FrameBuffer storage rather than this finite-lookahead contract.
+        """
+        return 0
 
     @classmethod
     def estimate_resources(
@@ -78,8 +88,15 @@ class BaseOp(object):
         self.name = name
         self.display_name = name  # 进度条展示名；wiring 从节点 spec 的 label 覆盖
         self.tracker = DummyTracker()
+        self._services: ServiceScope | None = None  # Injected by root DAG wiring.
         self._cancel_event: Optional[
             Any] = None  # asyncio.Event 或 mp.Event，由 wiring 注入
+
+    @property
+    def services(self) -> ServiceScope:
+        if self._services is None:
+            raise RuntimeError('Services must be supplied by a root DAG scope')
+        return self._services
 
     async def pre_execute(self) -> dict[str, Any]:
         """

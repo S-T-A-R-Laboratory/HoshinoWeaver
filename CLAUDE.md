@@ -77,6 +77,11 @@ algorithms and infrastructure; `dag/` holds workflows; `ui/` renders the GUI.
   frames. Variable-output filters announce `None` and terminate via sentinel.
 - **Cancellation:** external stop or node failure propagates `CancellationToken`
   through queues; consumers raise `CancellationError` and propagate cancellation.
+- **Services:** `services/` owns typed registration and serial external resources.
+  Root `run_dag()` injects one lazy `ServiceScope` into all flattened Ops; pass
+  handles outside config/data queues. Ops never close shared services. Drain
+  nodes and native work before releasing the root scope; the last graph lease
+  releases the resource. See [services](docs/services.md).
 - **Config priority:** runtime `global_configs` > `default_settings.yaml` >
   pipeline YAML `default` > Op `CONFIGS` defaults.
 - **SubDAG names:** flattened nodes use `parent.child`; resolve links with
@@ -99,6 +104,7 @@ native kernel additions follow the checklist in `csrc/README.md`.
 | DAG compilation and execution | [Engine](docs/dag_engine.md) |
 | YAML and route syntax | [Node definition](docs/dag_node_definition.md), [Meta YAML v2](docs/meta_yaml_v2_spec.md) |
 | Operator APIs and extension | [Operators](docs/op.md), [Length protocol](docs/length_protocol.md) |
+| Shared external resources and service extension | [Services](docs/services.md) |
 | MP4 export, color conversion and external FFmpeg | [Video export](docs/video_export.md) |
 | Native builds, dispatch and kernel extension | [Custom ops](csrc/README.md) |
 | Kernel and workflow performance | [bench](bench/README.md), [benchmarks](benchmarks/README.md) |

@@ -23,6 +23,15 @@ routes:
         description: "使用 Huber 损失自动降低异常像素权重。速度较快，适合轻微异常场景"
 
 configs:
+  raw_backend:
+    label: "RAW 解码方式"
+    widget: select
+    description: "仅影响 RAW；JPEG/TIFF/PNG 等仍使用内置读取器。"
+    options:
+      - { value: "native", label: "内置" }
+      - { value: "photoshop", label: "Photoshop · Camera Raw（实验性）" }
+  photoshop_path:
+    hidden: true
   int_weight:
     hidden: true
   enable_exif:

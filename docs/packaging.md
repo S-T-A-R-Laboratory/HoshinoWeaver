@@ -50,6 +50,9 @@ hoshicore/packaging/
 这些模块仅用于构建，应用不导入它们，两个后端也排除 `hoshicore.packaging`。
 `__init__.py` 保持轻量，打包器通过子进程调用。
 
+项目存在 `external/` 时，公共流程在后端后处理之后、验证之前将其原样复制到发行
+目录的 `external/`，供 FFmpeg 等外部可执行文件使用，不参与编译器的模块依赖分析。
+
 - `BuildOptions`：公共参数、仓库路径及后端选择。
 - `PackageManifest`：DAG、settings、LICENSE、native 状态、包内 DLL、可选 turbojpeg 和 Metal shader；DLL 与数据资源分开描述。
 - `BuildResult`：发行内容目录、CLI/GUI 可执行路径、CLI 资源目录和 GUI 日志目录，供公共验证器适配不同后端布局。

@@ -70,6 +70,13 @@ class RichContextQueue(BaseQueue):
         self.active: bool = True  # 是否有生产者连接（由 wiring 层管理）
         self._cancelled_token: Optional[CancellationToken] = None
 
+    def configure_capacity(self, maxsize: int) -> None:
+        """Configure during wiring only, before producers or consumers start."""
+        if self._length_event.is_set() or not self.queue.empty() or self._cancelled_token:
+            raise RuntimeError('Queue capacity must be configured before execution')
+        self.queue = Queue(maxsize=maxsize)
+        self.maxsize = maxsize
+
     def _check_cancelled(self) -> None:
         """入口守卫：队列已取消时立即抛出。"""
         if self._cancelled_token is not None:

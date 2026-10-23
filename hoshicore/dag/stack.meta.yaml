@@ -26,6 +26,8 @@ route_configs:
 
 # ── 全局配置 ──
 configs:
+  raw_backend: { type: str, default: "native" }
+  photoshop_path: { type: str, default: null }
   int_weight:       { type: bool, default: true }
   enable_exif:      { type: bool, default: true }
   exif_reduce_type: { type: str,  default: "sum" }
@@ -38,9 +40,8 @@ configs:
 
 # ── 节点 ──
 #
-#  inputs.fnames ──┬──► data_loader ──► stacker ──────────┐
-#                  │                                      ├──► image_saver
-#                  └──► exif_loader ──► exif_reducer ─────┘
+#  inputs.fnames ──► data_loader.result ──► stacker ──────┐
+#                   data_loader.exifs ──► exif_reducer ──┴──► image_saver
 
 nodes:
   data_loader:
@@ -52,6 +53,7 @@ nodes:
       configs: configs.loader_configs
     outputs:
       result: { type: sequence }
+      exifs: { type: sequence }
 
   stacker:
     op: stacker.meta.yaml      # fixed-op；route_key 透传算法选择到子图
@@ -72,18 +74,11 @@ nodes:
     outputs:
       result: { type: image }
 
-  exif_loader:
-    enable: configs.enable_exif
-    op: ExifReadOp
-    inputs:
-      fnames: inputs.fnames
-    outputs:
-      result: { type: sequence }
-
   exif_reducer:
     op: ExifReduceOp
+    enable: configs.enable_exif
     inputs:
-      exifs: exif_loader.result
+      exifs: data_loader.exifs
     configs:
       merge_method: configs.exif_reduce_type
     outputs:

@@ -160,7 +160,7 @@ def _estimate_dag_resources(
             non_chunk_mem += mem
 
     # queue 是 DAG 流水线固定开销，和 chunk_rows 无关，必须从 chunk_budget 扣除。
-    queue_mem = _estimate_queue_overhead(dag, registry, frame_bytes)
+    queue_mem = _estimate_queue_overhead(dag, registry, frame_bytes, effective_configs)
     if log_details and queue_mem > 0:
         logger.info(f"[Preflight] 队列开销: {queue_mem / 1e9:.2f} GB")
     total_mem += queue_mem
@@ -190,6 +190,7 @@ def _estimate_queue_overhead(
     dag: ValidatedDag,
     registry: dict[str, type[BaseOp]],
     frame_bytes: int,
+    effective_configs: dict[str, Any] | None = None,
 ) -> int:
     """估算 DAG 队列中 in-flight 帧的内存开销。
 
@@ -210,6 +211,23 @@ def _estimate_queue_overhead(
             if isinstance(port_spec, dict) and port_spec.get("type") == "sequence":
                 queue_frames += 1
 
+    if effective_configs is not None:
+        from .buffering import plan_input_buffers
+        from .build import _iter_node_src_links, _parse_link
+        capacities = plan_input_buffers(dag, registry, effective_configs)
+        # A broadcast shares references: charge the largest retained span per
+        # producer output, not a full copy for each consumer. Metadata ports are
+        # conservatively charged as frames, matching the existing estimate.
+        spans = {}
+        for name in dag.exec_order:
+            for loc, src in _iter_node_src_links(dag.nodes[name]):
+                section, port = loc.split('.', 1)
+                if section != 'inputs' or (name, port) not in capacities:
+                    continue
+                parsed = _parse_link(src)
+                identity = tuple(parsed[1:])
+                spans[identity] = max(spans.get(identity, 1), capacities[name, port])
+        queue_frames += sum(max(0, capacity - 1) for capacity in spans.values())
     return queue_frames * frame_bytes
 
 
