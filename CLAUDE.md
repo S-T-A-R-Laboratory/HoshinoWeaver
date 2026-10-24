@@ -80,8 +80,9 @@ algorithms and infrastructure; `dag/` holds workflows; `ui/` renders the GUI.
 - **Services:** `services/` owns typed registration and serial external resources.
   Root `run_dag()` injects one lazy `ServiceScope` into all flattened Ops; pass
   handles outside config/data queues. Ops never close shared services. Drain
-  nodes and native work before releasing the root scope; the last graph lease
-  releases the resource. See [services](docs/services.md).
+  nodes and native work before closing the root scope and its service instances.
+  Run root graphs sequentially; registries hold factories only, not live services.
+  See [services](docs/services.md).
 - **Config priority:** runtime `global_configs` > `default_settings.yaml` >
   pipeline YAML `default` > Op `CONFIGS` defaults.
 - **SubDAG names:** flattened nodes use `parent.child`; resolve links with

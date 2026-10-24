@@ -419,10 +419,10 @@ async def run_dag(
     cancel_event: Optional[asyncio.Event] = None,
     service_registry: ServiceRegistry | None = None,
 ) -> dict[str, Any]:
-    """Execute a root DAG with lazy service leases shared by all its Ops.
+    """Execute a root DAG owning lazy services shared by all its Ops.
 
     Pass an application-owned service_registry to register extensions or isolate
-    tests. The default registry coordinates overlapping graphs in this process.
+    tests. The registry holds factories; each root graph owns fresh instances.
     Service creation options come from a snapshot of effective global configs.
     """
     registry = service_registry if service_registry is not None else DEFAULT_SERVICES

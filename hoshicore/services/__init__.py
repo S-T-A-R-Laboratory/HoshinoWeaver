@@ -6,12 +6,10 @@ from .registry import SerialService, ServiceKey, ServiceRegistry, ServiceScope
 
 def create_service_registry() -> ServiceRegistry:
     registry = ServiceRegistry()
-    registry.register(PHOTOSHOP, PhotoshopService, settings=photoshop_settings,
-                      resource_key=lambda options: options['path'])
+    registry.register(PHOTOSHOP, PhotoshopService, settings=photoshop_settings)
     registry.register(SEGMENTATION, OnnxService, settings=segmentation_settings)
     return registry
 
 
-# Factories and active leases are process-local; native resources live only
-# while at least one root graph holds a lease.
+# Only factory registrations are process-wide; each root graph owns its services.
 DEFAULT_SERVICES = create_service_registry()

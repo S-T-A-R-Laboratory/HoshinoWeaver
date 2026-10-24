@@ -62,62 +62,45 @@ async def test_extension_registration_is_lazy_typed_and_uses_a_settings_snapshot
 
 
 @pytest.mark.asyncio
-async def test_overlapping_scopes_share_until_last_release_and_keep_options_isolated():
+async def test_sequential_scopes_create_fresh_services_even_with_same_settings():
     registry = ServiceRegistry()
-    registry.register(ECHO, EchoService, settings=lambda c: {'model': c['model']})
-    first = registry.scope({'model': 'a', 'unrelated': 1})
-    second = registry.scope({'model': 'a', 'unrelated': 2})
-    other = registry.scope({'model': 'b'})
-    a = first.require(ECHO)
-    assert second.require(ECHO) is a
-    b = other.require(ECHO)
-    assert b is not a
-    await first.aclose()
-    assert not a.closed and await second.require(ECHO).echo('live') == 'live'
-    await second.aclose()
-    await other.aclose()
-    assert a.closed and b.closed
+    factory = Mock(side_effect=EchoService)
+    registry.register(ECHO, factory, settings=lambda c: {'model': c['model']})
+    async with registry.scope({'model': 'a', 'unrelated': 1}) as scope:
+        first = scope.require(ECHO)
+        assert scope.require(ECHO) is first
+        assert await first.echo('first') == 'first'
+    assert first.closed
+    await scope.aclose()  # Closing a scope twice must not close services twice.
+    async with registry.scope({'model': 'a', 'unrelated': 2}) as scope:
+        second = scope.require(ECHO)
+        assert second is not first
+        assert second.settings == {'model': 'a'}
+        assert await second.echo('second') == 'second'
+    assert second.closed and factory.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_next_scope_waits_for_previous_resource_exit():
-    closing, release = threading.Event(), threading.Event()
-
-    class SlowClose(EchoService):
+async def test_cleanup_failure_closes_other_services_and_does_not_poison_next_graph():
+    class FailingClose(EchoService):
         def _close(self):
-            closing.set()
-            assert release.wait(3)
             super()._close()
+            raise RuntimeError('close failed')
 
-    key = ServiceKey('slow', SlowClose)
+    key = ServiceKey('failing', FailingClose)
     registry = ServiceRegistry()
-    registry.register(key, SlowClose)
-    first = registry.scope()
-    original = first.require(key)
-    close = asyncio.create_task(first.aclose())
-    assert await asyncio.to_thread(closing.wait, 3)
-    second = registry.scope()
-    replacement = second.require(key)
-    work = asyncio.create_task(replacement.echo('new'))
-    try:
-        await asyncio.sleep(0.02)
-        assert not work.done() and not original.closed
-    finally:
-        release.set()
-    await close
-    assert await work == 'new' and original.closed
-    await second.aclose()
-
-
-@pytest.mark.asyncio
-async def test_same_photoshop_executable_with_conflicting_options_is_not_a_second_owner():
-    registry = create_service_registry()
-    async with registry.scope({'photoshop_path': 'mock', 'photoshop_hide': True}) as first:
-        first.photoshop
-        async with registry.scope({'photoshop_path': str(Path('mock').resolve()),
-                                   'photoshop_hide': False}) as second:
-            with pytest.raises(ValueError, match='Conflicting settings'):
-                second.photoshop
+    registry.register(key, FailingClose)
+    registry.register(ECHO, EchoService)
+    with pytest.raises(RuntimeError, match='close failed'):
+        async with registry.scope() as scope:
+            failing = scope.require(key)
+            first = scope.require(ECHO)
+    assert failing.closed and first.closed
+    async with registry.scope() as scope:
+        second = scope.require(ECHO)
+        assert second is not first
+        assert await second.echo('ok') == 'ok'
+    assert second.closed
 
 
 @pytest.mark.asyncio
@@ -171,10 +154,9 @@ async def test_onnx_session_is_lazy_serial_shared_and_released(monkeypatch):
     monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(InferenceSession=constructor))
     registry = create_service_registry()
     settings = {'segmentation_model_path': 'mock.onnx'}
-    second_scope = registry.scope(settings)
     async with registry.scope(settings) as scope:
         service = scope.segmentation
-        assert second_scope.segmentation is service
+        assert scope.segmentation is service
         constructor.assert_not_called()
         first = asyncio.create_task(service.infer({'image': 1}))
         assert await asyncio.to_thread(entered.wait, 3)
@@ -188,8 +170,6 @@ async def test_onnx_session_is_lazy_serial_shared_and_released(monkeypatch):
         constructor.assert_called_once_with(os.path.normcase(str(Path('mock.onnx').resolve())),
                                             providers=['CPUExecutionProvider'])
         assert calls == [(None, {'image': 1}), (['mask'], {'image': 2})]
-    assert service._session is not None
-    await second_scope.aclose()
     assert service._session is None
 
 
