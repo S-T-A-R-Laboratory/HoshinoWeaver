@@ -53,6 +53,14 @@ class TestCudaMemoryEstimate(unittest.TestCase):
     def tearDown(self) -> None:
         cuda_memory._reset_cuda_reservations_for_tests()
 
+    def test_median_reduce_chunk_estimate_matches_buffers(self) -> None:
+        estimate = cuda_memory.estimate_median_reduce_chunk(
+            n_frames=16, plane_size=32 * 1536 * 3, dtype_bytes=2
+        )
+        self.assertEqual(estimate.peak_device_bytes, 17 * 32 * 1536 * 3 * 2)
+        self.assertEqual(estimate.peak_pinned_bytes, 16 * 32 * 1536 * 3 * 2)
+        self.assertEqual(estimate.confidence, "exact")
+
     def test_detection_estimate_scales_with_image_size(self) -> None:
         small = cuda_memory.estimate_star_detect_fused_pixel_components(
             height=512,

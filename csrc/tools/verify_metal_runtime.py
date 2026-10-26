@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 
 import numpy as np
@@ -12,6 +13,7 @@ from hoshicore._custom_op._dispatch import CustomOpResourceExhaustedError
 from hoshicore._custom_op import _C
 from hoshicore._custom_op import _metal
 from hoshicore._custom_op.metal_memory import metal_memory_estimate
+from hoshicore._custom_op.ops import median as median_ops
 from hoshicore._custom_op.ops import star_shrink as star_shrink_ops
 
 
@@ -56,6 +58,33 @@ def _best_seconds(fn, *args) -> float:
         elapsed = time.perf_counter() - started
         best = elapsed if best is None else min(best, elapsed)
     return best
+
+
+def _verify_median_stack() -> dict[str, object]:
+    rng = np.random.default_rng(20261010)
+    stack = rng.integers(0, 65536, size=(16, 32, 1024, 3), dtype=np.uint16)
+    frames = tuple(stack[frame] for frame in range(stack.shape[0]))
+    expected = _C.median_reduce_chunk(stack)
+    actual = _metal.median_reduce_chunk_metal_frames(frames)
+    np.testing.assert_array_equal(actual, expected)
+    estimate = metal_memory_estimate(
+        "median_reduce_chunk", n_frames=16, plane_size=frames[0].size, dtype_bytes=2
+    )
+    cache = dict(_metal.metal_host_io_cache_info())
+    if cache.get("last_logical_peak_bytes") != estimate.peak_device_bytes:
+        raise RuntimeError("Metal median stack high-water disagrees with estimator")
+    selection = median_ops._resolve_median_selection("auto", 16, frames[0].size, stack.dtype)
+    if selection.backend != "metal_host_io":
+        raise RuntimeError(f"median stack did not select Metal: {selection.backend}")
+    metal_seconds = _best_seconds(median_ops.median_reduce_frames_metal, frames)
+    cpu_seconds = _best_seconds(lambda items: _C.median_reduce_chunk(np.stack(items)), frames)
+    return {
+        "shape": list(stack.shape),
+        "metal_seconds": round(metal_seconds, 4),
+        "openmp_seconds": round(cpu_seconds, 4),
+        "metal_speedup": round(cpu_seconds / metal_seconds, 3),
+        "peak_bytes": estimate.peak_device_bytes,
+    }
 
 
 def _paired_timing() -> dict[str, object]:
@@ -317,9 +346,17 @@ def main() -> None:
 
     logical_peak = _assert_high_water(last_image)
     dog = _verify_star_mask_dog()
+    median_stack = _verify_median_stack()
     dog["timing"] = _dog_paired_timing()
     fused = _verify_fused_dog_shrink()
     timing = _paired_timing()
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(
+            "::notice title=Metal median stack timing::"
+            f"OpenMP {median_stack['openmp_seconds']}s, "
+            f"Metal {median_stack['metal_seconds']}s, "
+            f"speedup {median_stack['metal_speedup']}x"
+        )
     print(
         "HNW_METAL_RUNTIME_OK "
         + json.dumps(
@@ -329,6 +366,7 @@ def main() -> None:
                 "working_set": info.get("recommended_max_working_set_bytes"),
                 "logical_peak": logical_peak,
                 "dog": dog,
+                "median_stack": median_stack,
                 "fused_dog_shrink": fused,
                 "cases": checked_cases,
                 "timing": timing,

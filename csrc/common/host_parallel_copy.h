@@ -11,4 +11,7 @@ namespace hnw {
 // multi-socket hosts is several times below the PCIe transfer rate.
 void parallel_copy(void* destination, const void* source, size_t bytes);
 
+void parallel_copy_frames(void* destination, const void* const* sources, size_t frame_bytes,
+                          size_t n_frames);
+
 } // namespace hnw

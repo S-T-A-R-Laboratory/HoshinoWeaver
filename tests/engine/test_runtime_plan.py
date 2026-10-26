@@ -1,4 +1,6 @@
+import asyncio
 import json
+import weakref
 from unittest import mock
 
 import numpy as np
@@ -9,6 +11,7 @@ from hoshicore.engine.build import ValidatedDag
 import hoshicore.engine.preflight as preflight_module
 from hoshicore.engine.preflight import PreflightReport, ResourceEstimate
 from hoshicore.engine.runtime_plan import apply_runtime_plan, plan_runtime
+from hoshicore.component.frame_buffer import MemoryFrameBuffer
 import hoshicore.engine.runtime_plan as runtime_plan_module
 import hoshicore._custom_op.backend_registry as backend_registry
 import hoshicore._custom_op.cuda_memory as cuda_memory
@@ -291,7 +294,7 @@ def test_runtime_planner_uses_preflight_formula(tmp_path, monkeypatch):
     path = tmp_path / "frame.tif"
     tifffile.imwrite(str(path), np.zeros((512, 10), dtype=np.uint16))
     non_chunk_mem = 1000
-    # 灰度图 row_bytes = 10 * 1 * 2，Median cost = (4 + 1) * 20 = 100 bytes/row.
+    # 灰度图 row_bytes = 20；双块预取、NumPy 分区及 float64 输出共 400 bytes/row。
     _mock_available_memory(monkeypatch, budget=12800, non_chunk_mem=non_chunk_mem)
 
     plan = plan_runtime(
@@ -302,7 +305,7 @@ def test_runtime_planner_uses_preflight_formula(tmp_path, monkeypatch):
         preflight_report=_report(non_chunk_mem),
     )
 
-    assert plan.config_overrides["chunk_rows"] == 128
+    assert plan.config_overrides["chunk_rows"] == 32
 
 
 def test_runtime_planner_sums_multiple_chunk_op_costs(tmp_path, monkeypatch):
@@ -654,6 +657,55 @@ def test_runtime_planner_clamps_to_default_max_chunk_rows(tmp_path, monkeypatch)
     assert plan.config_overrides["chunk_rows"] == runtime_plan_module.DEFAULT_MAX_CHUNK_ROWS
 
 
+def test_median_chunk_cost_covers_next_prefetch_and_working_stack(monkeypatch):
+    n_frames = 4
+    rows = 4
+    width = 11
+    buffer = MemoryFrameBuffer()
+    for frame in range(n_frames):
+        buffer.append(np.full((2 * rows, width), frame, dtype=np.uint16))
+
+    next_refs = []
+    next_ready = asyncio.Event()
+    original_get_rows = buffer.get_rows
+
+    async def controlled_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", controlled_to_thread)
+
+    def tracked_get_rows(frame, row_start, row_end):
+        result = original_get_rows(frame, row_start, row_end)
+        if row_start == rows:
+            next_refs.append(weakref.ref(result[0]))
+            if len(next_refs) == n_frames:
+                next_ready.set()
+        return result
+
+    buffer.get_rows = tracked_get_rows
+
+    async def observed_peak():
+        chunks = buffer.iter_chunk_prefetch([(0, rows), (rows, 2 * rows)])
+        current = await anext(chunks)
+        await asyncio.wait_for(next_ready.wait(), timeout=1)
+        assert all(ref() is not None for ref in next_refs)
+        working_stack = np.stack([frame for frame, _ in current])
+        output = np.empty_like(working_stack[0])
+        live_bytes = (
+            sum(frame.nbytes for frame, _ in current)
+            + sum(ref().nbytes for ref in next_refs)
+            + working_stack.nbytes
+            + output.nbytes
+        )
+        await chunks.aclose()
+        return live_bytes
+
+    live_bytes = asyncio.run(observed_peak())
+    row_bytes = width * np.dtype(np.uint16).itemsize
+    budget = MedianReduceOp.chunk_cost_per_row(n_frames, row_bytes, 2) * rows
+    assert budget >= live_bytes
+
+
 def test_chunk_cost_per_row_formulas():
     n_frames = 5
     row_bytes = 120
@@ -661,7 +713,7 @@ def test_chunk_cost_per_row_formulas():
     float64_row = row_bytes // dtype_bytes * 8
 
     assert MedianReduceOp.chunk_cost_per_row(
-        n_frames, row_bytes, dtype_bytes) == (n_frames + 1) * row_bytes
+        n_frames, row_bytes, dtype_bytes) == 4 * n_frames * row_bytes + float64_row
     assert SigmaClipFusedChunkOp.chunk_cost_per_row(
         n_frames, row_bytes, dtype_bytes) == (
             2 * n_frames * row_bytes +

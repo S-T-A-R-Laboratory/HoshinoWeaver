@@ -119,6 +119,22 @@ def estimate_camera_model_remap(
     )
 
 
+def estimate_median_reduce_chunk(
+    *, n_frames: int, plane_size: int, dtype_bytes: int
+) -> CudaMemoryEstimate:
+    if min(n_frames, plane_size, dtype_bytes) <= 0:
+        raise ValueError("median CUDA memory estimate requires positive dimensions")
+    input_bytes = n_frames * plane_size * dtype_bytes
+    output_bytes = plane_size * dtype_bytes
+    return CudaMemoryEstimate(
+        logical_op="median_reduce_chunk",
+        peak_device_bytes=input_bytes + output_bytes,
+        peak_pinned_bytes=input_bytes,
+        confidence="exact",
+        reason="input and output device buffers; one reused pinned staging buffer",
+    )
+
+
 def estimate_matching_cosine_bidirectional_nearest(
     *,
     n1: int,
@@ -641,6 +657,7 @@ _CUDA_STATIC_MEMORY_ESTIMATORS: dict[
     "matching_cosine_bidirectional_nearest": (
         estimate_matching_cosine_bidirectional_nearest
     ),
+    "median_reduce_chunk": estimate_median_reduce_chunk,
     "star_mask_dog": estimate_star_mask_dog,
     "star_shrink_dog_process": estimate_star_shrink_dog_process,
     "star_shrink_process": estimate_star_shrink_process,

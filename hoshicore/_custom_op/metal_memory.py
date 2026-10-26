@@ -121,6 +121,19 @@ def estimate_median_filter_2d(*, height: int, width: int) -> MetalMemoryEstimate
     )
 
 
+def estimate_median_reduce_chunk(
+    *, n_frames: int, plane_size: int, dtype_bytes: int
+) -> MetalMemoryEstimate:
+    if min(n_frames, plane_size, dtype_bytes) <= 0:
+        raise ValueError("Metal median stack estimate requires positive dimensions")
+    return MetalMemoryEstimate(
+        logical_op="median_reduce_chunk",
+        peak_device_bytes=(n_frames + 1) * plane_size * dtype_bytes,
+        confidence="exact",
+        reason="input stack and output in the Metal host-I/O workspace",
+    )
+
+
 def estimate_median_star_mask(*, height: int, width: int, channels: int = 1,
                               dtype_bytes: int = 2) -> MetalMemoryEstimate:
     if channels != 1 or dtype_bytes != 2:
@@ -171,6 +184,7 @@ def estimate_star_shrink_dog_process(
 
 _METAL_STATIC_MEMORY_ESTIMATORS = {
     "median_filter_2d": estimate_median_filter_2d,
+    "median_reduce_chunk": estimate_median_reduce_chunk,
     "median_star_mask": estimate_median_star_mask,
     "star_shrink_process": estimate_star_shrink_process,
     "star_mask_dog": estimate_star_mask_dog,

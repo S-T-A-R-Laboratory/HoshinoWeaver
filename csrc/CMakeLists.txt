@@ -151,6 +151,8 @@ if(HNW_ENABLE_CUDA)
         # Chunk stack kernels.
         ops/cuda/fgp/huber_weighted_chunk_ops.cpp
         ops/cuda/fgp/huber_weighted_chunk_ops.cu
+        ops/cuda/median/median_reduce_ops.cpp
+        ops/cuda/median/median_reduce_ops.cu
         ops/cuda/sigma_clip/sigma_clip_fused_chunk_ops.cpp
         ops/cuda/sigma_clip/sigma_clip_fused_chunk_ops.cu
         # Star shrink fused processing.
@@ -224,6 +226,7 @@ if(HNW_ENABLE_METAL)
     # library the runtime loads, so kernels can be split per logical op.
     set(HNW_METAL_SHADER_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/ops/metal/filter/median_filter.metal"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ops/metal/median/median_reduce.metal"
         "${CMAKE_CURRENT_SOURCE_DIR}/ops/metal/star_shrink/star_shrink_process.metal"
         "${CMAKE_CURRENT_SOURCE_DIR}/ops/metal/star_shrink/star_mask.metal"
     )
@@ -262,6 +265,7 @@ if(HNW_ENABLE_METAL)
         common/metal_runtime.mm
         common/metal_host_io_workspace.mm
         ops/metal/filter/median_filter_ops.mm
+        ops/metal/median/median_reduce_ops.mm
         ops/metal/star_shrink/star_shrink_process_ops.mm
         ops/metal/star_shrink/star_shrink_dog_process_ops.mm
         ops/metal/star_shrink/star_mask_ops.mm

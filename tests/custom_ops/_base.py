@@ -35,6 +35,5 @@ class CustomOpsTestCase(unittest.TestCase):
         star_shrink_ops._select_star_shrink_dog_process_backend.cache_clear()
         star_shrink_ops._select_star_shrink_process_backend.cache_clear()
         median_ops._load_compiled_module_result.cache_clear()
-        median_ops._select_median_backend.cache_clear()
         sigma_clip_chunk_ops._load_compiled_module_result.cache_clear()
         alignment_ops._load_compiled_module_result.cache_clear()

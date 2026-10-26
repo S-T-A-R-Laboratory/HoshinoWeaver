@@ -1,11 +1,14 @@
 #include "median_ops.h"
 
+#include "common/compat.h"
 #include "common/cpu_compat.h"
 
 #include <pybind11/numpy.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -39,8 +42,19 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
 #pragma omp for schedule(static)
 #endif
         for (ssize_t idx = 0; idx < plane_size; ++idx) {
+            bool has_nan = false;
             for (ssize_t frame_idx = 0; frame_idx < n_frames; ++frame_idx) {
-                scratch[static_cast<size_t>(frame_idx)] = stack_ptr[frame_idx * plane_size + idx];
+                const T value = stack_ptr[frame_idx * plane_size + idx];
+                scratch[static_cast<size_t>(frame_idx)] = value;
+                if constexpr (std::is_floating_point_v<T>) {
+                    has_nan |= std::isnan(value);
+                }
+            }
+            if constexpr (std::is_floating_point_v<T>) {
+                if (has_nan) {
+                    out_ptr[idx] = std::numeric_limits<T>::quiet_NaN();
+                    continue;
+                }
             }
             const ssize_t mid = n_frames / 2;
             std::nth_element(scratch.begin(), scratch.begin() + mid, scratch.end());
@@ -49,16 +63,26 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
                 out_ptr[idx] = high;
                 continue;
             }
-            std::nth_element(scratch.begin(), scratch.begin() + (mid - 1), scratch.begin() + mid);
-            const T low = scratch[static_cast<size_t>(mid - 1)];
+            const T low = *std::max_element(scratch.begin(), scratch.begin() + mid);
             out_ptr[idx] = median_average(low, high);
         }
     }
 #else
     std::vector<T> scratch(static_cast<size_t>(n_frames));
     for (ssize_t idx = 0; idx < plane_size; ++idx) {
+        bool has_nan = false;
         for (ssize_t frame_idx = 0; frame_idx < n_frames; ++frame_idx) {
-            scratch[static_cast<size_t>(frame_idx)] = stack_ptr[frame_idx * plane_size + idx];
+            const T value = stack_ptr[frame_idx * plane_size + idx];
+            scratch[static_cast<size_t>(frame_idx)] = value;
+            if constexpr (std::is_floating_point_v<T>) {
+                has_nan |= std::isnan(value);
+            }
+        }
+        if constexpr (std::is_floating_point_v<T>) {
+            if (has_nan) {
+                out_ptr[idx] = std::numeric_limits<T>::quiet_NaN();
+                continue;
+            }
         }
         const ssize_t mid = n_frames / 2;
         std::nth_element(scratch.begin(), scratch.begin() + mid, scratch.end());
@@ -67,8 +91,7 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
             out_ptr[idx] = high;
             continue;
         }
-        std::nth_element(scratch.begin(), scratch.begin() + (mid - 1), scratch.begin() + mid);
-        const T low = scratch[static_cast<size_t>(mid - 1)];
+        const T low = *std::max_element(scratch.begin(), scratch.begin() + mid);
         out_ptr[idx] = median_average(low, high);
     }
 #endif
