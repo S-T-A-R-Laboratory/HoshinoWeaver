@@ -533,7 +533,10 @@ class ImageAddOp(BaseOp):
 
 @register_op()
 class ApplyMaskOp(BaseOp):
-    """图像乘以 mask。mask 为 None 时直接 passthrough。"""
+    """图像乘以二值 mask；尺寸不符时自动最近邻缩放并 warning。
+
+    mask 为 None 时直接 passthrough，单通道 mask 广播到图像各通道。
+    """
 
     INPUTS: dict[str, Any] = {"image": {"type": "sequence", "required": True}}
 
@@ -550,10 +553,7 @@ class ApplyMaskOp(BaseOp):
         tot_num = self.length
         mask = configs['mask']
         runtime_mask = None
-        if mask is not None:
-            if mask.ndim==2:
-                mask = np.repeat(mask[..., None], 3, axis=-1)
-            runtime_mask = mask > 0.5
+        runtime_shape = None
         for i in self._input_range():
             try:
                 img = await self._async_convert_inputs()['image']
@@ -563,15 +563,32 @@ class ApplyMaskOp(BaseOp):
                         f"{self.name}: upstream ended at {i}/{tot_num}")
                 break
 
-            if runtime_mask is None:
+            if mask is None:
                 result = img
             else:
                 img_arr = img.data if isinstance(img, FloatImage) else img
-                if runtime_mask.shape != img_arr.shape:
-                    h, w, _ = img_arr.shape
-                    runtime_mask = cv2.resize(
-                        mask.astype(np.float32), dsize=(w, h),
-                        interpolation=cv2.INTER_NEAREST) > 0.5
+                if runtime_shape != img_arr.shape:
+                    # Always resize the original mask, avoiding cumulative loss
+                    # if the input sequence changes resolution.
+                    resized_mask = mask
+                    if mask.shape[:2] != img_arr.shape[:2]:
+                        h, w = img_arr.shape[:2]
+                        logger.warning(
+                            f"{self.name}: mask size {mask.shape[:2]} (H, W) "
+                            f"does not match image size {(h, w)}; "
+                            "automatically resizing mask with nearest-neighbor "
+                            "interpolation. Check mask alignment.")
+                        resized_mask = cv2.resize(
+                            mask.astype(np.float32), dsize=(w, h),
+                            interpolation=cv2.INTER_NEAREST)
+                    runtime_mask = resized_mask > 0.5
+                    if runtime_mask.ndim == 2 and img_arr.ndim == 3:
+                        runtime_mask = runtime_mask[..., None]
+                    elif (runtime_mask.ndim == 3
+                          and runtime_mask.shape[-1] == 1
+                          and img_arr.ndim == 2):
+                        runtime_mask = runtime_mask[..., 0]
+                    runtime_shape = img_arr.shape
                 result_arr = np.multiply(img_arr, runtime_mask)
                 if isinstance(img, FloatImage):
                     result = FloatImage(data=result_arr, dtype=img.dtype)
