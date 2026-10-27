@@ -20,7 +20,7 @@ from hoshicore.component.norma.frame_align import (
 from hoshicore.ops.alignment_ops import StarAlignmentOp
 from hoshicore.ops.bundle_ops import BundleReferenceRemapOp
 from hoshicore.ops.sigma_clip_ops import (
-    HuberMeanIteratorOp, SigmaClipFusedChunkOp,
+    HuberMeanIteratorOp, SigmaClipFusedChunkOp, MedianReduceOp,
 )
 from hoshicore.ops.trailstacker import MeanStackerOp
 
@@ -120,7 +120,7 @@ def test_rgb_mean_ignores_clipped_edge(monkeypatch, backend):
 
 
 @pytest.mark.parametrize('buffer_type', [DiskFrameBuffer, MemoryFrameBuffer])
-@pytest.mark.parametrize('op_type', [SigmaClipFusedChunkOp, HuberMeanIteratorOp])
+@pytest.mark.parametrize('op_type', [SigmaClipFusedChunkOp, HuberMeanIteratorOp, MedianReduceOp])
 def test_rgb_reducers_consume_plain_zero_clipped_arrays(
         monkeypatch, tmp_path, backend, buffer_type, op_type):
     frames, mask = _samples()

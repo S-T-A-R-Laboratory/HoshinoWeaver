@@ -482,7 +482,8 @@ class TestFilterMedianCustomOps(CustomOpsTestCase):
             with mock.patch.object(
                 sigma_clip_ops,
                 "custom_median_reduce_frames",
-                side_effect=lambda chunks: median_ops.median_reduce_chunk_numpy(np.stack(chunks)),
+                side_effect=lambda chunks, **kwargs: median_ops.median_reduce_chunk_numpy(
+                    np.stack(chunks), **kwargs),
             ) as patched_custom:
 
                 async def run_cpu(fn, *args, **kwargs):

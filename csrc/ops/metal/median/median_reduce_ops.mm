@@ -26,10 +26,13 @@ struct MedianStackParams {
     uint32_t n_frames;
     uint32_t plane_size;
     uint32_t top_shift;
+    uint32_t channels;
+    uint32_t skip_zero_rgb;
 };
 
 template <typename T, typename FillInput>
 void launch_median_reduce_metal(T* output_host, const int n_frames, const int64_t plane_size,
+                                const int64_t channels, const bool skip_zero_rgb,
                                 FillInput fill_input) {
     @autoreleasepool {
         auto& workspace = hnw::metal::HostIOWorkspace::current();
@@ -43,9 +46,9 @@ void launch_median_reduce_metal(T* output_host, const int n_frames, const int64_
             fill_input(static_cast<T*>(source.contents), output_bytes);
 
             const MedianStackParams params{
-                static_cast<uint32_t>(n_frames),
-                static_cast<uint32_t>(plane_size),
-                std::is_same_v<T, uint8_t> ? 4u : 12u,
+                static_cast<uint32_t>(n_frames),          static_cast<uint32_t>(plane_size),
+                std::is_same_v<T, uint8_t> ? 4u : 12u,    static_cast<uint32_t>(channels),
+                skip_zero_rgb && channels >= 3 ? 1u : 0u,
             };
             id<MTLCommandBuffer> command =
                 hnw::metal::new_command_buffer(workspace.command_queue(), kContext);
@@ -80,7 +83,7 @@ void validate_count(const ssize_t n_frames, const int64_t plane_size) {
     }
 }
 
-template <typename T> py::array_t<T> reduce_stack(const py::array& source) {
+template <typename T> py::array_t<T> reduce_stack(const py::array& source, bool skip_zero_rgb) {
     if (source.ndim() != 3 && source.ndim() != 4) {
         throw std::invalid_argument("median_reduce_chunk_metal: expected a 3D or 4D stack");
     }
@@ -101,6 +104,7 @@ template <typename T> py::array_t<T> reduce_stack(const py::array& source) {
         py::gil_scoped_release release;
         launch_median_reduce_metal(
             output_ptr, static_cast<int>(stack.shape(0)), plane_size,
+            stack.ndim() == 4 ? stack.shape(3) : 1, skip_zero_rgb,
             [input_ptr, n_frames = stack.shape(0)](T* buffer, size_t frame_bytes) {
                 std::memcpy(buffer, input_ptr, static_cast<size_t>(n_frames) * frame_bytes);
             });
@@ -108,17 +112,17 @@ template <typename T> py::array_t<T> reduce_stack(const py::array& source) {
     return output;
 }
 
-py::array reduce_stack_dispatch(const py::array& stack) {
+py::array reduce_stack_dispatch(const py::array& stack, bool skip_zero_rgb) {
     if (stack.dtype().is(py::dtype::of<uint8_t>())) {
-        return reduce_stack<uint8_t>(stack);
+        return reduce_stack<uint8_t>(stack, skip_zero_rgb);
     }
     if (stack.dtype().is(py::dtype::of<uint16_t>())) {
-        return reduce_stack<uint16_t>(stack);
+        return reduce_stack<uint16_t>(stack, skip_zero_rgb);
     }
     throw std::invalid_argument("median_reduce_chunk_metal: expected uint8 or uint16 stack");
 }
 
-template <typename T> py::array_t<T> reduce_frames(const py::sequence& frames) {
+template <typename T> py::array_t<T> reduce_frames(const py::sequence& frames, bool skip_zero_rgb) {
     const ssize_t n_frames = py::len(frames);
     if (n_frames < 1 || n_frames > 128) {
         throw std::invalid_argument("median_reduce_chunk_metal_frames: expected 1-128 frames");
@@ -158,6 +162,7 @@ template <typename T> py::array_t<T> reduce_frames(const py::sequence& frames) {
         py::gil_scoped_release release;
         launch_median_reduce_metal(
             output_ptr, static_cast<int>(n_frames), plane_size,
+            first.ndim() == 3 ? first.shape(2) : 1, skip_zero_rgb,
             [&pointers, n_frames, plane_size](T* buffer, size_t frame_bytes) {
                 for (ssize_t frame = 0; frame < n_frames; ++frame) {
                     std::memcpy(buffer + static_cast<size_t>(frame) * plane_size,
@@ -168,16 +173,16 @@ template <typename T> py::array_t<T> reduce_frames(const py::sequence& frames) {
     return output;
 }
 
-py::array reduce_frames_dispatch(const py::sequence& frames) {
+py::array reduce_frames_dispatch(const py::sequence& frames, bool skip_zero_rgb) {
     if (py::len(frames) < 1) {
         throw std::invalid_argument("median_reduce_chunk_metal_frames: no frames");
     }
     const py::array first = frames[0].cast<py::array>();
     if (first.dtype().is(py::dtype::of<uint8_t>())) {
-        return reduce_frames<uint8_t>(frames);
+        return reduce_frames<uint8_t>(frames, skip_zero_rgb);
     }
     if (first.dtype().is(py::dtype::of<uint16_t>())) {
-        return reduce_frames<uint16_t>(frames);
+        return reduce_frames<uint16_t>(frames, skip_zero_rgb);
     }
     throw std::invalid_argument("median_reduce_chunk_metal_frames: expected uint8/uint16 frames");
 }
@@ -186,7 +191,7 @@ py::array reduce_frames_dispatch(const py::sequence& frames) {
 
 void bind_median_reduce_metal_ops(py::module_& m) {
     m.def("median_reduce_chunk_metal", &reduce_stack_dispatch, py::arg("stack"),
-          "Exact Metal median across up to 128 integer frames.");
+          py::arg("skip_zero_rgb") = false, "Exact Metal median across up to 128 integer frames.");
     m.def("median_reduce_chunk_metal_frames", &reduce_frames_dispatch, py::arg("frames"),
-          "Exact Metal median from per-frame chunks.");
+          py::arg("skip_zero_rgb") = false, "Exact Metal median from per-frame chunks.");
 }

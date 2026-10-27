@@ -824,9 +824,10 @@ class MedianReduceOp(ChunkIteratorBaseOp):
     @classmethod
     def chunk_cost_per_row(cls, n_frames, row_bytes, dtype_bytes):
         float64_row = row_bytes // dtype_bytes * 8
-        # Current and prefetched chunks, NumPy's stack and partition copy,
-        # plus the float64 median output bound all supported backends.
-        return 4 * n_frames * row_bytes + float64_row
+        # Current/prefetched chunks, stacked input, sort/partition scratch and
+        # RGB validity masks. Counts, indices, gathered pairs and output are
+        # conservatively bounded by eight float64 rows (also for uint8 RGB).
+        return 5 * n_frames * row_bytes + 8 * float64_row
 
     def _init_chunk_state(self, configs, row_start, row_end, w):
         return {'result': None}
@@ -835,8 +836,10 @@ class MedianReduceOp(ChunkIteratorBaseOp):
         return 1
 
     def _run_pass(self, state, chunk_stack):
+        first = chunk_stack[0][0]
         state['result'] = custom_median_reduce_frames(
-            [chunk_data for chunk_data, _ in chunk_stack]
+            [chunk_data for chunk_data, _ in chunk_stack],
+            skip_zero_rgb=first.ndim == 3 and first.shape[-1] >= 3,
         )
 
     def _check_convergence(self, state, pass_idx):

@@ -123,3 +123,24 @@ def test_median_result_does_not_retain_frame_stack(dtype, n_frames):
     while isinstance(root.base, np.ndarray):
         root = root.base
     assert root.nbytes <= result.nbytes
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.float32, np.float64])
+@pytest.mark.parametrize('rows', [1, 3])
+def test_median_skip_zero_workspace_fits_planner(dtype, rows):
+    import tracemalloc
+
+    stack = np.ones((8, rows, 1024, 3), dtype=dtype)
+    stack[:4, :, ::2] = 0
+    # The estimate also reserves current and prefetched frame lists, which
+    # are not allocated by this direct wrapper call.
+    row_bytes = stack[0, 0].nbytes
+    budget = MedianReduceOp.chunk_cost_per_row(8, row_bytes, stack.dtype.itemsize) * rows
+    tracemalloc.start()
+    try:
+        result = median_reduce_chunk_numpy(stack, skip_zero_rgb=True)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    np.testing.assert_array_equal(result, 1)
+    assert peak + 3 * stack.nbytes <= budget

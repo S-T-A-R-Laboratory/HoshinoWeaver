@@ -26,11 +26,14 @@ template <typename T> inline T median_average(T low, T high) {
 }
 
 template <typename T>
-void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_info& out_info) {
+void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_info& out_info,
+                                bool skip_zero_rgb) {
     const auto* HNW_RESTRICT stack_ptr = static_cast<const T*>(stack_info.ptr);
     auto* HNW_RESTRICT out_ptr = static_cast<T*>(out_info.ptr);
     const ssize_t n_frames = stack_info.shape[0];
     const ssize_t plane_size = out_info.size;
+    const ssize_t channels = stack_info.ndim == 4 ? stack_info.shape[3] : 1;
+    skip_zero_rgb = skip_zero_rgb && channels >= 3;
 
 #if defined(_OPENMP)
 #pragma omp parallel
@@ -43,9 +46,16 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
 #endif
         for (ssize_t idx = 0; idx < plane_size; ++idx) {
             bool has_nan = false;
+            ssize_t valid_count = 0;
             for (ssize_t frame_idx = 0; frame_idx < n_frames; ++frame_idx) {
-                const T value = stack_ptr[frame_idx * plane_size + idx];
-                scratch[static_cast<size_t>(frame_idx)] = value;
+                const ssize_t offset = frame_idx * plane_size;
+                const ssize_t rgb = offset + (idx / channels) * channels;
+                if (skip_zero_rgb && stack_ptr[rgb] == T(0) && stack_ptr[rgb + 1] == T(0) &&
+                    stack_ptr[rgb + 2] == T(0)) {
+                    continue;
+                }
+                const T value = stack_ptr[offset + idx];
+                scratch[static_cast<size_t>(valid_count++)] = value;
                 if constexpr (std::is_floating_point_v<T>) {
                     has_nan |= std::isnan(value);
                 }
@@ -56,10 +66,14 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
                     continue;
                 }
             }
-            const ssize_t mid = n_frames / 2;
-            std::nth_element(scratch.begin(), scratch.begin() + mid, scratch.end());
+            if (valid_count == 0) {
+                out_ptr[idx] = T(0);
+                continue;
+            }
+            const ssize_t mid = valid_count / 2;
+            std::nth_element(scratch.begin(), scratch.begin() + mid, scratch.begin() + valid_count);
             const T high = scratch[static_cast<size_t>(mid)];
-            if ((n_frames & 1) != 0) {
+            if ((valid_count & 1) != 0) {
                 out_ptr[idx] = high;
                 continue;
             }
@@ -71,9 +85,16 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
     std::vector<T> scratch(static_cast<size_t>(n_frames));
     for (ssize_t idx = 0; idx < plane_size; ++idx) {
         bool has_nan = false;
+        ssize_t valid_count = 0;
         for (ssize_t frame_idx = 0; frame_idx < n_frames; ++frame_idx) {
-            const T value = stack_ptr[frame_idx * plane_size + idx];
-            scratch[static_cast<size_t>(frame_idx)] = value;
+            const ssize_t offset = frame_idx * plane_size;
+            const ssize_t rgb = offset + (idx / channels) * channels;
+            if (skip_zero_rgb && stack_ptr[rgb] == T(0) && stack_ptr[rgb + 1] == T(0) &&
+                stack_ptr[rgb + 2] == T(0)) {
+                continue;
+            }
+            const T value = stack_ptr[offset + idx];
+            scratch[static_cast<size_t>(valid_count++)] = value;
             if constexpr (std::is_floating_point_v<T>) {
                 has_nan |= std::isnan(value);
             }
@@ -84,10 +105,14 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
                 continue;
             }
         }
-        const ssize_t mid = n_frames / 2;
-        std::nth_element(scratch.begin(), scratch.begin() + mid, scratch.end());
+        if (valid_count == 0) {
+            out_ptr[idx] = T(0);
+            continue;
+        }
+        const ssize_t mid = valid_count / 2;
+        std::nth_element(scratch.begin(), scratch.begin() + mid, scratch.begin() + valid_count);
         const T high = scratch[static_cast<size_t>(mid)];
-        if ((n_frames & 1) != 0) {
+        if ((valid_count & 1) != 0) {
             out_ptr[idx] = high;
             continue;
         }
@@ -99,7 +124,8 @@ void median_reduce_chunk_kernel(const py::buffer_info& stack_info, py::buffer_in
 
 template <typename T>
 py::array_t<T>
-median_reduce_chunk_impl(const py::array_t<T, py::array::c_style | py::array::forcecast>& stack) {
+median_reduce_chunk_impl(const py::array_t<T, py::array::c_style | py::array::forcecast>& stack,
+                         bool skip_zero_rgb) {
     if (stack.ndim() != 3 && stack.ndim() != 4) {
         throw std::invalid_argument(
             "median_reduce_chunk: stack must have shape (N, H, W) or (N, H, W, C)");
@@ -117,22 +143,23 @@ median_reduce_chunk_impl(const py::array_t<T, py::array::c_style | py::array::fo
     auto out_info = out.request();
 
     py::gil_scoped_release release;
-    median_reduce_chunk_kernel<T>(stack_info, out_info);
+    median_reduce_chunk_kernel<T>(stack_info, out_info, skip_zero_rgb);
     return out;
 }
 
-py::array median_reduce_chunk_dispatch(const py::array& stack) {
+py::array median_reduce_chunk_dispatch(const py::array& stack, bool skip_zero_rgb) {
     if (py::isinstance<py::array_t<uint8_t>>(stack)) {
-        return median_reduce_chunk_impl<uint8_t>(stack.cast<py::array_t<uint8_t>>());
+        return median_reduce_chunk_impl<uint8_t>(stack.cast<py::array_t<uint8_t>>(), skip_zero_rgb);
     }
     if (py::isinstance<py::array_t<uint16_t>>(stack)) {
-        return median_reduce_chunk_impl<uint16_t>(stack.cast<py::array_t<uint16_t>>());
+        return median_reduce_chunk_impl<uint16_t>(stack.cast<py::array_t<uint16_t>>(),
+                                                  skip_zero_rgb);
     }
     if (py::isinstance<py::array_t<float>>(stack)) {
-        return median_reduce_chunk_impl<float>(stack.cast<py::array_t<float>>());
+        return median_reduce_chunk_impl<float>(stack.cast<py::array_t<float>>(), skip_zero_rgb);
     }
     if (py::isinstance<py::array_t<double>>(stack)) {
-        return median_reduce_chunk_impl<double>(stack.cast<py::array_t<double>>());
+        return median_reduce_chunk_impl<double>(stack.cast<py::array_t<double>>(), skip_zero_rgb);
     }
     throw std::invalid_argument(
         "median_reduce_chunk: unsupported dtype; expected uint8/uint16/float32/float64");
@@ -142,5 +169,6 @@ py::array median_reduce_chunk_dispatch(const py::array& stack) {
 
 void bind_median_ops(py::module_& m) {
     m.def("median_reduce_chunk", &median_reduce_chunk_dispatch, py::arg("stack"),
+          py::arg("skip_zero_rgb") = false,
           "Reduce a stack chunk along frame axis 0 using a CPU nth_element kernel.");
 }
