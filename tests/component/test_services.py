@@ -139,7 +139,7 @@ async def test_multiple_loaders_share_serialization_and_survive_loader_close(mon
 
 
 @pytest.mark.asyncio
-async def test_onnx_session_is_lazy_serial_shared_and_released(monkeypatch):
+async def test_onnx_session_is_lazy_serial_shared_and_released(monkeypatch, tmp_path):
     entered, release = threading.Event(), threading.Event()
     calls = []
 
@@ -150,13 +150,20 @@ async def test_onnx_session_is_lazy_serial_shared_and_released(monkeypatch):
             assert release.wait(3)
         return [inputs['image']]
 
-    constructor = Mock(return_value=SimpleNamespace(run=run))
-    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(InferenceSession=constructor))
+    session = SimpleNamespace(run=run, disable_fallback=Mock(),
+                              get_providers=lambda: ['CPUExecutionProvider'])
+    constructor = Mock(return_value=session)
+    options = SimpleNamespace()
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        InferenceSession=constructor, SessionOptions=lambda: options,
+        get_available_providers=lambda: ['CPUExecutionProvider']))
     registry = create_service_registry()
-    settings = {'segmentation_model_path': 'mock.onnx'}
+    model = tmp_path / 'mock.onnx'
+    model.touch()
+    settings = {'onnx_model_path': str(model)}
     async with registry.scope(settings) as scope:
-        service = scope.segmentation
-        assert scope.segmentation is service
+        service = scope.onnx
+        assert scope.onnx is service
         constructor.assert_not_called()
         first = asyncio.create_task(service.infer({'image': 1}))
         assert await asyncio.to_thread(entered.wait, 3)
@@ -167,10 +174,11 @@ async def test_onnx_session_is_lazy_serial_shared_and_released(monkeypatch):
         finally:
             release.set()
         assert await asyncio.gather(first, second) == [[1], [2]]
-        constructor.assert_called_once_with(os.path.normcase(str(Path('mock.onnx').resolve())),
-                                            providers=['CPUExecutionProvider'])
+        constructor.assert_called_once_with(os.path.normcase(str(model.resolve())),
+                                            sess_options=options, providers=['CPUExecutionProvider'])
+        assert options.intra_op_num_threads == 4
         assert calls == [(None, {'image': 1}), (['mask'], {'image': 2})]
-    assert service._session is None
+    assert service._backend._session is None
 
 
 @pytest.mark.asyncio
@@ -182,6 +190,70 @@ async def test_unused_services_do_not_copy_large_loader_payloads_or_import_ort(m
     monkeypatch.setitem(sys.modules, 'onnxruntime', None)
     async with create_service_registry().scope({'loader_configs': LoaderPayload()}):
         pass
+
+
+@pytest.mark.asyncio
+async def test_generic_onnx_has_no_segmentation_model_default(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'onnxruntime', None)
+    async with create_service_registry().scope({'segmentation_model_path': 'sky.onnx'}) as scope:
+        with pytest.raises(ValueError, match='model_path is required'):
+            await scope.onnx.describe()
+        assert not hasattr(scope.onnx, 'predict_sky')
+
+
+@pytest.mark.asyncio
+async def test_custom_onnx_keys_describe_and_infer_on_their_own_worker(monkeypatch, tmp_path):
+    from hoshicore.services import OnnxService
+
+    threads = []
+    sessions = []
+    metadata = {'custom_model': 'no skyseg contract'}
+
+    def record(value):
+        threads.append(threading.get_ident())
+        return value
+
+    def construct(*args, **kwargs):
+        session = SimpleNamespace(
+            run=lambda outputs, inputs: record([inputs['x']]),
+            get_inputs=lambda: record([SimpleNamespace(name='x', type='tensor(float)', shape=[1, 'n'])]),
+            get_outputs=lambda: record([SimpleNamespace(name='y', type='tensor(float)', shape=None)]),
+            get_modelmeta=lambda: record(SimpleNamespace(custom_metadata_map=metadata)),
+            get_providers=lambda: record(['CPUExecutionProvider']), disable_fallback=lambda: None)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        InferenceSession=construct, SessionOptions=SimpleNamespace,
+        get_available_providers=lambda: ['CPUExecutionProvider']))
+    model = tmp_path / 'arbitrary.onnx'
+    model.touch()
+    registry = create_service_registry()
+    key = ServiceKey('extension.tensor_model', OnnxService)
+    registry.register(key, OnnxService, settings=lambda c: {'model_path': str(model)})
+    async with registry.scope() as scope:
+        service = scope.require(key)
+        assert not sessions
+        close = service._backend.close
+        closed_threads = []
+
+        def record_close():
+            closed_threads.append(threading.get_ident())
+            close()
+
+        monkeypatch.setattr(service._backend, 'close', record_close)
+        description = await service.describe()
+        assert description.inputs[0].shape == (1, 'n')
+        assert description.outputs[0].name == 'y'
+        assert description.outputs[0].shape is None
+        assert description.providers == ('CPUExecutionProvider',)
+        description.metadata['custom_model'] = 'caller edit'
+        assert metadata['custom_model'] == 'no skyseg contract'
+        assert await service.infer({'x': 7}) == [7]
+        assert len(sessions) == 1
+    assert service._backend._session is None
+    assert set(threads) == set(closed_threads)
+    assert len(set(threads)) == 1 and threads[0] != threading.get_ident()
 
 
 @pytest.mark.asyncio

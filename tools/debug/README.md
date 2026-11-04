@@ -43,6 +43,26 @@ behavior in `hoshicore/` and test it there; the tracked test suite must not
 import these tools. Local datasets and generated results remain outside version
 control.
 
+## SkySeg v1 sky segmentation
+
+```powershell
+python -m tools.debug.debug_sky_segmentation input.jpg --output .test-tmp/skyseg
+```
+
+Calls the production `services.segmentation.predict_sky()` API with the bundled
+SkySeg v1 weight and a 512/768/1024 probability pyramid.
+`requirements.txt` includes ONNX Runtime; no training framework or standalone skyseg
+package is used. EXIF orientation and RGB ICC conversion are applied before
+inference. Outputs native-size `probability.npy`, `probability.png`,
+`sky_mask.png` (255=sky), and `run.json` with actual providers and per-scale times.
+Use `--scales 512` for one scale, `--threshold` to change the binary cutoff,
+or `--provider CUDAExecutionProvider` / `DmlExecutionProvider` with a compatible
+installed runtime. See [service contract](../../docs/services.md#skyseg-v1-天地分割).
+
+This tool validates segmentation capability and exports results for inspection.
+Service sharing, serialization, repeatability and cleanup are maintained by
+`tests/component/test_services.py` and `tests/component/test_sky_segmentation.py`.
+
 ## Photoshop RAW experiment
 
 ```powershell

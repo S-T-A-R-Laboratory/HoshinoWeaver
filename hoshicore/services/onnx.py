@@ -1,44 +1,36 @@
-"""Optional ONNX backend; model-specific image preparation belongs to its Op."""
+"""Generic named-tensor service, with no model-specific defaults or adapters."""
 import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from ..component.onnx_backend import ModelDescription, OnnxBackend
 from .registry import SerialService, ServiceKey
 
 
 class OnnxService(SerialService):
     def __init__(self, settings):
         super().__init__()
-        self._settings = settings
-        self._session = None
-
-    def _infer(self, inputs, output_names):
-        if self._session is None:
-            if not self._settings.get('model_path'):
-                raise ValueError('segmentation_model_path is required for ONNX inference')
-            try:
-                import onnxruntime as ort
-            except ImportError as error:
-                raise RuntimeError('ONNX inference requires onnxruntime') from error
-            self._session = ort.InferenceSession(
-                self._settings['model_path'], providers=self._settings['providers'])
-        return self._session.run(output_names, inputs)
+        self._backend = OnnxBackend(settings)
 
     async def infer(self, inputs: Mapping[str, Any],
                     output_names: Sequence[str] | None = None) -> list[Any]:
         """Named tensors in, requested tensors out; requests execute serially."""
-        return await self._run(self._infer, dict(inputs),
+        return await self._run(self._backend.infer, dict(inputs),
                                list(output_names) if output_names is not None else None)
 
+    async def describe(self) -> ModelDescription:
+        """Read tensor signatures, metadata and providers on the worker."""
+        return await self._run(self._backend.describe)
+
     def _close(self):
-        # InferenceSession has no public close(); release it on its worker.
-        self._session = None
+        self._backend.close()
 
 
-SEGMENTATION = ServiceKey('segmentation', OnnxService)
+ONNX = ServiceKey('onnx', OnnxService)
 
 
-def segmentation_settings(configs):
-    path = configs.get('segmentation_model_path')
+def onnx_settings(configs):
+    path = configs.get('onnx_model_path')
     return {'model_path': os.path.normcase(str(Path(path).expanduser().resolve())) if path else None,
-            'providers': configs.get('segmentation_providers', ['CPUExecutionProvider'])}
+            'providers': configs.get('onnx_providers', ['CPUExecutionProvider']),
+            'threads': configs.get('onnx_threads', 4)}

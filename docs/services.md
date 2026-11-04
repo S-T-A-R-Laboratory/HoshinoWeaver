@@ -1,8 +1,28 @@
 # 服务与外部资源
 
-`hoshicore/services/` 管理 Photoshop、ONNX 等需要跨节点复用的外部资源。
-Op 通过 `self.services` 调用服务，服务负责创建配置、串行执行与资源释放。
-图像预处理、阈值等业务逻辑留在 Op 或请求参数中。
+`hoshicore/services/` 为 Op 提供跨节点复用的外部资源及具体能力。
+职责分为资源管理、协议后端、能力适配和工作流调用；具体服务组合后端与适配器，
+统一拥有执行边界和关闭入口，通用后端不认识具体模型。
+
+## 职责边界与当前阶段
+
+| 部分 | 职责 | 当前实现 |
+| --- | --- | --- |
+| 服务基础设施 | 注册、作用域、取消和关闭 | `ServiceRegistry`、`ServiceScope`、`SerialService` |
+| 协议后端 | 创建外部资源、描述接口、执行协议、释放资源 | `component/onnx_backend.py`、Photoshop renderer |
+| 能力适配器 | 模型契约校验、预处理、推理组合及输出解释 | `component/sky_segmentation.py` |
+| 具体服务 | 组合后端与适配器，提供异步能力方法 | `OnnxService`、`SkySegmentationService`、`PhotoshopService` |
+| Op | 队列、长度、进度及工作流策略 | 决定哪帧分割、如何反转或广播遮罩 |
+| GUI | 参数编辑、任务启动和结果展示 | 分割尚未接入 GUI；独立预览任务应拥有自己的 scope |
+
+模型的归一化、logits 解释等逻辑放在组件适配器中；服务可以在自己的 worker 内调用
+适配器，提供完整的图像到遮罩能力。前后处理在服务线程上执行，不代表算法属于
+通用 ONNX 服务。尺度和阈值由请求传入，模型路径和执行 provider 属于资源创建配置。
+
+当前支持 Python 代码扩展：注册 `ServiceKey + factory` 后由 `require()` 调用。
+注册体系仍要求 `SerialService`，尚未抽象独立于串行 worker 的生命周期协议。
+配置式 exe 协议、能力描述驱动的 GUI、跨能力 Session 共享均未实现；后续出现真实用例
+再扩展。路径和参数只能配置已支持的协议，不能自动描述任意程序的输入输出和错误语义。
 
 ## 作用域与生命周期
 
@@ -45,14 +65,78 @@ Op 通过 `self.services` 调用服务，服务负责创建配置、串行执行
 
 ### ONNX
 
-`await services.segmentation.infer(inputs, output_names=None)` 接收命名张量映射，返回请求的张量列表。首次请求才导入可选的 `onnxruntime` 并创建 Session；请求串行执行，最后释放 Session 引用。调用形式参见 [ONNX Runtime API](https://onnxruntime.ai/docs/api/python/api_summary.html)。
+`await services.onnx.infer(inputs, output_names=None)` 接收命名张量映射，返回请求的张量列表。
+`await services.onnx.describe()` 返回 `ModelDescription`，包含输入输出名称、ONNX 类型和
+shape、内嵌 metadata 及实际 providers；在 worker 上读取并复制描述，不暴露裸 Session。
+首次请求才导入 `onnxruntime` 并创建 Session；请求串行执行，最后释放 Session 引用。
+通用服务不提供默认模型和分割方法。调用形式参见 [ONNX Runtime API](https://onnxruntime.ai/docs/api/python/api_summary.html)。
 
 | 全局配置 | 默认值 | 含义 |
 | --- | --- | --- |
-| `segmentation_model_path` | `None` | 模型路径，实际推理时必填 |
-| `segmentation_providers` | `['CPUExecutionProvider']` | 按优先级排列的执行 provider |
+| `onnx_model_path` | `None` | 通用模型路径，首次调用 `infer` 或 `describe` 时必填 |
+| `onnx_providers` | `['CPUExecutionProvider']` | 按优先级排列的执行 provider |
+| `onnx_threads` | `4` | ONNX 单次计算线程数，须为正整数 |
 
-配置由程序调用的 `global_configs` 提供；每张图按配置快照创建自己的 Session，图内复用，图结束后释放。当前是通用推理接口，尚未绑定具体分割模型、预处理、后处理或 GUI，也未引入强制 runtime 依赖。
+配置由程序调用的 `global_configs` 提供；每张图按配置快照创建自己的 Session，图内复用，图结束后释放。provider 显式选择；不可用或初始化失败会报错，不静默切换整个会话的后端。CUDA/DirectML 仍允许其执行计划中由 CPU 承担部分算子。DirectML 自动关闭 memory pattern 并使用顺序执行模式。
+
+`OnnxService` 只包装同步的 `OnnxBackend`；后端不创建 worker，不注册为第二层服务。
+模型适配器依赖 `InferenceBackend` 的 `describe()` / `infer()` 小接口，不读取 ORT Session。
+后端的描述、推理和关闭必须在拥有它的服务 worker 上执行；扩展服务可组合自己的后端
+与适配器，无需调用另一个独立管理生命周期的服务。
+
+### SkySeg v1 天地分割
+
+`services.segmentation` 是独立的 `SkySegmentationService`，复用 ONNX 后端代码，
+持有自己的后端实例及 worker，与 `services.onnx` 不共享 Session。
+
+| 全局配置 | 默认值 | 含义 |
+| --- | --- | --- |
+| `segmentation_model_path` | 内置 SkySeg v1 权重 | 须兼容 SkySeg 适配器；任意张量模型使用通用 ONNX 服务 |
+| `segmentation_providers` | `['CPUExecutionProvider']` | provider 选择与通用 ONNX 服务采用相同规则 |
+| `segmentation_threads` | `4` | ONNX 单次计算线程数，须为正整数 |
+
+`await services.segmentation.predict_sky(image, scales=(512, 768, 1024), threshold=0.5, color_order='BGR')`
+返回 `SkyPrediction`：`probability` 是原图尺寸的 float32 天空概率，`mask` 是同尺寸
+uint8 0/1 标签（1=天空，0=地面），`info` 记录实际 providers、尺度与耗时。
+输入须为已经处理方向和色彩的 H×W×3 uint8 sRGB 编码像素；默认 BGR，RGB 应显式指定。
+uint16、浮点或线性 RAW 应由调用方按其量程和色彩约定转换，服务不自动猜测或拉伸。
+调用完成前不得修改输入数组。
+
+```python
+from hoshicore.services import create_service_registry
+
+# Op 内直接使用 self.services.segmentation；独立调用时显式管理 scope。
+async with create_service_registry().scope() as services:
+    result = await services.segmentation.predict_sky(bgr_uint8)
+    sky_mask = result.mask
+    ground_mask = 1 - sky_mask
+```
+
+模型放在 `models/skyseg_v1/skyseg_v1_fp16.onnx`，通过 Git LFS 保存，随两个打包后端
+的公共资源清单分发，许可证随权重保存，预处理契约从 ONNX 内嵌 metadata 读取。
+ONNX Runtime 已列入 `requirements.txt`，运行时仍按需导入和初始化。
+GPU 环境选择对应的 ORT 发行包，避免同时安装多个共享 `onnxruntime` 模块的发行包。
+不依赖外部 `skyseg_onnx` 包、训练项目、PyTorch、MMCV 或 MMSegmentation。
+
+`component/sky_segmentation.py` 保存模型适配逻辑：逐尺度按长边保比例缩放，再将宽高
+分别向上取整到模型声明的倍数并二次缩放（不补边），按 metadata 做 RGB 归一化。
+每个尺度先恢复原尺寸 logits，再 softmax，最后平均天空概率、应用阈值。
+预处理、整个金字塔和后处理都在服务的串行 worker 上运行；只保留当前尺度和概率累加器，
+不缓存全部尺度的预测。默认不接颜色细化。分割服务只暴露 `predict_sky`，
+自定义非 SkySeg 模型会因 metadata 不兼容而报错。
+
+当前提供服务 API 与独立诊断入口，尚未接入自动遮罩工作流或 GUI：
+
+```sh
+python -m tools.debug.debug_sky_segmentation input.jpg --output .test-tmp/skyseg
+```
+
+诊断工具处理 EXIF 方向与 RGB 图片的 ICC→sRGB 转换，输出原尺寸概率 `.npy`、概率 PNG、
+天空二值 PNG（255=天空）与 `run.json`；它直接调用生产服务，不另写推理逻辑。
+
+诊断工具只承担能力运行和结果检查。通用 ONNX 及分割服务的实例共享、串行执行、
+重复结果一致性和释放行为由 `tests/component/test_services.py` 与
+`tests/component/test_sky_segmentation.py` 维护，不要求诊断脚本重复实现这些检查。
 
 ## 注册自定义服务
 
@@ -89,3 +173,9 @@ registry.register(MY_MODEL, MyModelService,
 `require(MY_MODEL)` 的返回类型为 `MyModelService`，无需修改核心容器的属性列表。未知 key、类型不匹配或重复注册会明确报错。
 
 `settings=` 选择影响资源创建的参数，避免包含每次请求的阈值或整批图像。每个 scope 对同一个 key 只创建一个实例；创建参数在主图入口快照，每次请求的业务参数由服务方法传入。
+
+一个主图需要多个模型实例时，为各实例注册不同 key 和配置选择器；仅复用后端代码，
+不会因路径相同而自动共用资源。可将 `OnnxService` 注册到自定义 key 处理通用张量模型，
+或像 `SkySegmentationService` 一样组合 `OnnxBackend` 与能力适配器。新增 Python 扩展无需
+修改 scope 的便捷属性。GUI 应通过任务入口调用服务：工作流沿用主图 scope，独立预览
+建立短期 scope，GUI 控件不直接持有 Session 或进程。

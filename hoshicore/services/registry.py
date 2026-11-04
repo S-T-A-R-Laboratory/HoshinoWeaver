@@ -12,6 +12,7 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from .onnx import OnnxService
+    from .segmentation import SkySegmentationService
     from .photoshop import PhotoshopService
 
 T = TypeVar('T', bound='SerialService')
@@ -137,8 +138,13 @@ class ServiceScope:
         return self.require(PHOTOSHOP)
 
     @property
-    def segmentation(self) -> OnnxService:
-        from .onnx import SEGMENTATION
+    def onnx(self) -> OnnxService:
+        from .onnx import ONNX
+        return self.require(ONNX)
+
+    @property
+    def segmentation(self) -> SkySegmentationService:
+        from .segmentation import SEGMENTATION
         return self.require(SEGMENTATION)
 
     async def aclose(self):

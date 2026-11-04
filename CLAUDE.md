@@ -82,6 +82,8 @@ algorithms and infrastructure; `dag/` holds workflows; `ui/` renders the GUI.
   handles outside config/data queues. Ops never close shared services. Drain
   nodes and native work before closing the root scope and its service instances.
   Run root graphs sequentially; registries hold factories only, not live services.
+  Generic backends own protocol resources; component adapters implement model
+  logic. A capability service composes them under one worker and close boundary;
   See [services](docs/services.md).
 - **Config priority:** runtime `global_configs` > `default_settings.yaml` >
   pipeline YAML `default` > Op `CONFIGS` defaults.
