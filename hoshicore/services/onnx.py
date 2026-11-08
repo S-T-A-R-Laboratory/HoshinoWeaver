@@ -32,5 +32,5 @@ ONNX = ServiceKey('onnx', OnnxService)
 def onnx_settings(configs):
     path = configs.get('onnx_model_path')
     return {'model_path': os.path.normcase(str(Path(path).expanduser().resolve())) if path else None,
-            'providers': configs.get('onnx_providers', ['CPUExecutionProvider']),
+            'providers': configs.get('onnx_providers'),
             'threads': configs.get('onnx_threads', 4)}

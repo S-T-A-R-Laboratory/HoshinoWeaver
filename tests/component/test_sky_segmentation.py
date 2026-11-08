@@ -3,6 +3,8 @@ import json
 import asyncio
 import sys
 import threading
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -13,12 +15,13 @@ import pytest
 from hoshicore.component.sky_segmentation import SkySegPredictor, sky_probability
 from hoshicore.component.onnx_backend import ModelDescription, TensorDescription
 from hoshicore.services import create_service_registry
+from hoshicore.component.model_metadata import load_model_metadata
 
 
 class FakeSession:
     def __init__(self):
         self.tensors = []
-        self.metadata = dict(classes=['non_sky', 'sky'], color_order='RGB',
+        self.metadata = dict(format_version=2, model_version='2.0.0', classes=['non_sky', 'sky'], color_order='RGB',
                              mean=[123.675, 116.28, 103.53],
                              std=[58.395, 57.12, 57.375], size_divisor=32)
 
@@ -68,7 +71,7 @@ def test_two_stage_resize_normalization_color_order_and_probability_pyramid():
     session = FakeSession()
     predictor = SkySegPredictor(FakeBackend(session))
     image = np.random.default_rng(8).integers(0, 256, (19, 41, 3), dtype=np.uint8)
-    prediction = predictor.predict(image, scales=(32, 96), threshold=.8)
+    prediction = predictor.predict(image, strategy='pyramid', scales=(32, 96), threshold=.8)
     rgb = image[:, :, ::-1]
     # 19x41 -> 15x32 -> 32x32 and 44x96 -> 64x96, both via bilinear.
     assert [x.shape for x in session.tensors] == [(1, 3, 32, 32), (1, 3, 64, 96)]
@@ -84,7 +87,7 @@ def test_two_stage_resize_normalization_color_order_and_probability_pyramid():
     assert prediction.probability.shape == (19, 41)
     assert prediction.probability.dtype == np.float32
     assert prediction.mask.dtype == np.uint8 and prediction.mask.all()
-    repeated = predictor.predict(rgb, scales=(32, 96), color_order='RGB')
+    repeated = predictor.predict(rgb, strategy='pyramid', scales=(32, 96), color_order='RGB')
     np.testing.assert_array_equal(session.tensors[0], session.tensors[2])
     np.testing.assert_array_equal(prediction.probability, repeated.probability)
 
@@ -101,8 +104,45 @@ def test_resize_logits_before_softmax_and_extreme_logits_are_finite():
         sky_probability(logits, (1, 3))
 
 
-@pytest.mark.parametrize('options', [dict(scales=()), dict(scales=(True,)),
-    dict(scales=(32, 32)), dict(scales=(31,)), dict(threshold=float('nan')),
+def test_pyramid_progress_order_and_results():
+    image = np.zeros((13, 17, 3), np.uint8)
+    events = []
+    actual = SkySegPredictor(FakeBackend(FakeSession())).predict(
+        image, strategy='pyramid', scales=(32, 64, 96), progress=events.append)
+    expected = SkySegPredictor(FakeBackend(FakeSession())).predict(image, strategy='pyramid', scales=(32, 64, 96))
+    np.testing.assert_array_equal(actual.probability, expected.probability)
+    assert [event.stage for event in events] == [
+        'scale_started', 'scale_completed', 'scale_started', 'scale_completed',
+        'scale_started', 'scale_completed', 'complete']
+    assert [event.completed for event in events] == [0, 1, 1, 2, 2, 3, 1]
+    assert all(event.total == 3 for event in events[:-1]) and events[-1].total == 1
+    assert [event.scale for event in events if event.stage == 'scale_completed'] == [32, 64, 96]
+    assert all(event.seconds >= 0 for event in events if event.stage == 'scale_completed')
+
+
+def test_observer_failure_does_not_break_inference(monkeypatch):
+    logger = Mock()
+    monkeypatch.setattr('hoshicore.component.sky_segmentation.logger', logger)
+    def broken(event):
+        raise RuntimeError('observer failed')
+    result = SkySegPredictor(FakeBackend(FakeSession())).predict(
+        np.zeros((4, 5, 3), np.uint8), strategy='pyramid', scales=(32,), progress=broken)
+    assert result.mask.all()
+    assert logger.warning.call_count == 3
+
+
+def test_failed_scale_does_not_report_completion():
+    session = FakeSession()
+    session.run = Mock(side_effect=RuntimeError('native failure'))
+    events = []
+    with pytest.raises(RuntimeError, match='native failure'):
+        SkySegPredictor(FakeBackend(session)).predict(
+            np.zeros((4, 5, 3), np.uint8), strategy='pyramid', scales=(32, 64), progress=events.append)
+    assert [event.stage for event in events] == ['scale_started']
+
+
+@pytest.mark.parametrize('options', [dict(strategy='pyramid', scales=()), dict(strategy='pyramid', scales=(True,)),
+    dict(strategy='pyramid', scales=(32, 32)), dict(strategy='pyramid', scales=(31,)), dict(threshold=float('nan')),
     dict(threshold=-.1), dict(color_order='xyz')])
 def test_reject_invalid_request(options):
     session = FakeSession()
@@ -118,10 +158,117 @@ def test_reject_incompatible_models_and_ambiguous_pixel_ranges():
         SkySegPredictor(FakeBackend(session))
     session.metadata['classes'] = ['non_sky', 'sky']
     predictor = SkySegPredictor(FakeBackend(session))
-    for image in (np.zeros((2, 3, 3), np.uint16), np.zeros((2, 3, 3), np.float32),
-                  np.zeros((2, 3), np.uint8), np.zeros((0, 3, 3), np.uint8)):
-        with pytest.raises(ValueError, match='uint8'):
+    for image in (np.full((2, 3, 3), 255., np.float32), np.zeros((2, 3), np.uint8),
+                  np.zeros((0, 3, 3), np.uint8)):
+        with pytest.raises(ValueError):
             predictor.predict(image)
+
+
+def test_producer_format_version_does_not_gate_model_compatibility():
+    session = FakeSession()
+    session.metadata['format_version'] = 1
+    predictor = SkySegPredictor(FakeBackend(session))
+    assert predictor.model_version == '2.0.0'
+    del session.metadata['format_version']
+    SkySegPredictor(FakeBackend(session))
+
+
+def sky_description():
+    return load_model_metadata(Path(__file__).resolve().parents[2] / 'models/skyseg_v2/skyseg_v2_fp16.onnx')
+
+
+def test_external_contract_works_without_embedded_metadata_and_with_reversed_classes():
+    backend = FakeBackend(FakeSession())
+    backend.describe = Mock(return_value=replace(backend.describe(), metadata={}))
+    metadata = sky_description()
+    metadata['outputs'][0].update(classes=['sky', 'ground'], sky_channel=0)
+    predictor = SkySegPredictor(backend, metadata)
+    result = predictor.predict(np.zeros((13, 17, 3), np.uint8), scales=(32,), strategy='pyramid')
+    assert not result.mask.any() and result.info['model_version'] == '2.0.0'
+    with pytest.raises(ValueError, match='metadata.json'):
+        SkySegPredictor(backend)
+
+
+@pytest.mark.parametrize('change', ['dtype', 'layout', 'task', 'spatial', 'channels'])
+def test_external_contract_rejects_incompatible_semantics(change):
+    metadata = sky_description()
+    if change == 'task':
+        metadata['task'] = 'detection'
+    elif change == 'spatial':
+        metadata['outputs'][0]['spatial'] = 'half_input'
+    else:
+        metadata['inputs'][0][change] = 'incompatible'
+    with pytest.raises(ValueError):
+        SkySegPredictor(FakeBackend(FakeSession()), metadata)
+
+
+@pytest.mark.asyncio
+async def test_service_uses_external_contract_and_input_range_on_worker(monkeypatch, tmp_path):
+    metadata = sky_description()
+    metadata['model']['file'] = 'custom.onnx'
+    (tmp_path / 'metadata.json').write_text(json.dumps(metadata), encoding='utf-8')
+    model = tmp_path / 'custom.onnx'
+    model.touch()
+    session = FakeSession()
+    session.get_modelmeta = lambda: SimpleNamespace(custom_metadata_map={})
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        InferenceSession=lambda *a, **kw: session, SessionOptions=SimpleNamespace,
+        get_available_providers=lambda: ['CPUExecutionProvider']))
+    async with create_service_registry().scope({'segmentation_model_path': str(model)}) as scope:
+        service = scope.segmentation
+        await service.predict_sky(np.full((13, 17, 3), 25., np.float32), value_range=(0, 100),
+                                  linear=True, stretch_gamma=2, scales=(32,), strategy='pyramid')
+        prepared = session.tensors[0].copy()
+        await service.predict_sky(np.full((13, 17, 3), 128, np.uint8), scales=(32,), strategy='pyramid')
+        np.testing.assert_array_equal(prepared, session.tensors[1])
+    assert service._predictor is None and service._backend._session is None
+
+
+def test_native_patch_is_normalized_zero_padded_and_logits_cropped():
+    session = FakeSession()
+    def local_run(names, inputs):
+        tensor = inputs['image']
+        session.tensors.append(tensor.copy())
+        logits = np.zeros((1, 2, *tensor.shape[2:]), np.float32)
+        logits[:, 1] = np.arange(tensor.shape[3], dtype=np.float32)[None, None, :] / 10
+        logits[:, 1, 13:, :] = 1000
+        logits[:, 1, :, 17:] = 1000
+        return [logits]
+    session.run = local_run
+    image = np.random.default_rng(3).integers(0, 256, (13, 17, 3), dtype=np.uint8)
+    actual = SkySegPredictor(FakeBackend(session)).probability_native(image)
+    tensor = session.tensors[0]
+    assert tensor.shape == (1, 3, 32, 32) and tensor.dtype == np.float16
+    assert not tensor[:, :, 13:, :].any() and not tensor[:, :, :, 17:].any()
+    expected = ((image.astype(np.float32) - np.array(session.metadata['mean'])) /
+                np.array(session.metadata['std'])).astype(np.float16)
+    np.testing.assert_allclose(tensor[0, :, :13, :17].transpose(1, 2, 0), expected, atol=.002)
+    np.testing.assert_allclose(actual, np.broadcast_to(1 / (1 + np.exp(-np.arange(17) / 10)), (13, 17)), atol=1e-7)
+
+
+def test_default_roi_strategy_executes_selected_native_windows_and_reports_phases():
+    session = FakeSession()
+    events = []
+    result = SkySegPredictor(FakeBackend(session)).predict(
+        np.zeros((13, 17, 3), np.uint8), scales=(32,), progress=events.append)
+    assert result.info['model_version'] == '2.0.0' and result.info['strategy'] == 'roi'
+    assert result.info['roi']['scanned_tiles'] == 1
+    assert result.info['roi']['working_shape'] == [13, 17]
+    assert len(session.tensors) == 2
+    assert result.raw_probability is not None
+    assert [event.stage for event in events] == [
+        'scale_started', 'scale_completed', 'roi_planned', 'tile_started',
+        'tile_completed', 'fusing', 'complete']
+    assert events[2].total == 1 and events[4].completed == 1
+
+
+@pytest.mark.parametrize('options', [dict(strategy='other'), dict(working_long_edge=31),
+                                      dict(working_long_edge=True)])
+def test_invalid_roi_options_do_not_run_model(options):
+    session = FakeSession()
+    with pytest.raises(ValueError):
+        SkySegPredictor(FakeBackend(session)).predict(np.zeros((4, 5, 3), np.uint8), **options)
+    assert not session.tensors
 
 
 @pytest.mark.asyncio
@@ -137,8 +284,14 @@ async def test_segmentation_reuses_one_backend_and_releases_predictor(monkeypatc
         service = scope.segmentation
         constructor.assert_not_called()
         image = np.zeros((13, 17, 3), np.uint8)
-        first = await service.predict_sky(image, scales=(32, 64))
-        second = await scope.segmentation.predict_sky(image, scales=(32, 64))
+        events = []
+        first = await service.predict_sky(image, strategy='pyramid', scales=(32, 64),
+                                        progress=lambda event: events.append((event, threading.get_ident())))
+        assert events[0][0].stage == 'initializing'
+        assert events[-1][0].stage == 'complete'
+        assert len({thread for _, thread in events}) == 1
+        assert events[0][1] != threading.get_ident()
+        second = await scope.segmentation.predict_sky(image, strategy='pyramid', scales=(32, 64))
         np.testing.assert_array_equal(first.probability, second.probability)
         constructor.assert_called_once()
         assert service._predictor is not None
@@ -157,7 +310,7 @@ async def test_requested_provider_cannot_silently_fall_back(monkeypatch, tmp_pat
             'segmentation_model_path': str(model),
             'segmentation_providers': ['CUDAExecutionProvider', 'CPUExecutionProvider']}) as scope:
         with pytest.raises(RuntimeError, match='failed to initialize'):
-            await scope.segmentation.predict_sky(np.zeros((4, 4, 3), np.uint8), scales=(32,))
+            await scope.segmentation.predict_sky(np.zeros((4, 4, 3), np.uint8), strategy='pyramid', scales=(32,))
 
 
 @pytest.mark.asyncio
@@ -174,7 +327,7 @@ async def test_generic_and_sky_services_own_distinct_sessions_even_for_same_mode
             'onnx_threads': 2, 'segmentation_threads': 3}) as scope:
         generic, sky = scope.onnx, scope.segmentation
         await generic.describe()
-        await sky.predict_sky(np.zeros((9, 13, 3), np.uint8), scales=(32,))
+        await sky.predict_sky(np.zeros((9, 13, 3), np.uint8), strategy='pyramid', scales=(32,))
         assert generic._backend._session is sessions[0]
         assert sky._backend._session is sessions[1]
         assert not hasattr(sky, 'infer')
@@ -185,7 +338,10 @@ async def test_generic_and_sky_services_own_distinct_sessions_even_for_same_mode
 
 
 @pytest.mark.asyncio
-async def test_cancelled_pyramid_drains_all_scales_before_backend_close(monkeypatch, tmp_path):
+@pytest.mark.parametrize('strategy,scales,block_at,expected_calls', [
+    ('pyramid', (32, 64), 1, 2), ('roi', (32,), 2, 5)])
+async def test_cancelled_prediction_drains_all_phases_before_backend_close(
+        monkeypatch, tmp_path, strategy, scales, block_at, expected_calls):
     model = tmp_path / 'sky.onnx'
     model.touch()
     session = FakeSession()
@@ -195,7 +351,7 @@ async def test_cancelled_pyramid_drains_all_scales_before_backend_close(monkeypa
 
     def blocking_run(names, inputs):
         threads.append(threading.get_ident())
-        if len(threads) == 1:
+        if len(threads) == block_at:
             entered.set()
             assert release.wait(5)
         return run(names, inputs)
@@ -210,12 +366,13 @@ async def test_cancelled_pyramid_drains_all_scales_before_backend_close(monkeypa
         closed_threads = []
 
         def checked_close():
-            assert len(session.tensors) == 2
+            assert len(session.tensors) == expected_calls
             closed_threads.append(threading.get_ident())
             close()
 
         monkeypatch.setattr(service._backend, 'close', checked_close)
-        task = asyncio.create_task(service.predict_sky(np.zeros((9, 13, 3), np.uint8), scales=(32, 64)))
+        task = asyncio.create_task(service.predict_sky(
+            np.zeros((400, 500, 3), np.uint8), strategy=strategy, scales=scales))
         try:
             assert await asyncio.to_thread(entered.wait, 5)
             task.cancel()
@@ -225,6 +382,6 @@ async def test_cancelled_pyramid_drains_all_scales_before_backend_close(monkeypa
             release.set()
         with pytest.raises(asyncio.CancelledError):
             await task
-    assert len(session.tensors) == 2
+    assert len(session.tensors) == expected_calls
     assert set(threads) == set(closed_threads)
     assert service._predictor is None and service._backend._session is None

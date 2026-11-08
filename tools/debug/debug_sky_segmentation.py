@@ -1,4 +1,4 @@
-"""Run the production SkySeg service and save native-size sky masks."""
+"""Run the production SkySeg v2 global + ROI service and save native-size sky masks."""
 import argparse
 import asyncio
 import io
@@ -21,12 +21,15 @@ async def main(args):
                 rgb, ImageCms.ImageCmsProfile(io.BytesIO(profile)),
                 ImageCms.createProfile('sRGB'), outputMode='RGB')
         pixels = np.asarray(rgb).copy()
-    settings = {'segmentation_providers': [args.provider]}
+    settings = {}
+    if args.provider != 'auto':
+        settings['segmentation_providers'] = [args.provider]
     if args.model:
         settings['segmentation_model_path'] = str(args.model)
     async with create_service_registry().scope(settings) as services:
         prediction = await services.segmentation.predict_sky(
-            pixels, scales=args.scales, threshold=args.threshold, color_order='RGB')
+            pixels, scales=args.scales, threshold=args.threshold, color_order='RGB',
+            strategy=args.strategy, working_long_edge=args.working_long_edge)
     args.output.mkdir(parents=True, exist_ok=True)
     np.save(args.output / 'probability.npy', prediction.probability)
     for name, image in [('sky_mask.png', prediction.mask * 255),
@@ -45,8 +48,10 @@ if __name__ == '__main__':
     parser.add_argument('image', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--model', type=Path)
-    parser.add_argument('--provider', default='CPUExecutionProvider',
-                        choices=['CPUExecutionProvider', 'CUDAExecutionProvider', 'DmlExecutionProvider'])
+    parser.add_argument('--provider', default='auto',
+                        choices=['auto', 'CPUExecutionProvider', 'CUDAExecutionProvider', 'DmlExecutionProvider'])
     parser.add_argument('--scales', type=int, nargs='+', default=[512, 768, 1024])
     parser.add_argument('--threshold', type=float, default=.5)
+    parser.add_argument('--strategy', choices=['roi', 'pyramid'], default='roi')
+    parser.add_argument('--working-long-edge', type=int, default=1536)
     asyncio.run(main(parser.parse_args()))

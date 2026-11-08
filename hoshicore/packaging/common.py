@@ -153,8 +153,8 @@ def discover_manifest(root: Path, *, native: bool) -> PackageManifest:
                 print(f"WARNING: Cannot resolve libturbojpeg source path: {library}")
     files = [(root / "hoshicore/default_settings.yaml", "hoshicore/default_settings.yaml"),
              (root / "LICENSE", "LICENSE")]
-    for name in ('skyseg_v1_fp16.onnx', 'SegNeXt-Apache-2.0.txt'):
-        destination = f'models/skyseg_v1/{name}'
+    for name in ('skyseg_v2_fp16.onnx', 'metadata.json', 'SegNeXt-Apache-2.0.txt'):
+        destination = f'models/skyseg_v2/{name}'
         files.append((root / destination, destination))
     if shader:
         files.append((shader, "hoshicore/_custom_op/_metal_kernels.metallib"))

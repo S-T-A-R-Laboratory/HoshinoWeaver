@@ -81,7 +81,7 @@ UPX 默认关闭，压缩收益和启动开销需实测。
 逻辑资源包括 `hoshicore/dag/`、`hoshicore/default_settings.yaml`、`LICENSE`
 及可用的 native 依赖。
 
-模型资源包含 `models/skyseg_v1/` 中的 ONNX 权重和许可证。
+模型资源包含 `models/skyseg_v2/` 中的 ONNX 权重、运行时读取的 `metadata.json` 和许可证。
 
 PyInstaller 的 CLI 资源位于 `_internal/`，Nuitka 位于发行根目录；
 应用资源定位须独立于启动目录和开发源码。Windows 入口名为

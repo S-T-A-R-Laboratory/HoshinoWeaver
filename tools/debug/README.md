@@ -43,21 +43,26 @@ behavior in `hoshicore/` and test it there; the tracked test suite must not
 import these tools. Local datasets and generated results remain outside version
 control.
 
-## SkySeg v1 sky segmentation
+## SkySeg v2 sky segmentation
 
 ```powershell
 python -m tools.debug.debug_sky_segmentation input.jpg --output .test-tmp/skyseg
 ```
 
 Calls the production `services.segmentation.predict_sky()` API with the bundled
-SkySeg v1 weight and a 512/768/1024 probability pyramid.
+SkySeg v2 weight, a 512/768/1024 global pyramid, and selected-window refinement
+on a working image capped at long edge 1536. Windows use unscaled RGB and
+normalized zero padding; native-size fusion precedes thresholding.
 `requirements.txt` includes ONNX Runtime; no training framework or standalone skyseg
 package is used. EXIF orientation and RGB ICC conversion are applied before
 inference. Outputs native-size `probability.npy`, `probability.png`,
 `sky_mask.png` (255=sky), and `run.json` with actual providers and per-scale times.
-Use `--scales 512` for one scale, `--threshold` to change the binary cutoff,
+The default `--provider auto` uses the service's lazy accelerator selection;
+use `--provider CPUExecutionProvider` to explicitly force CPU.
+Use `--strategy pyramid` to skip ROI refinement, `--working-long-edge` to change
+the working cap, `--scales 512` for a single global scale experiment, `--threshold` to change the binary cutoff,
 or `--provider CUDAExecutionProvider` / `DmlExecutionProvider` with a compatible
-installed runtime. See [service contract](../../docs/services.md#skyseg-v1-天地分割).
+installed runtime. See [service contract](../../docs/services.md#skyseg-v2-天地分割).
 
 This tool validates segmentation capability and exports results for inspection.
 Service sharing, serialization, repeatability and cleanup are maintained by

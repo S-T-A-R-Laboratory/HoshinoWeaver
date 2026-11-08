@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "skyseg",
+    "version": "2.0.0",
+    "file": "skyseg_v2_fp16.onnx"
+  },
+  "task": "segmentation",
+  "adapter": "sky_logits",
+  "inputs": [
+    {
+      "name": "image",
+      "dtype": "float16",
+      "layout": "NCHW",
+      "channels": "RGB",
+      "signal": "nonlinear",
+      "value_range": [0, 255],
+      "normalization": {
+        "mean": [123.675, 116.28, 103.53],
+        "std": [58.395, 57.12, 57.375]
+      },
+      "spatial": {
+        "size_divisor": 32,
+        "global_resize": "keep_ratio_then_ceil_resize",
+        "local_resize": "none",
+        "padding": "normalized_zero_right_bottom"
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "name": "logits",
+      "dtype": "float32",
+      "layout": "NCHW",
+      "kind": "logits",
+      "classes": ["non_sky", "sky"],
+      "sky_channel": 1,
+      "spatial": "input"
+    }
+  ]
+}
