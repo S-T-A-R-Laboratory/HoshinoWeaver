@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -15,6 +16,7 @@ from ui.styles import GROUP_BOX_STYLE, GROUP_HEADER_STYLE
 from ui.widgets import (ConfigSpec, RouteOptionSpec, RouteSpec,
                         create_config_row, create_route_selector)
 from ui.yaml_loader import load_ui_yaml
+from ui.mask_target import MaskTarget
 
 # ─── PanelSchema ─────────────────────────────────────────────────────────────
 
@@ -258,9 +260,11 @@ class DynamicConfigPanel(QWidget):
     """Dynamically renders config controls based on a PanelSchema."""
 
     values_changed = Signal()
+    mask_edit_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self._mask_bindings = {}
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self._main_layout = QVBoxLayout(self)
         self._main_layout.setContentsMargins(4, 4, 4, 4)
@@ -288,6 +292,7 @@ class DynamicConfigPanel(QWidget):
         self._config_on_change_hooks: dict[str, list[Callable]] = {}
 
     def load_schema(self, schema: PanelSchema):
+        self._mask_bindings.clear()
         self._schema = schema
         self._config_getters.clear()
         self._route_getters.clear()
@@ -399,6 +404,8 @@ class DynamicConfigPanel(QWidget):
         self.values_changed.emit()
 
     def _rebuild_route_config_section(self, route_key: str, option: str):
+        self._mask_bindings = {token: binding for token, binding in self._mask_bindings.items()
+                               if binding[1] != route_key}
         container = self._route_config_container[route_key]
         _clear_layout(container.layout())
 
@@ -441,6 +448,7 @@ class DynamicConfigPanel(QWidget):
         )
 
         for spec in visible_specs:
+            mask_token = object()
             def _on_route_config_change(rk=route_key, pk=spec.key):
                 self.values_changed.emit()
                 for hook in self._config_on_change_hooks.get(
@@ -451,7 +459,11 @@ class DynamicConfigPanel(QWidget):
                 spec,
                 parent=container,
                 on_change=_on_route_config_change,
+                on_edit_mask=lambda checked=False, token=mask_token: self._emit_mask_edit(token),
             )
+            if spec.widget == "mask_picker":
+                self._register_mask_target(mask_token, spec, getter, setter,
+                                           _on_route_config_change, route_key)
             group_layout.addWidget(row)
             getter_key = (route_key, spec.key)
             self._route_config_getters[getter_key] = getter
@@ -474,17 +486,50 @@ class DynamicConfigPanel(QWidget):
             for hook in self._config_on_change_hooks.get(key, []):
                 hook()
 
+        mask_token = object()
         row, getter, setter = create_config_row(
             spec,
             parent=self,
             on_change=_on_config_change,
+            on_edit_mask=lambda: self._emit_mask_edit(mask_token),
         )
+        if spec.widget == "mask_picker":
+            self._register_mask_target(mask_token, spec, getter, setter, _on_config_change)
         layout.addWidget(row)
         self._config_getters[spec.key] = getter
         self._config_widgets[spec.key] = row
 
         if spec.visible_when:
             self._register_visibility_dep([row], spec.visible_when)
+
+    def _register_mask_target(self, token, spec, getter, setter, on_change, route_key=None):
+        panel_ref = weakref.ref(self)
+
+        def is_current():
+            panel = panel_ref()
+            try:
+                return panel is not None and token in panel._mask_bindings and panel.isEnabled()
+            except RuntimeError:
+                return False
+
+        def set_path(path):
+            setter(path)
+            on_change()
+
+        target = MaskTarget(spec.label or spec.key, getter(), is_current, set_path, getter)
+        self._mask_bindings[token] = (target, route_key, getter)
+
+    def mask_targets(self):
+        """Current workflow controls, independent of temporary processing locks."""
+        return [binding[0] for binding in self._mask_bindings.values()]
+
+    def _emit_mask_edit(self, token):
+        binding = self._mask_bindings.get(token)
+        if binding is not None:
+            target, _, getter = binding
+            if target.is_current():
+                target.path = getter()
+                self.mask_edit_requested.emit(target)
 
     def _add_group_box(
         self,

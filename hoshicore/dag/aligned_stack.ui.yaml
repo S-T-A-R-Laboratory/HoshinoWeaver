@@ -72,7 +72,7 @@ configs:
   mask:
     label: "天空遮罩"
     description: "为天空部分施加蒙版，仅允许白色区域参与对齐和叠加。"
-    widget: file_picker
+    widget: mask_picker
     accept: ".tif,.tiff,.png,.jpg"
   enable_ground:
     label: "叠加地面"

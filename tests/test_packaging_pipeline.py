@@ -152,9 +152,14 @@ def test_manifest_keeps_data_and_native_binaries_separate(tmp_path, monkeypatch)
     (tmp_path / "hoshicore/_custom_op").mkdir()
     (tmp_path / "hoshicore/default_settings.yaml").write_text("settings")
     (tmp_path / "LICENSE").write_text("license")
-    model_dir = tmp_path / 'models/skyseg_v1'
+    icon = tmp_path / "ui/icons/mask_editor.svg"
+    icon.parent.mkdir(parents=True)
+    icon.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+    for name in ('mask_visible.svg', 'mask_hidden.svg'):
+        (icon.parent / name).write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+    model_dir = tmp_path / 'models/skyseg_v2'
     model_dir.mkdir(parents=True)
-    for name in ('skyseg_v1_fp16.onnx', 'SegNeXt-Apache-2.0.txt'):
+    for name in ('skyseg_v2_fp16.onnx', 'metadata.json', 'SegNeXt-Apache-2.0.txt'):
         (model_dir / name).write_bytes(b'model resource')
     dll = tmp_path / "hoshicore/_custom_op/runtime.dll"
     dll.write_bytes(b"native")
@@ -163,8 +168,13 @@ def test_manifest_keeps_data_and_native_binaries_separate(tmp_path, monkeypatch)
         assert manifest.custom_op_dlls == ((dll,) if native else ())
         assert not any(path.suffix == ".dll" for path, _ in manifest.data_files)
         assert (tmp_path / "LICENSE", "LICENSE") in manifest.data_files
-        assert (model_dir / 'skyseg_v1_fp16.onnx',
-                'models/skyseg_v1/skyseg_v1_fp16.onnx') in manifest.data_files
+        assert (icon, "ui/icons/mask_editor.svg") in manifest.data_files
+        for name in ('mask_visible.svg', 'mask_hidden.svg'):
+            assert (icon.parent / name, f'ui/icons/{name}') in manifest.data_files
+        assert (model_dir / 'skyseg_v2_fp16.onnx',
+                'models/skyseg_v2/skyseg_v2_fp16.onnx') in manifest.data_files
+        assert not any('skyseg_v1' in destination for _, destination in manifest.data_files)
+        assert (model_dir / 'metadata.json', 'models/skyseg_v2/metadata.json') in manifest.data_files
 
 
 @pytest.mark.parametrize("relative", [".", "dist", "dist/existing-release"])

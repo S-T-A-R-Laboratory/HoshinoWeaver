@@ -17,13 +17,15 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QIcon, QMouseEvent
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
                                QFrame, QHeaderView, QMainWindow, QScrollArea,
-                               QTreeWidgetItem)
+                               QTreeWidgetItem, QVBoxLayout)
 from qasync import QEventLoop
 
 from hoshicore.component.utils import ORG_NAME, SOFTWARE_NAME, VERSION
 from hoshicore.component.utils import init_logger as _init_logger
 from hoshicore.component.runtime_diagnostics import log_runtime_components
 from ui.output_panel import OutputPanel
+from ui.mask_editor import MaskEditorController
+from ui.preview_toolbar import PreviewToolbar
 from ui.panel_builder import DynamicConfigPanel, PanelSchema
 from ui.UI import Ui_guide, Ui_HNW
 from ui.UILibs import borderFrame
@@ -351,6 +353,27 @@ class HNW_window(QMainWindow, Ui_HNW):
         self._setup_dynamic_panel()
         # 5 动态输出面板
         self._setup_output_panel()
+        self.mask_editor = MaskEditorController(self)
+        self.config_panel.mask_edit_requested.connect(self.mask_editor.open)
+        self.mask_preview_tools = PreviewToolbar(_BASE_DIR / 'ui/icons', self.preview_area)
+        self.mask_editor_button = self.mask_preview_tools.edit_button
+        self.mask_preview_toggle = self.mask_preview_tools.mask_toggle
+        self.mask_editor_button.clicked.connect(lambda: self.mask_editor.open())
+        self.mask_preview_toggle.toggled.connect(self.mask_editor.set_preview_visible)
+        self.horizontalLayout_9.removeWidget(self.img_view_label)
+        preview_stack = QVBoxLayout()
+        preview_stack.setContentsMargins(0, 0, 0, 0)
+        preview_stack.setSpacing(0)
+        preview_stack.addWidget(self.mask_preview_tools)
+        preview_stack.addWidget(self.img_view_label, 1)
+        self.horizontalLayout_9.addLayout(preview_stack)
+        self.config_panel.values_changed.connect(self.mask_editor.refresh_workflow)
+
+    def closeEvent(self, event):
+        if hasattr(self, 'mask_editor') and not self.mask_editor.close_for_parent():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def _setup_dynamic_panel(self):
         """Replace hardcoded parameter widgets with DynamicConfigPanel."""
@@ -423,6 +446,8 @@ class HNW_window(QMainWindow, Ui_HNW):
         self._current_meta_yaml_path = meta_path
         schema = PanelSchema.from_yaml(meta_path, ui_path)
         self.config_panel.load_schema(schema)
+        if hasattr(self, 'mask_editor'):
+            self.mask_editor.refresh_workflow()
         self.output_panel.load_specs(schema.outputs)
         from hoshicore.engine.wiring import load_output_defaults
         output_defaults = load_output_defaults()

@@ -104,7 +104,7 @@ configs:
   mask:
     label: "天空区域遮罩"
     description: "选择一张天空区域遮罩图像（白色=天空，黑色=地面）。该遮罩用于限定星点检测区域。"
-    widget: file_picker
+    widget: mask_picker
     accept: ".tif,.tiff,.png,.jpg"
     visible_when: { key: "enable_satellite_clean", eq: true }
   int_weight:
@@ -156,7 +156,7 @@ route_configs:
     mask:
       label: "天空区域遮罩"
       description: "选择一张天空区域遮罩图像（白色=天空，黑色=地面）。启用该遮罩时，天空区域将使用星轨叠加结果，地面区域使用Sigma裁剪均值结果融合。"
-      widget: file_picker
+      widget: mask_picker
       accept: ".tif,.tiff,.png,.jpg"
     minus_only:
       label: "还原均值亮度"

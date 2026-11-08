@@ -101,6 +101,7 @@ def create_config_row(
     spec: ConfigSpec,
     parent: QWidget | None = None,
     on_change: Callable | None = None,
+    on_edit_mask: Callable | None = None,
 ) -> tuple[QFrame, Callable[[], Any], Callable[[Any], None]]:
     """Create a labeled row widget for a config spec.
 
@@ -108,7 +109,7 @@ def create_config_row(
     """
     row = QFrame(parent)
     # Adjust height for file/dir pickers (two-row layout)
-    if spec.widget in ("file_picker", "dir_picker"):
+    if spec.widget in ("file_picker", "mask_picker", "dir_picker"):
         row.setMinimumHeight(60)
         row.setMaximumHeight(60)
     else:
@@ -119,7 +120,7 @@ def create_config_row(
     layout.setSpacing(6)
 
     # For file/dir pickers, skip the left label (will be in top row)
-    if spec.widget not in ("file_picker", "dir_picker"):
+    if spec.widget not in ("file_picker", "mask_picker", "dir_picker"):
         label = QLabel(spec.label or spec.key, row)
         label.setMinimumWidth(60)
         label.setMaximumWidth(80)
@@ -171,7 +172,7 @@ def create_config_row(
         setter = lambda v: combo.setCurrentIndex(values.index(v) if v in values else 0)
         layout.addWidget(combo, 1)
 
-    elif spec.widget == "file_picker":
+    elif spec.widget in ("file_picker", "mask_picker"):
         # Use vertical layout for two-row design
         v_layout = QVBoxLayout()
         v_layout.setContentsMargins(0, 0, 0, 0)
@@ -204,6 +205,15 @@ def create_config_row(
 
         top_layout.addWidget(browse_btn)
         top_layout.addWidget(clear_btn)
+
+        if spec.widget == "mask_picker":
+            edit_btn = QPushButton("编辑", top_row)
+            edit_btn.setObjectName("edit_mask")
+            edit_btn.setToolTip("打开天空蒙版编辑器，保存后可应用到此参数")
+            edit_btn.setEnabled(on_edit_mask is not None)
+            if on_edit_mask:
+                edit_btn.clicked.connect(on_edit_mask)
+            top_layout.addWidget(edit_btn)
 
         # Second row: path display (indented container)
         bottom_container = QWidget(row)

@@ -6,7 +6,7 @@ import numpy as np
 import PIL.Image
 import rawpy
 from hoshicore.component.image_io import load_tiff_preview
-from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QImage,
                            QMouseEvent, QPainter, QPixmap, QPolygon,
                            QWheelEvent)
@@ -19,6 +19,8 @@ from ui.progress_tracker import QtSignalTracker
 
 
 class imgDisplayQFrame(QFrame):
+    image_changed = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.pixmap = None
@@ -31,6 +33,9 @@ class imgDisplayQFrame(QFrame):
         self.dragging = False
         self.last_mouse_pos = QPointF(0, 0)
         self.img_path = None
+        self._mask_image = QImage()
+        self._mask_pixels = None
+        self.mask_preview_visible = True
 
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
@@ -44,30 +49,49 @@ class imgDisplayQFrame(QFrame):
 
     def initImg(self, path=None):
         if path is not None:
-            self.img_path = path
-            suffix = self.img_path.rsplit(".", 1)[-1].lower()
+            suffix = path.rsplit(".", 1)[-1].lower()
 
             if suffix in ('cr2', 'cr3', 'arw', 'nef', 'dng', 'rw2', 'orf', 'raf'):
-                with rawpy.imread(self.img_path) as raw:
+                with rawpy.imread(path) as raw:
                     rgb = raw.postprocess(output_color=rawpy.ColorSpace(4),
                     output_bps=8, use_camera_wb=True, no_auto_bright=True)
             elif suffix in ('tif', 'tiff'):
-                rgb = load_tiff_preview(self.img_path)
+                rgb = load_tiff_preview(path)
             else:
-                rgb = np.array(PIL.Image.open(self.img_path).convert("RGB"), dtype=np.uint8)
+                rgb = np.array(PIL.Image.open(path).convert("RGB"), dtype=np.uint8)
 
             height, width = rgb.shape[:2]
             q_image = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(q_image)
 
             if not pixmap.isNull():
+                self.img_path = path
                 self.pixmap = pixmap
                 self._invalidate_scaled_cache()
                 self.setImage()
+                self.image_changed.emit()
         else:
             self.pixmap = None
             self._invalidate_scaled_cache()
             self.setImage()
+            self.image_changed.emit()
+
+    def set_mask_preview(self, mask=None):
+        if mask is None:
+            self._mask_image = QImage()
+            self._mask_pixels = None
+        else:
+            self._mask_pixels = np.ascontiguousarray(mask, dtype=np.uint8)
+            height, width = mask.shape
+            self._mask_image = QImage(self._mask_pixels.data, width, height,
+                                      self._mask_pixels.strides[0], QImage.Format_Indexed8)
+            self._mask_image.setColorTable([QColor(0, 0, 0, 0).rgba(), QColor(40, 220, 120).rgba()])
+        self.update()
+
+    @property
+    def mask_preview_matches(self):
+        return (self.pixmap is not None and not self._mask_image.isNull()
+                and self.pixmap.size() == self._mask_image.size())
 
     def setImage(self, scale_factor = None):
         self.updateScaleLimits()
@@ -108,6 +132,10 @@ class imgDisplayQFrame(QFrame):
             x = (self.width() - self._scaled_pixmap.width()) / 2 + self.offset.x()
             y = (self.height() - self._scaled_pixmap.height()) / 2 + self.offset.y()
             painter.drawPixmap(x, y, self._scaled_pixmap)
+            if self.mask_preview_visible and self.mask_preview_matches:
+                painter.setOpacity(.45)
+                painter.drawImage(QRectF(x, y, self._scaled_pixmap.width(), self._scaled_pixmap.height()),
+                                  self._mask_image)
         else:
             super().paintEvent(event)
 

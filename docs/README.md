@@ -24,7 +24,7 @@ hoshicore 是 HoshinoWeaver (HNW) 的核心计算库，是星空序列图像的�
 | 服务 | `hoshicore/services/` | 管理资源作用域；通用后端与能力适配器由具体服务组合，见 [服务与外部资源](./services.md) |
 | 组件 | `hoshicore/component/` | 提供底层能力，如图像算法、几何求解、数据容器和基础设施等 |
 | 工作流 | `hoshicore/dag/` | YAML 流程定义，见 [DAG 节点定义规范](./dag_node_definition.md) |
-| 界面 | `ui/` | GUI、参数面板、进度与结果展示 |
+| 界面 | `ui/` | GUI、参数面板、进度与结果展示，见 [GUI 能力与集成约定](./gui.md) |
 
 编译链路、模块职责、配置解析、资源预检与运行时规划统一见 [引擎文档](./dag_engine.md#编译链路)。
 
@@ -37,6 +37,13 @@ GUI 入口为 `HoshinoWeaver desktop.py`，界面代码位于 `ui/`，使用 PyS
 - `<name>.ui.yaml`：前端标签、控件、取值范围和分组等显示提示，与 Meta YAML 配对。
 
 动态参数面板不提交标记为 `hidden: true` 的配置，包括其 YAML 默认值；执行时按 [配置解析约定](./dag_engine.md#关键编译约定) 取得有效值，与 CLI 未传对应 `--config` 时一致。输出路径、位深等配置由专门的输出面板提交。`visible_when` 仅控制显示，不改变参数提交规则。
+
+天空蒙版编辑器通过预览区独立入口或工作流 `widget: mask_picker` 参数入口打开。
+它使用当前展示图的快照，提供 PNG/JPEG 蒙版导入、自动生成、叠加预览、硬画笔与撤销重做；导入按灰度 128 阈值转为二值，保存使用无损 PNG。
+保存与工作流解耦；参数入口额外支持“保存并应用”，仅对仍有效的原参数回填文件路径。
+应用后，当前工作流的同尺寸序列图片共享蒙版叠加，可通过“显示蒙版”切换；不支持蒙版的工作流隐藏编辑器入口。
+操作步骤见 [用户手册附录 C](./manual/manual_cn.md#附录-c遮罩文件制作说明)，
+会话、参数回填与生成任务的集成约定见 [GUI 专题](./gui.md)。
 
 ---
 
@@ -394,6 +401,7 @@ GitHub Actions 的 Python 3.11/3.12 与平台矩阵、native/NumPy 回退检查�
 | [DAG 节点定义规范](./dag_node_definition.md) | YAML DAG 的完整 schema 说明，包含字段定义、link 语法和校验规则 |
 | [Meta YAML v2](./meta_yaml_v2_spec.md) | 路由、参数声明与节点开关的设计细节 |
 | [DAG Engine 架构](./dag_engine.md) | 编译链路、模块职责、资源规划与运行时执行模型 |
+| [GUI 能力与集成约定](./gui.md) | 动态参数面板、蒙版编辑器、参考图与预览、显式回填和任务生命周期 |
 | [Op 算子设计](./op.md) | Op 基类设计、队列机制、信号传播、异常处理的详细说明 |
 | [长度广播协议](./length_protocol.md) | 序列长度如何在 DAG 中先行传播、四层一致检查、新增 Op 合同、缺陷清单与加固路线 |
 | [Norma 组件工作原理](./norma.md) | 星点观测、射线匹配、相机与姿态求解、重映射、序列 BA 与窗口几何 |

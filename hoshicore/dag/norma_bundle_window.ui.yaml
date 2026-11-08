@@ -127,7 +127,7 @@ configs:
   mask:
     label: "天空蒙版"
     description: "白色使用天空对齐结果，黑色使用未变换的地景窗口结果。"
-    widget: file_picker
+    widget: mask_picker
 
   enable_ground:
     label: "启用地景窗口"
