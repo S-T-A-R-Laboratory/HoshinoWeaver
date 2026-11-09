@@ -91,6 +91,27 @@ def format_runtime_capabilities_html(report: dict[str, Any]) -> str:
             f"<td>{hint}</td></tr>"
         )
 
+    external_rows = []
+    for key, label in (('ffmpeg', 'FFmpeg'), ('photoshop', 'Photoshop')):
+        payload = report.get('external_components', {}).get(key, {'status': 'pending'})
+        status = payload.get('status')
+        state = {'available': '可用', 'configured': '路径有效',
+                 'pending': '检测中……'}.get(status, '不可用')
+        css = 'ok' if status == 'available' else 'neutral' if status in ('configured', 'pending') else 'warn'
+        detail = _escape(payload.get('path', ''))
+        if status == 'unavailable':
+            detail += '<br>' + _reason(payload)
+        if key == 'ffmpeg':
+            for name, result in payload.get('formats', {}).items():
+                text = '可用' if result['status'] == 'available' else '不可用：' + _reason(result)
+                detail += f'<br>{_escape(name)}：{text}'
+            if state.startswith("不可用"):
+                detail += '<br>需在全局设置配置 ffmpeg 路径。'
+        else:
+            if state.startswith("不可用"):
+                detail += '<br>需在全局设置配置 photoshop 路径。'
+        external_rows.append(f'<tr><td>{label}</td><td class="{css}">{state}</td><td>{detail}</td></tr>')
+
     return f"""
     <style>
       body {{ color: #eeeeee; font-size: 13px; }}
@@ -111,4 +132,6 @@ def format_runtime_capabilities_html(report: dict[str, Any]) -> str:
     <p><b>当前逻辑算子路径：</b>{backend_text}</p>
     <h3>图像与视频组件</h3>
     <table>{''.join(io_rows)}</table>
+    <h3>外部程序</h3>
+    <table>{''.join(external_rows)}</table>
     """

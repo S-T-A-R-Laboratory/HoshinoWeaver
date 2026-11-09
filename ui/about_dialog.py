@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from hoshicore.component.utils import ORG_NAME, SOFTWARE_NAME, VERSION
+from hoshicore.component.utils import ORG_NAME, RELEASE_NAME, SOFTWARE_NAME, VERSION
 from ui import resource  # noqa: F401  — registers Qt icon resources
 from ui.UILibs import uQDialog
 
@@ -72,7 +72,7 @@ class AboutDialog(uQDialog):
         subtitle_lbl.setStyleSheet("font-size: 12px; color: rgba(80,80,80,200);")
         title_block.addWidget(subtitle_lbl)
 
-        meta_lbl = QLabel(f"v{VERSION}  ·  {ORG_NAME}", self)
+        meta_lbl = QLabel(f"v{VERSION}\"{RELEASE_NAME}\"  ·  {ORG_NAME}", self)
         meta_lbl.setStyleSheet("font-size: 11px; color: rgba(100,100,100,180);")
         title_block.addWidget(meta_lbl)
 

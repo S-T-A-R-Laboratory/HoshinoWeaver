@@ -33,10 +33,11 @@ ASTRO_SUFFIX = ["fits", "fts"]
 SUPPORT_BITS = [8, 16]
 MAGIC_NUM = 3
 
-VERSION = "1.1.0"
-RELEASE_NAME = "Lyra"
+VERSION = "1.2.0-beta.0"
+RELEASE_NAME = "Sheliak"
 ORG_NAME = f"STARLab"
 SOFTWARE_NAME = f"HoshinoWeaver"
+DISPLAY_NAME = f"HNW-织此星辰 v{VERSION} \"{RELEASE_NAME}\""
 
 if getattr(sys, 'frozen', False):
     _EXE_ROOT = Path(sys._MEIPASS)

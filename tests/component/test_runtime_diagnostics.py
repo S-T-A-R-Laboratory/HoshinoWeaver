@@ -68,3 +68,34 @@ def test_probe_reports_numpy_routes_when_compiled_module_is_absent(monkeypatch):
     assert {item["backend"] for item in report["logical_ops"].values()} == {
         "numpy",
     }
+
+
+def test_external_tools_use_configured_paths_and_report_partial_ffmpeg_support(monkeypatch, tmp_path):
+    from hoshicore.component import photoshop, video_io
+
+    app = tmp_path / 'Photoshop.exe'
+    app.touch()
+    monkeypatch.setattr(runtime_diagnostics.sys, 'platform', 'win32')
+    resolve = Mock(return_value='configured-ffmpeg')
+    monkeypatch.setattr(video_io, 'resolve_ffmpeg', resolve)
+    probe = Mock(side_effect=[ValueError('libx264 missing'), ValueError('libx264 missing'), 'configured-ffmpeg'])
+    monkeypatch.setattr(video_io, 'probe_ffmpeg', probe)
+    renderer = Mock()
+    monkeypatch.setattr(photoshop, 'PhotoshopRawRenderer', renderer)
+    result = runtime_diagnostics.probe_external_components({'ffmpeg_path': 'custom-ffmpeg', 'photoshop_path': str(app)})
+    resolve.assert_called_once_with('custom-ffmpeg')
+    assert result['ffmpeg']['status'] == 'available'
+    assert result['ffmpeg']['formats']['RGB / AVI']['status'] == 'available'
+    assert result['ffmpeg']['formats']['H.264 / MP4']['reason'] == 'libx264 missing'
+    assert result['photoshop'] == {'status': 'configured', 'path': str(app.resolve())}
+    renderer.assert_not_called()
+
+
+def test_missing_ffmpeg_does_not_hide_photoshop_configuration_error(monkeypatch):
+    from hoshicore.component import video_io
+
+    monkeypatch.setattr(video_io, 'resolve_ffmpeg', Mock(side_effect=ValueError('ffmpeg missing')))
+    result = runtime_diagnostics.probe_external_components({})
+    assert result['ffmpeg']['reason'] == 'ffmpeg missing'
+    assert result['photoshop']['status'] == 'unavailable'
+    assert result['photoshop']['reason']

@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
                                QTreeWidgetItem, QVBoxLayout)
 from qasync import QEventLoop
 
-from hoshicore.component.utils import ORG_NAME, SOFTWARE_NAME, VERSION
+from hoshicore.component.utils import DISPLAY_NAME, ORG_NAME, SOFTWARE_NAME, VERSION
 from hoshicore.component.utils import init_logger as _init_logger
 from hoshicore.component.runtime_diagnostics import log_runtime_components
 from ui.output_panel import OutputPanel
@@ -331,7 +331,8 @@ class HNW_window(QMainWindow, Ui_HNW):
         self.update_config_file()
 
         # 设置窗口的标题
-        self.setWindowTitle("HNW-织此星辰")
+        self.setWindowTitle(DISPLAY_NAME)
+        self.setWindowIconText(DISPLAY_NAME)
         # 设置窗口的图标
         self.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))
         # 设置无边框
@@ -620,6 +621,9 @@ if __name__ == '__main__':
     log_runtime_components(_logger)
 
     app = QApplication(sys.argv)
+    app.setApplicationName(SOFTWARE_NAME)
+    app.setApplicationDisplayName(DISPLAY_NAME)
+    app.setApplicationVersion(VERSION)
     app.setWindowIcon(QIcon(u":/icons/resource/icon/HNW.jpg"))
 
     loop = QEventLoop(app)

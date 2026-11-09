@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import sys
 from collections import Counter
 from typing import Any
 
@@ -9,6 +10,8 @@ from .._custom_op._dispatch import (cuda_memory_info, load_compiled_module,
                                     metal_device_info)
 from .._custom_op.backend_registry import (registered_backend_candidates,
                                            select_backend)
+from .photoshop import resolve_photoshop
+from .video_io import probe_ffmpeg, resolve_ffmpeg
 
 _logged = False
 _last_report: dict[str, Any] | None = None
@@ -46,6 +49,54 @@ def _runtime_probe(probe) -> dict[str, Any]:
             "status": "error",
             "reason": f"{type(exc).__name__}: {exc}",
         }
+
+
+def probe_external_components(configs) -> dict[str, Any]:
+    """Check configured tools on request.
+
+    FFmpeg executes bounded, hidden encoder/muxer help commands. These checks
+    are intentionally separate from startup probes and their cached report.
+    """
+    ffmpeg = {"status": "unavailable"}
+    try:
+        ffmpeg['path'] = resolve_ffmpeg(configs.get('ffmpeg_path'))
+        formats = {}
+        for label, container, codec in (('H.264 / MP4', 'mp4', 'h264'),
+                                         ('H.264 / AVI', 'avi', 'h264'),
+                                         ('RGB / AVI', 'avi', 'raw_rgb')):
+            try:
+                probe_ffmpeg(ffmpeg['path'], container=container, codec=codec)
+                formats[label] = {"status": "available"}
+            except Exception as error:
+                formats[label] = {"status": "unavailable", "reason": str(error)}
+        ffmpeg['formats'] = formats
+        if any(value['status'] == 'available' for value in formats.values()):
+            ffmpeg['status'] = 'available'
+        else:
+            ffmpeg['reason'] = 'No supported video encoder/muxer combination is available'
+    except Exception as error:
+        ffmpeg['reason'] = str(error)
+
+    photoshop = {"status": "unavailable"}
+    try:
+        
+
+        path = resolve_photoshop(configs.get('photoshop_path'))
+        if sys.platform == 'win32' and (not path.is_file() or path.suffix.lower() != '.exe'):
+            raise ValueError('photoshop_path must point to the Photoshop .exe file')
+        if sys.platform == 'darwin' and not path.is_dir():
+            raise ValueError('photoshop_path must point to the Photoshop .app bundle')
+        if sys.platform == 'darwin':
+            import plistlib
+
+            with (path / 'Contents/Info.plist').open('rb') as stream:
+                executable = plistlib.load(stream)['CFBundleExecutable']
+            if not (path / 'Contents/MacOS' / executable).is_file():
+                raise ValueError('Photoshop bundle executable is missing')
+        photoshop.update(status='configured', path=str(path))
+    except Exception as error:
+        photoshop['reason'] = str(error)
+    return {'ffmpeg': ffmpeg, 'photoshop': photoshop}
 
 
 def probe_runtime_components() -> dict[str, Any]:
