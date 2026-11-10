@@ -111,12 +111,66 @@ def photoshop_windows(photoshop=None, *, show=None) -> list[dict]:
             visible = bool(user32.IsWindowVisible(hwnd))
             if main or visible:
                 windows.append({'pid': pid.value, 'title': title.value, 'main': main,
-                                'visible': visible, 'scope': 'window'})
+                                'visible': visible, 'scope': 'window', 'hwnd': hwnd})
         return True
 
     if not user32.EnumWindows(collect, 0):
         raise ctypes.WinError(ctypes.get_last_error())
     return windows
+
+
+def _request_windows_close(target: Path, identity: dict) -> int | None:
+    """Post a normal main-window close to the recorded host, never terminate it."""
+    import ctypes
+    from ctypes import wintypes
+
+    windows = [window for window in photoshop_windows(target)
+               if window['pid'] == identity['pid'] and window['main']]
+    if identity not in photoshop_processes(target):
+        return
+    if len(windows) != 1:
+        raise RuntimeError('Cannot identify one Photoshop main window for normal exit')
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostMessageW.restype = wintypes.BOOL
+    if not user32.PostMessageW(windows[0]['hwnd'], 0x0010, 0, 0):  # WM_CLOSE
+        raise ctypes.WinError(ctypes.get_last_error())
+    return windows[0]['hwnd']
+
+
+def _window_exists(hwnd: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindow.restype = wintypes.BOOL
+    return bool(user32.IsWindow(hwnd))
+
+
+def _terminate_closed_host(target: Path, identity: dict, closed_hwnd: int) -> None:
+    """Reap only a verified owned Windows host after its main window is gone.
+
+    The caller must already have an empty-document handshake and have requested
+    normal shutdown. Never use this for a borrowed host or a timed-out render.
+    """
+    if sys.platform != 'win32' or not closed_hwnd or _window_exists(closed_hwnd):
+        raise RuntimeError('Photoshop main window has not closed; refusing termination')
+    current = photoshop_processes(target)
+    if identity not in current:
+        return
+    if current != [identity] or any(window['main'] for window in photoshop_windows(target)):
+        raise RuntimeError('Photoshop host or main window changed; refusing termination')
+    try:
+        process = psutil.Process(identity['pid'])
+        if (process.create_time() != identity['created'] or
+                os.path.normcase(str(Path(process.exe()).resolve())) != os.path.normcase(str(target.resolve()))):
+            raise RuntimeError('Photoshop PID identity changed; refusing termination')
+        logger.warning('Owned Photoshop main window closed but process remains; terminating pid={}', identity['pid'])
+        process.terminate()
+        process.wait(timeout=5)
+    except psutil.NoSuchProcess:
+        return
 
 
 def launch_script(app: Path, script: Path, output: Path, timeout: float, hide: bool):
@@ -401,29 +455,36 @@ def render_raw(raw_path: str | Path, *, photoshop: str | Path | None = None,
         raise
 
 
-def quit_photoshop(target: Path, identity: dict, timeout: float = 10) -> None:
+def quit_photoshop(target: Path, identity: dict, timeout: float = 10, *,
+                   terminate_closed_host: bool = False) -> None:
     """Request a normal exit only for the recorded process, with no open documents.
 
-    Never kill a process or launch a replacement if the recorded one has exited.
+    Optional owned-host termination requires an empty-document handshake and a
+    verified closed main window. Never launch a replacement for an exited host.
     """
     current = photoshop_processes(target)
     if identity not in current:
         return
     if current != [identity]:
         raise RuntimeError('Photoshop process identity changed; refusing to request exit')
-    with tempfile.TemporaryDirectory(prefix='hnw-photoshop-exit-') as folder:
-        output = Path(folder)
+    # Retain the status and sender output on failure; plugins may delay or
+    # reject shutdown even when the render itself completed successfully.
+    output = Path(tempfile.mkdtemp(prefix='hnw-photoshop-exit-'))
+    exited = False
+    try:
         status = output / 'status.txt'
         script = output / 'quit.jsx'
+        quit_command = ('  report("ready-to-quit");\n' if sys.platform == 'win32' else
+                        '  report("quitting");\n'
+                        '  try { executeAction(charIDToTypeID("quit"), new ActionDescriptor(), DialogModes.NO); }\n'
+                        '  catch (e) { report("error: " + String(e)); }\n')
         script.write_text(
             '#target photoshop\n'
             '(function () {\n'
             f'  var f = new File({json.dumps(status.as_posix())});\n'
             '  function report(s) { f.encoding = "UTF8"; f.open("w"); f.write(s); f.close(); }\n'
             '  if (app.documents.length) { report("documents-open"); return; }\n'
-            '  report("quitting");\n'
-            '  try { executeAction(charIDToTypeID("quit"), new ActionDescriptor(), DialogModes.NO); }\n'
-            '  catch (e) { report("error: " + String(e)); }\n'
+            + quit_command +
             '})();\n', encoding='utf-8')
         # Recheck after writing the script, too: never deliberately launch a
         # replacement if the owned host has exited while preparing cleanup.
@@ -431,19 +492,42 @@ def quit_photoshop(target: Path, identity: dict, timeout: float = 10) -> None:
             return
         sender = launch_script(target, script, output, timeout, True)
         deadline = time.monotonic() + timeout
+        close_requested = False
+        closed_hwnd = None
         try:
             while identity in photoshop_processes(target):
                 if status.exists():
                     message = status.read_text(encoding='utf-8-sig')
                     if message == 'documents-open' or message.startswith('error:'):
-                        raise RuntimeError(f'Photoshop left running: {message}')
+                        raise RuntimeError(f'Photoshop left running: {message}; artifacts: {output}')
+                    if sys.platform == 'win32' and message == 'ready-to-quit' and not close_requested:
+                        current = photoshop_processes(target)
+                        # The -r sender is itself Photoshop.exe and may remain
+                        # briefly visible after forwarding the handshake script.
+                        unexpected = [item for item in current
+                                      if item != identity and item['pid'] != sender.pid]
+                        if identity not in current or unexpected:
+                            raise RuntimeError('Photoshop host changed before exit; leaving it running')
+                        closed_hwnd = _request_windows_close(target, identity)
+                        close_requested = True
                 if time.monotonic() >= deadline:
-                    raise TimeoutError('Photoshop did not exit; it was left running')
+                    message = status.read_text(encoding='utf-8-sig') if status.exists() else 'quit script not started'
+                    if terminate_closed_host and close_requested and message == 'ready-to-quit':
+                        _terminate_closed_host(target, identity, closed_hwnd)
+                        exited = True
+                        break
+                    raise TimeoutError(f'Photoshop did not exit; it was left running; '
+                                       f'last status: {message}; sender exit: {sender.poll()}; '
+                                       f'artifacts: {output}')
                 time.sleep(0.1)
+            exited = True
         finally:
             # The sender can be a short-lived forwarding process, not the PS host.
             if sender.poll() is not None:
                 sender.wait()
+    finally:
+        if exited:
+            shutil.rmtree(output, ignore_errors=True)
 
 
 class PhotoshopRawRenderer:
@@ -451,6 +535,8 @@ class PhotoshopRawRenderer:
 
     Existing hosts are borrowed without changing visibility or requesting exit.
     Hosts started by this session are hidden if requested and exited on close.
+    Windows may reap an owned residual only after the no-document handshake,
+    normal close request, destroyed main window and repeated process checks.
     Failed renders retain artifacts. A timed-out JSX may still be executing;
     an owned host is revealed and left running, and borrowed visibility is kept.
     """
@@ -467,6 +553,7 @@ class PhotoshopRawRenderer:
         self._started = False
         self._timed_out = False
         self._closed = False
+        self._cleanup_dirs = []
 
     def _prepare_host(self, current):
         if self._identity is not None:
@@ -509,6 +596,7 @@ class PhotoshopRawRenderer:
         if self._target is None:
             self._target = resolve_photoshop(self.path)
         folder = Path(tempfile.mkdtemp(prefix='hnw-photoshop-'))
+        logger.info('Photoshop RAW started: source={} artifacts={}', path, folder)
         try:
             pixels, metadata = render_raw(path, photoshop=self._target,
                                           output_dir=folder / 'render',
@@ -525,27 +613,47 @@ class PhotoshopRawRenderer:
             logger.error('Photoshop render failed; artifacts retained at {}', folder)
             raise
         else:
-            shutil.rmtree(folder)
+            # A cold Windows host can retain its redirected stderr handle until
+            # Photoshop exits. Cleanup must not discard a successful render.
+            self._cleanup_dirs.append(folder)
+            self._cleanup_render_artifacts()
+            logger.info('Photoshop RAW completed: source={} shape={}', path, result[0].shape)
             return result
+
+    def _cleanup_render_artifacts(self):
+        remaining = []
+        for folder in self._cleanup_dirs:
+            try:
+                shutil.rmtree(folder)
+            except OSError as error:
+                remaining.append(folder)
+                logger.debug('Photoshop artifact cleanup deferred: {}: {}', folder, error)
+        self._cleanup_dirs = remaining
 
     def close(self):
         if self._closed:
             return
         self._closed = True
-        if not self._owned:
-            return
-        if self._timed_out:
-            logger.warning('Photoshop request timed out; host left running for diagnosis')
-            return
-        if not self._can_control_host():
-            logger.debug('Owned Photoshop host exited or changed; skipping exit request')
-            return
         try:
-            quit_photoshop(self._target, self._identity)
-        except Exception:
-            if self.hide and self._can_control_host():
-                try:
-                    photoshop_windows(self._target, show=True)
-                except Exception as error:
-                    logger.warning('Could not reveal Photoshop after exit failure: {}', error)
-            raise
+            if not self._owned:
+                return
+            if self._timed_out:
+                logger.warning('Photoshop request timed out; host left running for diagnosis')
+                return
+            if not self._can_control_host():
+                logger.debug('Owned Photoshop host exited or changed; skipping exit request')
+                return
+            try:
+                quit_photoshop(self._target, self._identity,
+                               terminate_closed_host=(sys.platform == 'win32'))
+            except Exception:
+                if self.hide and self._can_control_host():
+                    try:
+                        photoshop_windows(self._target, show=True)
+                    except Exception as error:
+                        logger.warning('Could not reveal Photoshop after exit failure: {}', error)
+                raise
+        finally:
+            self._cleanup_render_artifacts()
+            if self._cleanup_dirs:
+                logger.warning('Successful Photoshop render artifacts still in use: {}', self._cleanup_dirs)

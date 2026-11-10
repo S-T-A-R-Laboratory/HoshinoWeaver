@@ -85,6 +85,43 @@ async def test_array_loader_uses_its_persistent_configured_instance():
 
 
 @pytest.mark.asyncio
+async def test_six_raw_frames_survive_locked_launcher_log_and_cleanup_on_close(monkeypatch):
+    import shutil
+    from hoshicore.component import photoshop
+
+    identity = {'pid': 123, 'created': 1.}
+    state, folders = [], []
+    closed = False
+    monkeypatch.setattr(photoshop, 'resolve_photoshop', lambda path: Path('mock'))
+    monkeypatch.setattr(photoshop, 'photoshop_processes', lambda target: list(state))
+    def render(path, **options):
+        host = options['_host']
+        host._prepare_host(state)
+        state[:] = [identity]
+        host._observe_host(state, Mock(pid=123))
+        folders.append(options['output_dir'].parent)
+        return np.full((2, 3, 3), int(Path(path).stem), np.uint16), {
+            'tiff_photometric': 'RGB', 'exif': {'source': path}, 'icc_profile': b'icc'}
+    monkeypatch.setattr(photoshop, 'render_raw', render)
+    def quit_host(*args, **kwargs):
+        nonlocal closed
+        closed = True
+        state.clear()
+    monkeypatch.setattr(photoshop, 'quit_photoshop', quit_host)
+    original_remove = shutil.rmtree
+    def remove(path, *args, **kwargs):
+        if Path(path) in folders and not closed:
+            raise PermissionError('live launcher holds stderr')
+        return original_remove(path, *args, **kwargs)
+    monkeypatch.setattr(photoshop.shutil, 'rmtree', remove)
+    results = await run_loader([f'{i}.ARW' for i in range(6)], length=6,
+                               options={'raw_backend': 'photoshop', 'photoshop_path': 'mock'})
+    assert [int(frame[0, 0, 0]) for frame in results['result']] == list(range(6))
+    assert [item.exif['source'] for item in results['exifs']] == [f'{i}.ARW' for i in range(6)]
+    assert closed and len(folders) == 6 and all(not folder.exists() for folder in folders)
+
+
+@pytest.mark.asyncio
 async def test_render_failure_is_not_fallen_back_and_cleanup_preserves_root_error(monkeypatch):
     renderer = Mock(render=Mock(side_effect=RuntimeError('ACR opening failed')),
                     close=Mock(side_effect=RuntimeError('exit also failed')))

@@ -324,6 +324,15 @@ class ParallelBaseOp(BaseOp):
 
         # slots: producer acquire, emitter release → pending 上限 = CONCURRENCY
         slots = asyncio.Semaphore(self.CONCURRENCY)
+        first_failure = None
+
+        def record_failure(error):
+            nonlocal first_failure
+            if first_failure is None:
+                first_failure = error
+            # The producer may be waiting here before it reaches gather().
+            # Wake it to propagate the original error, not to submit more work.
+            slots.release()
 
         async def process_item(idx: int):
             data = self._async_convert_inputs()
@@ -335,10 +344,13 @@ class ParallelBaseOp(BaseOp):
                         awaitable.close()
                 result = _STOP
                 sentinel_event.set()
+            except BaseException as error:
+                record_failure(error)
+                raise
             pending[idx] = result
             emit_event.set()
 
-        async def emit_loop():
+        async def emit_results():
             next_emit = 0
             while True:
                 while next_emit in pending:
@@ -356,6 +368,13 @@ class ParallelBaseOp(BaseOp):
                 emit_event.clear()
                 await emit_event.wait()
 
+        async def emit_loop():
+            try:
+                await emit_results()
+            except BaseException as error:
+                record_failure(error)
+                raise
+
         emit_task = asyncio.create_task(emit_loop())
         tasks: list[asyncio.Task] = []
 
@@ -364,6 +383,8 @@ class ParallelBaseOp(BaseOp):
                 if sentinel_event.is_set() or emit_task.done():
                     break
                 await slots.acquire()
+                if first_failure is not None:
+                    raise first_failure
                 if sentinel_event.is_set() or emit_task.done():
                     slots.release()
                     break

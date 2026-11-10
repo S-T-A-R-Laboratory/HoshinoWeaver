@@ -169,8 +169,28 @@ def test_owned_session_preserves_bgr_dtype_exif_icc_and_quits_once(mock_host):
     assert frame.tolist() == [[[30, 20, 10]]]
     assert exif == ExifData({'Exif.Photo.ExposureTime': '1/8'}, b'rendered-icc')
     assert render.call_count == 2
-    quit_mock.assert_called_once_with(Path('mock-photoshop'), identity)
+    quit_mock.assert_called_once_with(Path('mock-photoshop'), identity,
+                                     terminate_closed_host=(photoshop.sys.platform == 'win32'))
     assert all(not call.kwargs['output_dir'].parent.exists() for call in render.call_args_list)
+
+
+def test_successful_render_defers_locked_artifact_cleanup_until_host_close(mock_host, monkeypatch):
+    import shutil
+
+    state, identity, render, quit_mock = mock_host
+    original_remove = shutil.rmtree
+    def remove(path, *args, **kwargs):
+        if Path(path).name.startswith('hnw-photoshop-') and not quit_mock.called:
+            raise PermissionError('launcher.stderr.log is held by the Photoshop host')
+        return original_remove(path, *args, **kwargs)
+    monkeypatch.setattr(photoshop.shutil, 'rmtree', remove)
+    renderer = photoshop.PhotoshopRawRenderer('mock')
+    frame, _ = renderer.render('a.CR2')
+    assert frame.shape == (1, 1, 3)
+    folder = render.call_args.kwargs['output_dir'].parent
+    assert folder.exists()
+    renderer.close()
+    assert not folder.exists()
 
 
 def test_existing_host_is_automatically_borrowed_and_never_quit(mock_host):
@@ -219,6 +239,23 @@ def test_replaced_host_is_not_sent_an_exit_request(monkeypatch):
     sender.assert_not_called()
 
 
+def test_exit_timeout_retains_quit_stage_and_sender_diagnostics(monkeypatch, tmp_path):
+    identity = {'pid': 123, 'created': 100.5}
+    monkeypatch.setattr(photoshop, 'photoshop_processes', lambda target: [identity])
+    output = tmp_path / 'exit'
+    output.mkdir()
+    monkeypatch.setattr(photoshop.tempfile, 'mkdtemp', lambda **kwargs: str(output))
+    def send(app, script, folder, timeout, hide):
+        (folder / 'status.txt').write_text('quitting', encoding='utf-8')
+        return Mock(poll=Mock(return_value=0))
+    monkeypatch.setattr(photoshop, 'launch_script', send)
+    monkeypatch.setattr(photoshop.time, 'monotonic', Mock(side_effect=[0, 11]))
+    with pytest.raises(TimeoutError, match='last status: quitting.*artifacts:'):
+        photoshop.quit_photoshop(Path('mock'), identity)
+    assert (output / 'quit.jsx').exists()
+    assert (output / 'status.txt').read_text(encoding='utf-8') == 'quitting'
+
+
 def test_exit_refuses_open_documents(monkeypatch):
     identity = {'pid': 123, 'created': 100.5}
     monkeypatch.setattr(photoshop, 'photoshop_processes', lambda target: [identity])
@@ -231,6 +268,90 @@ def test_exit_refuses_open_documents(monkeypatch):
     monkeypatch.setattr(photoshop, 'launch_script', send)
     with pytest.raises(RuntimeError, match='documents-open'):
         photoshop.quit_photoshop(Path('mock'), identity)
+
+
+def test_windows_exit_posts_close_only_after_empty_document_handshake(monkeypatch, tmp_path):
+    identity = {'pid': 123, 'created': 100.5}
+    state = [identity]
+    monkeypatch.setattr(photoshop.sys, 'platform', 'win32')
+    monkeypatch.setattr(photoshop, 'photoshop_processes', lambda target: list(state))
+    def send(app, script, output, timeout, hide):
+        text = script.read_text(encoding='utf-8')
+        assert 'app.documents.length' in text and 'executeAction' not in text
+        (output / 'status.txt').write_text('ready-to-quit', encoding='utf-8')
+        return Mock(poll=Mock(return_value=0))
+    monkeypatch.setattr(photoshop, 'launch_script', send)
+    close = Mock(side_effect=lambda target, current: state.clear())
+    monkeypatch.setattr(photoshop, '_request_windows_close', close)
+    photoshop.quit_photoshop(Path('mock'), identity)
+    close.assert_called_once_with(Path('mock'), identity)
+
+
+def test_owned_exit_reaps_only_after_verified_handshake_and_normal_close_timeout(monkeypatch):
+    identity = {'pid': 123, 'created': 100.5}
+    state = [identity]
+    monkeypatch.setattr(photoshop.sys, 'platform', 'win32')
+    monkeypatch.setattr(photoshop, 'photoshop_processes', lambda target: list(state))
+    def send(app, script, output, timeout, hide):
+        (output / 'status.txt').write_text('ready-to-quit', encoding='utf-8')
+        return Mock(poll=Mock(return_value=0))
+    monkeypatch.setattr(photoshop, 'launch_script', send)
+    close = Mock(return_value=456)
+    monkeypatch.setattr(photoshop, '_request_windows_close', close)
+    reap = Mock(side_effect=lambda *args: state.clear())
+    monkeypatch.setattr(photoshop, '_terminate_closed_host', reap)
+    monkeypatch.setattr(photoshop.time, 'monotonic', Mock(side_effect=[0, 11]))
+    photoshop.quit_photoshop(Path('mock'), identity, terminate_closed_host=True)
+    close.assert_called_once_with(Path('mock'), identity)
+    reap.assert_called_once_with(Path('mock'), identity, 456)
+
+
+@pytest.mark.parametrize('foreign', [False, True])
+def test_windows_exit_distinguishes_own_forwarder_from_foreign_host(monkeypatch, foreign):
+    identity = {'pid': 123, 'created': 100.5}
+    state = [identity]
+    monkeypatch.setattr(photoshop.sys, 'platform', 'win32')
+    monkeypatch.setattr(photoshop, 'photoshop_processes', lambda target: list(state))
+    def send(app, script, output, timeout, hide):
+        state.append({'pid': 999 if foreign else 456, 'created': 101.})
+        (output / 'status.txt').write_text('ready-to-quit', encoding='utf-8')
+        return Mock(pid=456, poll=Mock(return_value=0))
+    monkeypatch.setattr(photoshop, 'launch_script', send)
+    close = Mock(side_effect=lambda *args: state.clear())
+    monkeypatch.setattr(photoshop, '_request_windows_close', close)
+    if foreign:
+        with pytest.raises(RuntimeError, match='host changed before exit'):
+            photoshop.quit_photoshop(Path('mock'), identity)
+        close.assert_not_called()
+    else:
+        photoshop.quit_photoshop(Path('mock'), identity)
+        close.assert_called_once_with(Path('mock'), identity)
+
+
+@pytest.mark.parametrize('blocked', [None, 'window_open', 'pid_reused', 'foreign_process',
+                                    'new_window', 'wrong_exe', 'platform'])
+def test_owned_residual_termination_identity_and_window_guards(monkeypatch, blocked):
+    identity = {'pid': 123, 'created': 100.5}
+    target = Path('Photoshop.exe').resolve()
+    process = Mock(create_time=Mock(return_value=100.5), exe=Mock(return_value=str(target)))
+    monkeypatch.setattr(photoshop.psutil, 'Process', Mock(return_value=process))
+    monkeypatch.setattr(photoshop.sys, 'platform', 'darwin' if blocked == 'platform' else 'win32')
+    monkeypatch.setattr(photoshop, '_window_exists', lambda hwnd: blocked == 'window_open')
+    current = [identity, {'pid': 456, 'created': 5.}] if blocked == 'foreign_process' else [identity]
+    monkeypatch.setattr(photoshop, 'photoshop_processes', lambda path: current)
+    monkeypatch.setattr(photoshop, 'photoshop_windows', lambda path: [{'main': True}] if blocked == 'new_window' else [])
+    if blocked == 'pid_reused':
+        process.create_time.return_value = 101.
+    if blocked == 'wrong_exe':
+        process.exe.return_value = str(Path('unrelated.exe').resolve())
+    if blocked:
+        with pytest.raises(RuntimeError, match='refusing termination'):
+            photoshop._terminate_closed_host(target, identity, 789)
+        process.terminate.assert_not_called()
+    else:
+        photoshop._terminate_closed_host(target, identity, 789)
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=5)
 
 
 def test_transport_reads_pixels_and_metadata_from_rendered_tiff(monkeypatch, tmp_path):
@@ -340,7 +461,8 @@ def test_managed_transport_owns_cold_launch_and_exits_it(managed_transport):
     assert renderer._owned
     assert sender.call_args.args[-1] is True
     assert any(call.kwargs.get('show') is False for call in windows.call_args_list)
-    quit_mock.assert_called_once_with(renderer._target, identity)
+    quit_mock.assert_called_once_with(renderer._target, identity,
+                                     terminate_closed_host=(photoshop.sys.platform == 'win32'))
 
 
 @pytest.mark.parametrize('borrowed', [False, True])

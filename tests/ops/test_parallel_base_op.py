@@ -54,3 +54,34 @@ async def test_concurrent_map_does_not_cancel_slow_tail(monkeypatch):
 
     await asyncio.gather(feed(), op.execute(), drain())
     assert received == list(range(9))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure_at', ['decode', 'emit'])
+async def test_concurrent_failure_escapes_when_producer_waits_for_full_window(failure_at):
+    class FailingMap(_SlowConcurrentMap):
+        async def _async_execute_single(self, data, configs):
+            item = await data['src']
+            if failure_at == 'decode' and item == 0:
+                raise RuntimeError('first decode failed')
+            return {'result': item}
+
+        async def _broadcast_outputs(self, result):
+            if failure_at == 'emit':
+                raise RuntimeError('first emit failed')
+            await super()._broadcast_outputs(result)
+
+    op = FailingMap('failure')
+    async def feed():
+        await op.inputs['src'].set_length(6)
+        for item in range(6):
+            await op.inputs['src'].put(item)
+
+    tasks = [asyncio.create_task(feed()), asyncio.create_task(op.execute())]
+    try:
+        with pytest.raises(RuntimeError, match=f'first {failure_at} failed'):
+            await asyncio.wait_for(asyncio.gather(*tasks), 1)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
