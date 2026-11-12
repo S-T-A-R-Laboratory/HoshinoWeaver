@@ -26,9 +26,19 @@ _RESOLUTION_UNIT_FACTORS = {
 }
 
 
+# Known bad focal-plane metadata: native image long side (px), sensor long
+# side (mm). See docs/norma.md for sources; do not use the current crop size.
+_FOCAL_PLANE_CALIBRATIONS = {
+    ("canon", "eos 5d mark iv"): (6720, 36.0),
+    ("canon", "eos 6d mark ii"): (6240, 35.9),
+    ("canon", "eos 20d"): (3504, 22.5),
+    ("fujifilm", "xf10"): (6000, 23.5),
+}
+
+
 @dataclasses.dataclass(frozen=True)
 class ExifFocalSources:
-    """两条独立 EXIF 焦距推导得到的像素焦距（各自可能缺失）。"""
+    """两条 EXIF 焦距路径；像素密度已应用已知机型修正，各自可能缺失。"""
 
     pixel_density_focal_px: Optional[float]
     focal_equiv_focal_px: Optional[float]
@@ -134,14 +144,33 @@ def _pixel_density_intrinsics(exif_tags: dict[str, str], img_width: int,
         logger.debug(f"intrinsics_from_exif: unknown ResolutionUnit={unit_str}")
         return None, None
 
+    density_x, density_y = density_x / unit_mm, density_y / unit_mm
+    make = " ".join(exif_tags.get("Exif.Image.Make", "").split()).casefold()
+    model = " ".join(exif_tags.get("Exif.Image.Model", "").split()).casefold()
+    calibration = _FOCAL_PLANE_CALIBRATIONS.get(
+        (make, model.removeprefix(make + " ")))
+    if calibration is not None:
+        native_width, sensor_width = calibration
+        expected = native_width / sensor_width
+        # Keep valid density, including consistently described smaller exports.
+        declared = [_positive_finite(_parse_rational(exif_tags.get(key)))
+                    for key in ("Exif.Photo.PixelXDimension", "Exif.Photo.PixelYDimension")]
+        candidates = [expected]
+        if None not in declared and max(declared) < native_width:
+            candidates.append(max(declared) / sensor_width)
+        if not any(all(abs(value / target - 1.0) <= FOCAL_METADATA_TOLERANCE
+                       for value in (density_x, density_y)) for target in candidates):
+            logger.warning("EXIF focal-plane calibration: {} {} density ({:.6f}, {:.6f}) "
+                           "-> {:.6f} px/mm", make, model, density_x, density_y, expected)
+            density_x = density_y = expected
     intrinsics = Intrinsics(
         focal_length_mm=focal_mm,
-        sensor_width_mm=img_width * unit_mm / density_x,
-        sensor_height_mm=img_height * unit_mm / density_y,
+        sensor_width_mm=img_width / density_x,
+        sensor_height_mm=img_height / density_y,
         image_width_px=img_width,
         image_height_px=img_height,
     )
-    return intrinsics, focal_mm * density_x / unit_mm
+    return intrinsics, focal_mm * density_x
 
 
 def _focal_equiv_intrinsics(exif_tags: dict[str, str], img_width: int,
@@ -228,7 +257,8 @@ def intrinsics_from_exif(exif_tags: dict[str, str], img_width: int,
         2. FocalLengthIn35mmFilm
            → 长边 = 36mm 归一化的等效焦距路径，各向同性。
 
-    两条路径同时可用时以像素密度路径为准；两者偏差超过
+    像素密度先对已知异常机型作标称像素间距校验和修正。
+    两条路径同时可用时以修正后的像素密度路径为准；两者偏差超过
     `FOCAL_METADATA_TOLERANCE` 时记录告警（图像疑似在拍摄后被裁切或重采样）。
 
     Args:

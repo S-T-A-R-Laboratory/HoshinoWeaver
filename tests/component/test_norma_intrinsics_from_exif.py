@@ -162,3 +162,132 @@ def test_invalid_focal_equiv_raises_readable_error():
         intrinsics_from_focal_equiv(0.0, 6000, 4000)
 
     assert "got 0.0, 6000" in str(excinfo.value)
+
+
+def _six_d_mark_ii_tags():
+    # The actual rational values in IMG_6239.CR2--IMG_6270.CR2. No dataset is
+    # needed: the faulty density alone reproduces the camera initialization.
+    return {
+        "Exif.Image.Make": "Canon",
+        "Exif.Image.Model": "Canon EOS 6D Mark II",
+        "Exif.Photo.FocalLength": "14/1",
+        "Exif.Photo.FocalPlaneXResolution": "6240000/935",
+        "Exif.Photo.FocalPlaneYResolution": "4160000/619",
+        "Exif.Photo.FocalPlaneResolutionUnit": "2",
+        "Exif.Photo.PixelXDimension": "6240",
+        "Exif.Photo.PixelYDimension": "4160",
+    }
+
+
+def test_known_raw_density_uses_native_pixel_pitch_instead_of_preview_geometry():
+    tags = _six_d_mark_ii_tags()
+    candidate = build_camera_candidate(tags, (4180, 6264, 3), "distortion")
+    intrinsics = candidate.camera.intrinsics
+    expected = 14.0 * 6240 / 35.9
+    assert intrinsics.K[0, 0] == pytest.approx(expected)
+    assert intrinsics.K[1, 1] == pytest.approx(expected)
+    # LibRaw retains a few border pixels beyond EXIF's 6240x4160 output crop.
+    assert intrinsics.sensor_width_mm == pytest.approx(6264 * 35.9 / 6240)
+    assert candidate.init_source == "exif"
+    assert candidate.focal_metadata_ratio is None
+    assert tags["Exif.Photo.FocalPlaneXResolution"] == "6240000/935"
+
+
+@pytest.mark.parametrize(("make", "model", "width", "sensor_width"), [
+    ("Canon", "Canon EOS 5D Mark IV", 6720, 36.0),
+    ("Canon", "EOS 6D Mark II", 6240, 35.9),
+    ("Canon", "Canon EOS 20D", 3504, 22.5),
+    ("FUJIFILM", "XF10", 6000, 23.5),
+    (" fujifilm ", " FUJIFILM  xf10 ", 6000, 23.5),
+])
+def test_camera_density_exceptions_match_normalized_make_and_complete_model(
+        make, model, width, sensor_width):
+    tags = _six_d_mark_ii_tags()
+    tags.update({
+        "Exif.Image.Make": make, "Exif.Image.Model": model,
+        "Exif.Photo.FocalPlaneXResolution": "1000",
+        "Exif.Photo.FocalPlaneYResolution": "1000",
+        "Exif.Photo.FocalPlaneResolutionUnit": "4",
+    })
+    intrinsics = intrinsics_from_exif(tags, width, round(width * 2 / 3))
+    assert intrinsics.K[0, 0] == pytest.approx(14.0 * width / sensor_width)
+    assert intrinsics.K[1, 1] == pytest.approx(intrinsics.K[0, 0])
+
+
+@pytest.mark.parametrize(("make", "model"), [
+    ("Canon", "Canon EOS 6D"),
+    ("Canon", "Canon EOS 6D Mark III"),
+    ("Canon", "Canon EOS 20Da"),
+    ("OTHER", "Canon EOS 6D Mark II"),
+    ("", "Canon EOS 6D Mark II"),
+    ("FUJIFILM", "XF10-24mm"),
+])
+def test_unlisted_or_incomplete_identity_keeps_original_density(make, model):
+    tags = _six_d_mark_ii_tags()
+    tags.update({"Exif.Image.Make": make, "Exif.Image.Model": model})
+    intrinsics = intrinsics_from_exif(tags, 6264, 4180)
+    assert intrinsics.K[0, 0] == pytest.approx(14.0 * (6240000 / 935) / 25.4)
+
+
+def test_known_camera_preserves_density_already_corrected_by_adobe():
+    tags = _six_d_mark_ii_tags()
+    tags.update({
+        "Exif.Photo.FocalPlaneXResolution": "56907257/32768",
+        "Exif.Photo.FocalPlaneYResolution": "56907257/32768",
+        "Exif.Photo.FocalPlaneResolutionUnit": "3",
+    })
+    intrinsics = intrinsics_from_exif(tags, 6264, 4180)
+    assert intrinsics.K[0, 0] == pytest.approx(14.0 * (56907257 / 32768) / 10)
+
+
+def test_twenty_d_with_reasonable_original_density_is_not_overridden():
+    tags = _six_d_mark_ii_tags()
+    tags.update({
+        "Exif.Image.Model": "Canon EOS 20D",
+        "Exif.Photo.FocalPlaneXResolution": "3959.322034",
+        "Exif.Photo.FocalPlaneYResolution": "3959.322034",
+        "Exif.Photo.PixelXDimension": "3504",
+        "Exif.Photo.PixelYDimension": "2336",
+    })
+    intrinsics = intrinsics_from_exif(tags, 3504, 2336)
+    assert intrinsics.K[0, 0] == pytest.approx(14.0 * 3959.322034 / 25.4)
+
+
+def test_known_camera_preserves_consistent_reduced_export_density():
+    tags = _six_d_mark_ii_tags()
+    tags.update({
+        "Exif.Photo.PixelXDimension": "3120",
+        "Exif.Photo.PixelYDimension": "2080",
+        "Exif.Photo.FocalPlaneXResolution": str(3120 / 35.9),
+        "Exif.Photo.FocalPlaneYResolution": str(3120 / 35.9),
+        "Exif.Photo.FocalPlaneResolutionUnit": "4",
+    })
+    intrinsics = intrinsics_from_exif(tags, 3120, 2080)
+    assert intrinsics.K[0, 0] == pytest.approx(14.0 * 3120 / 35.9)
+
+
+@pytest.mark.parametrize(("width", "height"), [
+    (6240, 4160), (4160, 6240), (3120, 2080),
+])
+def test_corrected_focal_sources_and_candidate_agree_for_portrait_and_crop(
+        width, height):
+    tags = _six_d_mark_ii_tags()
+    tags["Exif.Photo.FocalLengthIn35mmFilm"] = "14/1"
+    sources = exif_focal_sources(tags, width, height)
+    candidate = build_camera_candidate(tags, (height, width, 3), "distortion")
+    assert sources.pixel_density_focal_px == pytest.approx(14.0 * 6240 / 35.9)
+    assert candidate.camera.intrinsics.K[0, 0] == pytest.approx(sources.pixel_density_focal_px)
+    assert candidate.camera.intrinsics.K[1, 1] == pytest.approx(sources.pixel_density_focal_px)
+    assert candidate.focal_metadata_ratio == sources.ratio
+    assert sources.ratio == pytest.approx(6240 / max(width, height), rel=0.005)
+
+
+def test_known_model_without_valid_focal_or_density_keeps_existing_fallbacks():
+    tags = _six_d_mark_ii_tags()
+    tags["Exif.Photo.FocalLength"] = "0/1"
+    assert intrinsics_from_exif(tags, 6240, 4160) is None
+    tags["Exif.Photo.FocalLengthIn35mmFilm"] = "14/1"
+    assert intrinsics_from_exif(tags, 6240, 4160).K[0, 0] == pytest.approx(2426.666667)
+    tags["Exif.Photo.FocalLength"] = "14/1"
+    del tags["Exif.Photo.FocalPlaneXResolution"]
+    assert intrinsics_from_exif(tags, 6240, 4160).K[0, 0] == pytest.approx(2426.666667)

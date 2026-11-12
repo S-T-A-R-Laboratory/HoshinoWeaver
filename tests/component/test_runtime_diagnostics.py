@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 from hoshicore.component import runtime_diagnostics
 
@@ -71,19 +71,24 @@ def test_probe_reports_numpy_routes_when_compiled_module_is_absent(monkeypatch):
 
 
 def test_external_tools_use_configured_paths_and_report_partial_ffmpeg_support(monkeypatch, tmp_path):
-    from hoshicore.component import photoshop, video_io
+    from hoshicore.component import photoshop
 
     app = tmp_path / 'Photoshop.exe'
     app.touch()
     monkeypatch.setattr(runtime_diagnostics.sys, 'platform', 'win32')
     resolve = Mock(return_value='configured-ffmpeg')
-    monkeypatch.setattr(video_io, 'resolve_ffmpeg', resolve)
+    monkeypatch.setattr(runtime_diagnostics, 'resolve_ffmpeg', resolve)
     probe = Mock(side_effect=[ValueError('libx264 missing'), ValueError('libx264 missing'), 'configured-ffmpeg'])
-    monkeypatch.setattr(video_io, 'probe_ffmpeg', probe)
+    monkeypatch.setattr(runtime_diagnostics, 'probe_ffmpeg', probe)
     renderer = Mock()
     monkeypatch.setattr(photoshop, 'PhotoshopRawRenderer', renderer)
     result = runtime_diagnostics.probe_external_components({'ffmpeg_path': 'custom-ffmpeg', 'photoshop_path': str(app)})
     resolve.assert_called_once_with('custom-ffmpeg')
+    assert probe.call_args_list == [
+        call('configured-ffmpeg', container='mp4', codec='h264'),
+        call('configured-ffmpeg', container='avi', codec='h264'),
+        call('configured-ffmpeg', container='avi', codec='raw_rgb'),
+    ]
     assert result['ffmpeg']['status'] == 'available'
     assert result['ffmpeg']['formats']['RGB / AVI']['status'] == 'available'
     assert result['ffmpeg']['formats']['H.264 / MP4']['reason'] == 'libx264 missing'
@@ -92,10 +97,11 @@ def test_external_tools_use_configured_paths_and_report_partial_ffmpeg_support(m
 
 
 def test_missing_ffmpeg_does_not_hide_photoshop_configuration_error(monkeypatch):
-    from hoshicore.component import video_io
-
-    monkeypatch.setattr(video_io, 'resolve_ffmpeg', Mock(side_effect=ValueError('ffmpeg missing')))
+    monkeypatch.setattr(runtime_diagnostics, 'resolve_ffmpeg', Mock(side_effect=ValueError('ffmpeg missing')))
+    probe = Mock()
+    monkeypatch.setattr(runtime_diagnostics, 'probe_ffmpeg', probe)
     result = runtime_diagnostics.probe_external_components({})
+    probe.assert_not_called()
     assert result['ffmpeg']['reason'] == 'ffmpeg missing'
     assert result['photoshop']['status'] == 'unavailable'
     assert result['photoshop']['reason']

@@ -466,7 +466,7 @@ class SlotHandler(QMainWindow):
             self.window._preview_img = ['', None]
             self.window.view_next_img.hover_size = QSize(0, 0)
             self.window.view_pre_img.hover_size = QSize(0, 0)
-        elif file_path is not None:
+        elif file_path:
             self.window._preview_img = [category, file_path]
             self.window.img_view_label.initImg(file_path)
             if category is None:

@@ -102,6 +102,8 @@ class SatelliteCleanOp(BaseOp):
             if mask.ndim == 3:
                 mask = mask.mean(axis=2)
             mask = (mask > 0.5).astype(np.uint8)
+        runtime_mask = None
+
         tot_num = self.length
 
         assert W >= 1 and W % 2 == 1, "window_size must be an odd integer >= 1"
@@ -129,6 +131,7 @@ class SatelliteCleanOp(BaseOp):
                         pass
 
                 frame_arr = frame.data if isinstance(frame, FloatImage) else frame
+                runtime_mask = self._adapt_mask(mask, frame_arr.shape, runtime_mask)
                 try:
                     camera = self._build_frame_camera(
                         exif_obj,
@@ -138,7 +141,7 @@ class SatelliteCleanOp(BaseOp):
                         camera_mode=camera_mode,
                     )
                     geo = await self._run_cpu(
-                        self._detect_geometry, frame_arr, mask, camera)
+                        self._detect_geometry, frame_arr, runtime_mask, camera)
                 except Exception as e:
                     logger.warning(
                         f"{self.name}: star extraction failed, frame will not be aligned ({e})")
@@ -169,8 +172,10 @@ class SatelliteCleanOp(BaseOp):
                 buffer.append(slot)
 
                 if len(buffer) == W:
+                    runtime_mask = self._adapt_mask(
+                        mask, buffer[half_W].original.shape, runtime_mask)
                     cleaned = await self._run_cpu(
-                        self._process_center, buffer, half_W, mask)
+                        self._process_center, buffer, half_W, runtime_mask)
                     out = self._wrap_output(cleaned, frame)
                     await self._broadcast_outputs({"result": out})
                     output_count += 1
@@ -180,8 +185,10 @@ class SatelliteCleanOp(BaseOp):
             # Flush remaining frames in buffer
             res_center_pos = (len(buffer) - 1) // 2
             while res_center_pos < len(buffer):
+                runtime_mask = self._adapt_mask(
+                    mask, buffer[res_center_pos].original.shape, runtime_mask)
                 cleaned = await self._run_cpu(
-                    self._process_center, buffer, res_center_pos, mask)
+                    self._process_center, buffer, res_center_pos, runtime_mask)
                 out = self._wrap_output(cleaned, frame)
                 await self._broadcast_outputs({"result": out})
                 res_center_pos += 1
@@ -195,6 +202,23 @@ class SatelliteCleanOp(BaseOp):
         finally:
             if tot_num is not None:
                 self.tracker.close_bar(self.name)
+
+    def _adapt_mask(self, mask: Optional[np.ndarray], image_shape: tuple[int, ...],
+                    cached_mask: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        """Reuse this execution's mask, resizing only from the original mask."""
+        if mask is None:
+            return None
+        if cached_mask is not None and cached_mask.shape == image_shape[:2]:
+            return cached_mask
+        if mask.shape == image_shape[:2]:
+            return mask
+        h, w = image_shape[:2]
+        logger.warning(
+            f"{self.name}: mask size {mask.shape} (H, W) "
+            f"does not match image size {(h, w)}; automatically "
+            "resizing mask with nearest-neighbor interpolation. "
+            "Check mask alignment.")
+        return cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
     @staticmethod
     def _detect_geometry(frame: np.ndarray, mask: Optional[np.ndarray],

@@ -111,6 +111,17 @@ Norma 提供两种初始匹配策略：
 
 相机初值可来自 EXIF 像素密度、35mm 等效焦距、显式参数或 fallback。EXIF 的两个焦距来源会交叉检查；算子层的 auto/manual/separate 模式决定哪些元数据与手动字段参与构建。换算与诊断见 [intrinsics_from_exif.py](../hoshicore/component/norma/intrinsics_from_exif.py)，候选与策略构建见 [frame_align.py](../hoshicore/component/norma/frame_align.py)。
 
+`_FOCAL_PLANE_CALIBRATIONS` 是已知焦平面密度异常的机型例外表，按 `Exif.Image.Make` 和完整 `Exif.Image.Model` 匹配。主要覆盖以下型号：
+
+| 厂商 / 型号 | 原生有效图像长边 | 传感器长边 | 规格来源 |
+| --- | --- | --- | --- |
+| Canon EOS 5D Mark IV | 6720 px | 36.0 mm | [Canon](https://ph.canon/en/support/6200376100) |
+| Canon EOS 6D Mark II | 6240 px | 35.9 mm | [Canon](https://in.canon/en/support/6200470100) |
+| Canon EOS 20D | 3504 px | 22.5 mm | [Canon Camera Museum](https://global.canon/en/c-museum/product/dslr786.html) |
+| FUJIFILM XF10 | 6000 px | 23.5 mm | [FUJIFILM](https://fujifilm-dsc.com/en/manual/xf10/technical_notes/spec/index.html) |
+
+只有已解析的 X 或 Y 密度偏离标称值超过 5% 时，才用标称的方形像素间距替换两轴，并打印 `EXIF focal-plane calibration` 告警，已由 Adobe 等软件修正、且在容差内的密度原样保留。
+
 当初始焦距不够可靠，bootstrap 在若干焦距尺度上构造相机候选。每个候选先反投影、匹配和验证旋转，评分结合残差、覆盖、外圈支持与尺度偏移；选中的候选才进入联合优化。同相机匹配共用尺度，独立相机可搜索两侧尺度组合。
 
 这一步首先解决“哪种几何下能够建立可靠对应”，随后非线性优化进一步求“这些对应最支持什么相机与姿态”。

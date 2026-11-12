@@ -1,11 +1,62 @@
 """Tests for SatelliteCleanOp: sliding window alignment + median."""
 import numpy as np
 import pytest
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from hoshicore.ops.satellite_clean_op import SatelliteCleanOp, _FrameSlot
 from hoshicore.component.norma.detection import DetectedStars
 from hoshicore.component.norma.geometry_view import GeometryView
 from hoshicore.component.norma.types import CameraModel, Intrinsics
+
+
+def test_mask_resized_from_original_for_detection_and_fusion(monkeypatch):
+    op = SatelliteCleanOp('test')
+    # Downsample and return to the original size: repeated resizing would lose
+    # the thin sky column. Same-size frames must reuse the adapted mask.
+    mask = np.array([[0, 1, 0, 0], [0, 1, 0, 0]], np.float32)
+    original = mask.copy()
+    frames = [np.zeros((*shape, 3), np.uint16)
+              for shape in [(1, 2), (1, 2), (2, 4)]]
+    op.length = len(frames)
+    op.tracker = Mock()
+    op.inputs['exifs'] = SimpleNamespace(active=False)
+    pending = iter(frames)
+    detected, fused, outputs = [], [], []
+
+    async def ready():
+        return next(pending)
+
+    async def cpu(function, *args):
+        return function(*args)
+
+    async def emit(result):
+        outputs.append(result['result'])
+
+    def detect(frame, adapted, camera):
+        assert adapted.shape == frame.shape[:2]
+        detected.append(adapted)
+        return None
+
+    def process(buffer, pos, adapted):
+        assert adapted.shape == buffer[pos].original.shape[:2]
+        fused.append(adapted)
+        return buffer[pos].original
+
+    monkeypatch.setattr(op, '_async_convert_inputs', lambda: {'data': ready()})
+    monkeypatch.setattr(op, '_run_cpu', cpu)
+    monkeypatch.setattr(op, '_broadcast_outputs', emit)
+    monkeypatch.setattr(op, '_detect_geometry', detect)
+    monkeypatch.setattr(op, '_process_center', process)
+    monkeypatch.setattr(op, '_compute_rotation', lambda *args: None)
+    asyncio.run(op._async_execute({'window_size': 3, 'mask': mask}))
+    assert detected[0] is detected[1]
+    np.testing.assert_array_equal(detected[0], [[0, 0]])
+    np.testing.assert_array_equal(detected[2], original)
+    assert all(set(np.unique(item)) <= {0, 1} for item in detected + fused)
+    np.testing.assert_array_equal(mask, original)
+    assert len(outputs) == len(frames)
 
 
 def _dummy_geo(shape):
