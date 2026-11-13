@@ -398,7 +398,8 @@ def managed_transport(monkeypatch, tmp_path):
     target = tmp_path / 'Photoshop.exe'
     target.touch()
     identity = {'pid': 123, 'created': 100.5}
-    state = {'processes': [], 'pending': False, 'on_poll': None, 'sender_pid': 123}
+    state = {'processes': [], 'pending': False, 'on_poll': None,
+             'sender_pid': 123, 'sender_exit_code': 0}
     rgb = np.array([[[10, 20, 30]]], np.uint16)
     icc = b'profile'
     original_mkdtemp = photoshop.tempfile.mkdtemp
@@ -433,7 +434,7 @@ def managed_transport(monkeypatch, tmp_path):
         def poll():
             if state['on_poll']:
                 state['on_poll']()
-            return 1  # A sender exit must not be mistaken for the main PS exiting.
+            return state['sender_exit_code']
 
         return Mock(pid=state['sender_pid'], poll=Mock(side_effect=poll))
 
@@ -441,6 +442,40 @@ def managed_transport(monkeypatch, tmp_path):
     monkeypatch.setattr(photoshop, 'launch_script', sender)
     renderer = photoshop.PhotoshopRawRenderer(target, hide=True, timeout=0.1)
     return renderer, source, identity, state, sender, windows, quit_mock
+
+
+def test_windows_sender_exit_one_still_waits_for_result(managed_transport, monkeypatch):
+    renderer, source, identity, state, sender, windows, quit_mock = managed_transport
+    monkeypatch.setattr(photoshop.sys, 'platform', 'win32')
+    state.update(processes=[identity], pending=True, sender_exit_code=1)
+    polls = []
+
+    def complete_after_forwarding():
+        polls.append(None)
+        if len(polls) == 2:
+            state['complete']()
+
+    state['on_poll'] = complete_after_forwarding
+    frame, _ = renderer.render(source)
+    renderer.close()
+    assert len(polls) == 2
+    assert frame.tolist() == [[[30, 20, 10]]]
+    sender.assert_called_once()
+    quit_mock.assert_not_called()
+
+
+def test_macos_sender_nonzero_exit_fails_early(managed_transport, monkeypatch):
+    renderer, source, identity, state, sender, windows, quit_mock = managed_transport
+    monkeypatch.setattr(photoshop.sys, 'platform', 'darwin')
+    state.update(processes=[identity], pending=True, sender_exit_code=1)
+    poll = Mock()
+    state['on_poll'] = poll
+    with pytest.raises(RuntimeError, match='Photoshop script sender failed: exit 1'):
+        renderer.render(source)
+    renderer.close()
+    poll.assert_called_once()
+    sender.assert_called_once()
+    quit_mock.assert_not_called()
 
 
 def test_managed_transport_borrows_without_hiding_or_exiting(managed_transport):
@@ -467,9 +502,11 @@ def test_managed_transport_owns_cold_launch_and_exits_it(managed_transport):
 
 @pytest.mark.parametrize('borrowed', [False, True])
 @pytest.mark.parametrize('replacement', [False, True])
+@pytest.mark.parametrize('platform', ['win32', 'darwin'])
 def test_host_loss_during_render_fails_without_adopting_or_touching_new_host(
-        managed_transport, borrowed, replacement):
+        managed_transport, monkeypatch, borrowed, replacement, platform):
     renderer, source, identity, state, sender, windows, quit_mock = managed_transport
+    monkeypatch.setattr(photoshop.sys, 'platform', platform)
     if borrowed:
         state['processes'] = [identity]
     state['pending'] = True
@@ -510,8 +547,10 @@ def test_startup_race_borrows_foreign_windows_pid_without_claiming_it(managed_tr
     quit_mock.assert_not_called()
 
 
-def test_borrowed_failure_does_not_reveal_hidden_user_host(managed_transport):
+@pytest.mark.parametrize('platform', ['win32', 'darwin'])
+def test_borrowed_failure_does_not_reveal_hidden_user_host(managed_transport, monkeypatch, platform):
     renderer, source, identity, state, sender, windows, quit_mock = managed_transport
+    monkeypatch.setattr(photoshop.sys, 'platform', platform)
     state.update(processes=[identity], pending=True)
     with pytest.raises(TimeoutError):
         renderer.render(source)
@@ -532,8 +571,11 @@ def test_cleanup_rechecks_identity_after_preparing_exit_script(monkeypatch):
 
 
 @pytest.mark.parametrize('replacement', [False, True])
-def test_complete_result_survives_host_exit_without_touching_replacement(managed_transport, replacement):
+@pytest.mark.parametrize('platform', ['win32', 'darwin'])
+def test_complete_result_survives_host_exit_without_touching_replacement(
+        managed_transport, monkeypatch, replacement, platform):
     renderer, source, identity, state, sender, windows, quit_mock = managed_transport
+    monkeypatch.setattr(photoshop.sys, 'platform', platform)
     state['pending'] = True
     next_processes = [{'pid': identity['pid'], 'created': identity['created'] + 1}] if replacement else []
 
