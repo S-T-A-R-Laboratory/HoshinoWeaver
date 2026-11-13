@@ -283,6 +283,16 @@ def run_packaging(options: BuildOptions, backend: ModuleType) -> int:
         external = options.root / "external"
         if external.is_dir():
             shutil.copytree(external, result.directory / "external", dirs_exist_ok=True)
+            if sys.platform == "darwin" and not options.debug_gui:
+                app = result.directory / f"{GUI_NAME}.app"
+                if app.is_dir():
+                    # Keep the GUI self-contained when moved out of the release
+                    # folder. resolve_ffmpeg searches beside its executable.
+                    shutil.copytree(external, result.gui.parent / "external", dirs_exist_ok=True)
+                    # Adding files invalidates the backend's bundle seal. This
+                    # is an ad-hoc development signature, not Developer ID signing.
+                    run_command(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)],
+                                root=options.root)
         if options.verify:
             verify_distribution(result, native=native)
         publish_release(stage, final, overwrite=options.overwrite)

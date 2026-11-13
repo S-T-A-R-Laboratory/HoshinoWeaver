@@ -52,6 +52,9 @@ hoshicore/packaging/
 
 项目存在 `external/` 时，公共流程在后端后处理之后、验证之前将其原样复制到发行
 目录的 `external/`，供 FFmpeg 等外部可执行文件使用，不参与编译器的模块依赖分析。
+macOS 非 debug GUI 另外复制一份到 `.app/Contents/MacOS/external/`，与 GUI 可执行文件
+相邻，因此单独移动 `.app` 仍可发现 FFmpeg。复制后重新进行 ad-hoc 签名并验证运行；
+这不是 Developer ID 签名或 Apple 公证。目录外的副本供 CLI 使用。
 
 - `BuildOptions`：公共参数、仓库路径及后端选择。
 - `PackageManifest`：DAG、settings、LICENSE、native 状态、包内 DLL、可选 turbojpeg 和 Metal shader；DLL 与数据资源分开描述。
@@ -115,3 +118,31 @@ Linux/macOS、GPU、UPX、debug GUI 和 NumPy-only 配置需分别构建验证�
 
 比较两种后端的启动时间、体积和处理速度时，应使用同版本、同依赖环境。
 Nuitka standalone 仍保留 Python runtime 与第三方 native 库，性能收益以实测为准。
+
+## 手动构建 macOS arm64（Nuitka）
+
+工作流为 `.github/workflows/package-macos.yaml`，只接受 `workflow_dispatch`，不自动发布
+Release。在 GitHub 的 Actions 中选择
+**Package macOS arm64 (Nuitka)** → **Run workflow**，选定构建分支并填写：
+
+- `ffmpeg_url`：独立 macOS arm64 FFmpeg 的 HTTPS ZIP 下载地址，ZIP 中必须恰有一个
+  名为 `ffmpeg` 的文件，可位于子目录。
+- `ffmpeg_sha256`：该 ZIP 的 64 位十六进制 SHA256，应从可信来源核对。
+
+工作流固定 `macos-15` 和 arm64 Python 3.11，安装 OpenMP、inih、jpeg-turbo 及项目依赖，
+构建 OpenMP/Metal 扩展，再调用 `make_package.py --backend nuitka --no-build --jobs=2 --verify`。
+Python 依赖仍按仓库范围解析，并将实际版本写入发行目录的 `build-requirements.txt`；
+当前模板不承诺完全可复现的构建或 macOS 13 最低系统兼容性，需在目标系统另测。
+
+Homebrew 官方 `ffmpeg` formula 使用 shared 构建，不能将 `brew install ffmpeg` 等同于
+获得独立静态程序。此模板通过 `lipo` 检查 arm64，通过 `otool -L` 拒绝非系统动态库依赖；
+macOS 独立程序仍可依赖系统库。FFmpeg 必须支持 `libx264`、MP4 及 AVI/rawvideo。
+ZIP 内的 LICENSE/COPYING/NOTICE 会一并保存，也记录下载地址、摘要、版本和 FFmpeg
+自身的许可信息。公开再分发前仍需核对该构建对应的源码提供方式与许可要求。
+
+构建完成后检查 CLI 和 `.app` 内各自的 FFmpeg，在收紧 PATH 的环境中编码短 MP4 和
+无压缩 AVI，并检查 app 签名。完整发行目录（CLI、`.app`、外部程序及资源）打为
+带 `macos-arm64` 标识的 `.tar.gz`，保留符号链接和执行权限，上传至运行页的 Artifacts，
+保留 14 天；另附归档 SHA256。下载 artifact 后还需解开其中的 tar 包。
+这里不使用普通文件 ZIP 或直接上传 `.app`，也不创建只包含 GUI 的 DMG。
+首次运行仍需下载到无 Homebrew 的 Mac 上确认 GUI、视频导出及系统安全提示。

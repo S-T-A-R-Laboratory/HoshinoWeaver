@@ -1,0 +1,165 @@
+name: Package macOS arm64 (Nuitka)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ffmpeg_url:
+        description: 'HTTPS URL of an independent macOS arm64 FFmpeg ZIP (one ffmpeg binary)'
+        default: 'https://www.osxexperts.net/ffmpeg902arm.zip'
+        required: true
+        type: string
+      ffmpeg_sha256:
+        description: 'SHA256 of the FFmpeg ZIP, obtained from a trusted source'
+        default: '6deb2860c3dc0c08e0f96bab119196c024103046fa3cc7ef72e3a77797d8553c'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      FFMPEG_URL: ${{ inputs.ffmpeg_url }}
+      FFMPEG_SHA256: ${{ inputs.ffmpeg_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: arm64
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            csrc/requirements.txt
+
+      - name: Validate build inputs and architecture
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, platform, re
+          from urllib.parse import urlsplit
+          assert platform.machine() == 'arm64', 'Requires native arm64 Python'
+          assert urlsplit(os.environ['FFMPEG_URL']).scheme == 'https', 'Requires HTTPS'
+          assert re.fullmatch(r'[0-9a-fA-F]{64}', os.environ['FFMPEG_SHA256']), 'Invalid SHA256'
+          PY
+
+      - name: Install build and runtime dependencies
+        run: |
+          brew install libomp inih jpeg-turbo ccache
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt -r csrc/requirements.txt
+
+      - name: Download and stage independent FFmpeg
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 --proto '=https' --proto-redir '=https' \
+            --output "$RUNNER_TEMP/ffmpeg.zip" -- "$FFMPEG_URL"
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path, PurePosixPath
+          from zipfile import ZipFile
+          archive = Path(os.environ['RUNNER_TEMP']) / 'ffmpeg.zip'
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          assert digest == os.environ['FFMPEG_SHA256'].lower(), 'FFmpeg ZIP checksum mismatch'
+          dest = Path('external')
+          dest.mkdir(exist_ok=True)
+          with ZipFile(archive) as z:
+              candidates = [i for i in z.infolist() if not i.is_dir()
+                            and PurePosixPath(i.filename).name == 'ffmpeg'
+                            and '__MACOSX' not in PurePosixPath(i.filename).parts]
+              assert len(candidates) == 1, 'ZIP must contain exactly one ffmpeg binary'
+              (dest / 'ffmpeg').write_bytes(z.read(candidates[0]))
+              for index, item in enumerate(z.infolist()):
+                  name = PurePosixPath(item.filename).name
+                  if not item.is_dir() and name.lower().startswith(('license', 'copying', 'notice')):
+                      (dest / f'ffmpeg-{index}-{name}').write_bytes(z.read(item))
+          (dest / 'ffmpeg').chmod(0o755)
+          (dest / 'ffmpeg-source.json').write_text(json.dumps({
+              'url': os.environ['FFMPEG_URL'], 'sha256': digest,
+          }, indent=2), encoding='utf-8')
+          PY
+          lipo -verify_arch arm64 external/ffmpeg
+          otool -L external/ffmpeg
+          python - <<'PY'
+          import subprocess
+          lines = subprocess.check_output(['otool', '-L', 'external/ffmpeg'], text=True).splitlines()[1:]
+          dependencies = [line.strip().split(' (', 1)[0] for line in lines if line.strip()]
+          unsupported = [p for p in dependencies if not p.startswith(('/usr/lib/', '/System/Library/'))]
+          assert not unsupported, f'FFmpeg requires non-system dylibs: {unsupported}'
+          PY
+          codesign --force --sign - external/ffmpeg
+          external/ffmpeg -version > external/ffmpeg-version.txt
+          external/ffmpeg -L > external/ffmpeg-license.txt
+
+      - name: Build OpenMP and Metal custom ops
+        run: python csrc/build_ops.py --compiler clang
+
+      - name: Build and verify CLI and app
+        run: python make_package.py --backend nuitka --no-build --jobs=2 --verify
+
+      - name: Verify bundled FFmpeg and archive release
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, os, subprocess, tarfile, tempfile
+          from pathlib import Path
+          from hoshicore.packaging.common import BuildOptions, GUI_NAME
+          from hoshicore.component.utils import VERSION
+          release = BuildOptions(backend='nuitka').release_dir
+          app = release / f'{GUI_NAME}.app'
+          env = os.environ.copy()
+          env['PATH'] = '/usr/bin:/bin:/usr/sbin:/sbin'
+          for key in list(env):
+              if key.startswith(('DYLD_', 'PYTHON')):
+                  env.pop(key)
+          subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+          with tempfile.TemporaryDirectory(prefix='hnw-ffmpeg-check-') as work:
+              # Both locations must work independently of Homebrew and the cwd.
+              for index, binary in enumerate((release / 'external/ffmpeg',
+                                             app / 'Contents/MacOS/external/ffmpeg')):
+                  for codec, suffix, pixel_format in (('libx264', 'mp4', 'yuv420p'),
+                                                       ('rawvideo', 'avi', 'bgr24')):
+                      subprocess.run([str(binary), '-hide_banner', '-loglevel', 'error',
+                          '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', '16x16', '-r', '25',
+                          '-i', 'pipe:0', '-frames:v', '2', '-an', '-c:v', codec,
+                          '-pix_fmt', pixel_format, str(Path(work) / f'{index}.{suffix}')],
+                          input=bytes(16 * 16 * 3 * 2), cwd=work, env=env, check=True, timeout=30)
+          subprocess.run(['python', '-m', 'pip', 'freeze'], check=True,
+                         stdout=(release / 'build-requirements.txt').open('w'))
+          dest = Path('artifacts')
+          dest.mkdir(exist_ok=True)
+          archive = dest / f'HoshinoWeaver_macos-arm64_{VERSION}_nuitka.tar.gz'
+          with tarfile.open(archive, 'w:gz', dereference=False) as tar:
+              tar.add(release, arcname=release.name)
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          archive.with_suffix(archive.suffix + '.sha256').write_text(
+              f'{digest}  {archive.name}\n', encoding='utf-8')
+          PY
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: HoshinoWeaver-macos-arm64-nuitka
+          path: artifacts/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-nuitka-diagnostics
+          path: |
+            build/nuitka/commands.json
+            build/nuitka/*report.xml
+            build/nuitka/*.yml
+          if-no-files-found: ignore
+          retention-days: 7

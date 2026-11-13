@@ -87,6 +87,46 @@ def test_external_tools_are_copied_before_verification(tmp_path, monkeypatch):
     assert (options.release_dir / "external/ffmpeg.exe").read_bytes() == b"external tool"
 
 
+@pytest.mark.parametrize('backend_name', ['nuitka', 'pyinstaller'])
+def test_macos_app_keeps_external_tools_when_moved_alone(tmp_path, monkeypatch, backend_name):
+    prepare_pipeline(monkeypatch)
+    monkeypatch.setattr(common.sys, 'platform', 'darwin')
+    monkeypatch.setattr(common.platform, 'mac_ver', lambda: ('15.0', (), 'arm64'))
+    backend = importlib.import_module(f'hoshicore.packaging.{backend_name}')
+    tools = tmp_path / 'external'
+    tools.mkdir()
+    (tools / 'ffmpeg').write_bytes(b'arm64 tool')
+    options = common.BuildOptions(root=tmp_path, backend=backend_name, verify=True)
+    calls = []
+
+    def build(options, manifest, stage):
+        result = backend.describe_release(stage, options)
+        result.gui.parent.mkdir(parents=True)
+        result.gui.write_bytes(b'GUI')
+        return result
+
+    def sign(command, **kwargs):
+        assert (Path(command[-1]) / 'Contents/MacOS/external/ffmpeg').read_bytes() == b'arm64 tool'
+        calls.append(command)
+
+    def verify(result, **kwargs):
+        assert len(calls) == 1  # Copy and re-seal before verification.
+        assert (result.directory / 'external/ffmpeg').is_file()
+
+    monkeypatch.setattr(common, 'run_command', sign)
+    monkeypatch.setattr(common, 'verify_distribution', verify)
+    common.run_packaging(options, SimpleNamespace(build=build, postprocess=lambda *a: None))
+    app = options.release_dir / f'{common.GUI_NAME}.app'
+    moved = tmp_path / 'Applications' / app.name
+    moved.parent.mkdir()
+    app.rename(moved)
+    from hoshicore.component import video_io
+    monkeypatch.setattr(video_io, 'os', SimpleNamespace(name='posix'))
+    monkeypatch.setattr(video_io.sys, 'executable', str(moved / 'Contents/MacOS' / common.GUI_NAME))
+    monkeypatch.setattr(video_io.shutil, 'which', lambda path: pytest.fail('Must use the app-local tool'))
+    assert Path(video_io.resolve_ffmpeg(None)) == moved / 'Contents/MacOS/external/ffmpeg'
+
+
 def test_publish_rolls_back_when_stage_rename_fails(tmp_path, monkeypatch):
     final, stage = tmp_path / "release", tmp_path / "stage"
     final.mkdir()
