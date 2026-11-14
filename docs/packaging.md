@@ -90,6 +90,8 @@ PyInstaller 的 CLI 资源位于 `_internal/`，Nuitka 位于发行根目录；
 应用资源定位须独立于启动目录和开发源码。Windows 入口名为
 `HoshinoWeaver desktop.exe` / `launcher.exe`；macOS 非 debug GUI 使用
 `HoshinoWeaver desktop.app`，CLI 位于发行目录。
+Nuitka 对 macOS 非 debug GUI 使用 `--mode=app`，CLI 和 debug GUI 使用
+`--mode=standalone`；不混用旧的 `--macos-create-app-bundle` 模式选项。
 
 发行目录为 `dist/HoshinoWeaver desktop_<平台>_<VERSION>[-debug]/`，
 ZIP 为 `HoshinoWeaver_<平台>_<VERSION>.zip`。两个后端共用命名，

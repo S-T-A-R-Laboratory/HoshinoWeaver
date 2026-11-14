@@ -71,3 +71,22 @@ def test_nuitka_configuration_keeps_pyexiv2_hack_and_describes_optional_binaries
     assert config["turbojpeg"]["dlls"][0]["by_code"]["filename_code"] == repr(str(tmp_path / "turbojpeg.dll"))
     fallback = common.PackageManifest(False, (), (), tmp_path)
     assert [item["module-name"] for item in nuitka.package_configuration(fallback)] == ["pyexiv2.lib"]
+
+
+@pytest.mark.parametrize('platform', ['darwin', 'win32', 'linux'])
+@pytest.mark.parametrize('debug_gui', [False, True])
+def test_nuitka_uses_one_modern_mode_for_cli_and_gui(tmp_path, monkeypatch, platform, debug_gui):
+    from hoshicore.packaging import nuitka
+    monkeypatch.setattr(nuitka.sys, 'platform', platform)
+    # Windows command generation reuses this icon instead of reading a source image.
+    (tmp_path / 'HNW.ico').write_bytes(b'icon')
+    manifest = common.PackageManifest(False, (), (), tmp_path)
+    options = common.BuildOptions(root=tmp_path, debug_gui=debug_gui)
+    for entry in (common.CLI_NAME, common.GUI_NAME):
+        command = nuitka.build_command(entry, tmp_path, tmp_path / 'config.yml',
+                                       manifest=manifest, options=options)
+        app = platform == 'darwin' and entry == common.GUI_NAME and not debug_gui
+        assert [arg for arg in command if arg.startswith('--mode=')] == [
+            '--mode=app' if app else '--mode=standalone']
+        assert not set(command) & {'--standalone', '--onefile', '--macos-create-app-bundle'}
+        assert any(arg.startswith('--macos-app-name=') for arg in command) is app

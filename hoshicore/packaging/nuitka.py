@@ -69,8 +69,9 @@ def build_command(name: str, build_root: Path, config_path: Path, *,
     root = options.root
     native, debug_gui, jobs = manifest.native, options.debug_gui, options.jobs
     gui = name == GUI_NAME
+    app_bundle = gui and sys.platform == "darwin" and not debug_gui
     command = [
-        sys.executable, "-m", "nuitka", "--mode=standalone",
+        sys.executable, "-m", "nuitka", f"--mode={'app' if app_bundle else 'standalone'}",
         f"--output-dir={build_root / ('gui' if gui else 'cli')}",
         f"--output-filename={name}{'.exe' if os.name == 'nt' else ''}",
         f"--report={build_root / ('gui-report.xml' if gui else 'cli-report.xml')}",
@@ -122,9 +123,8 @@ def build_command(name: str, build_root: Path, config_path: Path, *,
             command.append(f"--windows-icon-from-ico={icon_path}")
     if gui:
         command.extend(["--enable-plugin=pyside6", "--include-qt-plugins=sensible"])
-        if sys.platform == "darwin" and not debug_gui:
-            command.extend(["--macos-create-app-bundle",
-                            f"--macos-app-name={GUI_NAME}",
+        if app_bundle:
+            command.extend([f"--macos-app-name={GUI_NAME}",
                             "--macos-signed-app-name=com.hoshinoweaver.desktop"])
     command.append(str(root / f"{name}.py"))
     return command
