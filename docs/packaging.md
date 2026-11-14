@@ -94,6 +94,9 @@ Nuitka 对 macOS 非 debug GUI 使用 `--mode=app`，CLI 和 debug GUI 使用
 `--mode=standalone`；不混用旧的 `--macos-create-app-bundle` 模式选项。
 Nuitka 显式收集 `astropy.constants` 子包，覆盖 Astropy 按配置动态导入的 CODATA/IAU
 版本模块；仅保留 bytecode 不会自动包含未被静态分析发现的模块。
+Astropy 的 units/angles PLY 解析表另外收集为可导入模块和实体 `*_lextab.py` /
+`*_parsetab.py` 文件：其包装层会检查源文件是否存在，否则尝试在安装目录生成解析表。
+发行包应使用预生成表，不依赖目录写权限。
 
 发行目录为 `dist/HoshinoWeaver desktop_<平台>_<VERSION>[-debug]/`，
 ZIP 为 `HoshinoWeaver_<平台>_<VERSION>.zip`。两个后端共用命名，

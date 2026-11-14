@@ -70,7 +70,8 @@ def test_nuitka_configuration_keeps_pyexiv2_hack_and_describes_optional_binaries
     assert "hoshicore._custom_op" in config
     assert config["turbojpeg"]["dlls"][0]["by_code"]["filename_code"] == repr(str(tmp_path / "turbojpeg.dll"))
     fallback = common.PackageManifest(False, (), (), tmp_path)
-    assert [item["module-name"] for item in nuitka.package_configuration(fallback)] == ["pyexiv2.lib"]
+    assert 'hoshicore._custom_op' not in {
+        item['module-name'] for item in nuitka.package_configuration(fallback)}
 
 
 @pytest.mark.parametrize('platform', ['darwin', 'win32', 'linux'])
@@ -91,3 +92,35 @@ def test_nuitka_uses_one_modern_mode_for_cli_and_gui(tmp_path, monkeypatch, plat
         assert not set(command) & {'--standalone', '--onefile', '--macos-create-app-bundle'}
         assert any(arg.startswith('--macos-app-name=') for arg in command) is app
         assert '--include-package=astropy.constants' in command
+
+
+@pytest.mark.parametrize('package', ['astropy.units.format', 'astropy.coordinates.angles'])
+def test_astropy_ply_tables_ship_as_modules_and_files_without_regeneration(tmp_path, monkeypatch, package):
+    from fnmatch import fnmatch
+    import shutil
+    from astropy.extern.ply import yacc
+    from astropy.utils.parsing import _patch_ply_module
+    from hoshicore.packaging import nuitka
+
+    manifest = common.PackageManifest(False, (), (), tmp_path)
+    config = next(c for c in nuitka.package_configuration(manifest) if c['module-name'] == package)
+    folder = Path(importlib.import_module(package).__file__).parent
+    patterns = config['data-files'][0]['patterns']
+    sources = sorted({p for pattern in patterns for p in folder.glob(pattern)})
+    assert sources, 'Installed Astropy must provide pre-generated PLY tables'
+    modules = config['implicit-imports'][0]['depends']
+
+    def forbid_regeneration(*args, **kwargs):
+        pytest.fail('A packaged parser must not regenerate its tables')
+
+    monkeypatch.setattr(Path, 'write_text', forbid_regeneration)
+    for source in sources:
+        assert any(fnmatch(f'{package}.{source.stem}', pattern) for pattern in modules)
+        target = tmp_path / source.name
+        shutil.copy2(source, target)
+        with _patch_ply_module(yacc, target, package):
+            if source.stem.endswith('_parsetab'):
+                # Validate real tables through PLY without generating grammar.
+                table = importlib.import_module(f'{package}.{source.stem}')
+                assert yacc.LRTable().read_table(table)
+        assert target.read_bytes() == source.read_bytes()

@@ -41,6 +41,15 @@ def package_configuration(manifest: PackageManifest) -> list[dict]:
         "dlls": [{"from_filenames": {"prefixes": ["exiv2", "libexiv2"],
                                     "suffixes": ["dll", "so", "dylib"]}}],
     }]
+    # PLY imports tables dynamically, and Astropy's wrapper also checks their
+    # physical .py files before deciding whether to regenerate them. Bytecode
+    # inclusion alone does not satisfy that check in a read-only distribution.
+    for package in ("astropy.units.format", "astropy.coordinates.angles"):
+        config.append({
+            "module-name": package,
+            "implicit-imports": [{"depends": [f"{package}.*_lextab", f"{package}.*_parsetab"]}],
+            "data-files": [{"patterns": ["*_lextab.py", "*_parsetab.py"]}],
+        })
     if manifest.native:
         config.append({"module-name": "hoshicore._custom_op",
                        "dlls": [{"from_filenames": {"prefixes": ["*"], "suffixes": ["dll"]},
