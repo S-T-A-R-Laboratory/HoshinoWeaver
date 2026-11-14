@@ -129,10 +129,14 @@ Release。在 GitHub 的 Actions 中选择
   名为 `ffmpeg` 的文件，可位于子目录。
 - `ffmpeg_sha256`：该 ZIP 的 64 位十六进制 SHA256，应从可信来源核对。
 
-工作流固定 `macos-15` 和 arm64 Python 3.11，安装 OpenMP、inih、jpeg-turbo 及项目依赖，
+工作流固定 `macos-15` 和 arm64 Python 3.11，安装 OpenMP、inih、brotli、jpeg-turbo 及项目依赖，
 构建 OpenMP/Metal 扩展，再调用 `make_package.py --backend nuitka --no-build --jobs=2 --verify`。
 Python 依赖仍按仓库范围解析，并将实际版本写入发行目录的 `build-requirements.txt`；
 当前模板不承诺完全可复现的构建或 macOS 13 最低系统兼容性，需在目标系统另测。
+
+pyexiv2 的 macOS wheel 可能链接 Homebrew dylib。Nuitka 的 `pyexiv2.lib` 配置在
+macOS 启用 `package-system-dlls`，收集 Python framework 目录外的依赖并修正包内路径。
+仅安装依赖不代表它们已进入发行包；编译前检查原生库加载，打包后仍需通过隔离验证。
 
 Homebrew 官方 `ffmpeg` formula 使用 shared 构建，不能将 `brew install ffmpeg` 等同于
 获得独立静态程序。此模板通过 `lipo` 检查 arm64，通过 `otool -L` 拒绝非系统动态库依赖；

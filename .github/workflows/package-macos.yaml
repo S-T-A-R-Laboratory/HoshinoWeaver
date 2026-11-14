@@ -52,9 +52,21 @@ jobs:
 
       - name: Install build and runtime dependencies
         run: |
-          brew install libomp inih jpeg-turbo ccache
+          brew install libomp inih brotli jpeg-turbo ccache
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt -r csrc/requirements.txt
+
+      - name: Check pyexiv2 native dependencies before compilation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import pyexiv2
+          library = Path(pyexiv2.__file__).parent / 'lib/libexiv2.dylib'
+          subprocess.run(['otool', '-L', str(library)], check=True)
+          # The import above loads libexiv2 and its transitive dependencies.
+          print('pyexiv2 native library loaded successfully')
+          PY
 
       - name: Download and stage independent FFmpeg
         shell: bash

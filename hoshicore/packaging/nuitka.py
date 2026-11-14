@@ -30,7 +30,13 @@ def package_configuration(manifest: PackageManifest) -> list[dict]:
     # Extension modules are included separately; DLLs undergo Nuitka analysis.
     config = [{
         "module-name": "pyexiv2.lib",
-        "import-hacks": [{"global-sys-path": [""]}],
+        "import-hacks": [
+            {"global-sys-path": [""]},
+            # The macOS wheel links Homebrew dylibs outside the python.org
+            # framework. Include the dependency closure and let Nuitka relocate
+            # it, rather than treating those libraries as host-only dependencies.
+            {"package-system-dlls": "yes", "when": "macos"},
+        ],
         "implicit-imports": [{"depends": ["exiv2api"]}],
         "dlls": [{"from_filenames": {"prefixes": ["exiv2", "libexiv2"],
                                     "suffixes": ["dll", "so", "dylib"]}}],

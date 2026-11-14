@@ -62,7 +62,10 @@ def test_nuitka_configuration_keeps_pyexiv2_hack_and_describes_optional_binaries
     manifest = common.PackageManifest(True, (), (), tmp_path, turbojpeg=True,
                                       turbojpeg_libraries=(tmp_path / "turbojpeg.dll",))
     config = {item["module-name"]: item for item in nuitka.package_configuration(manifest)}
-    assert config["pyexiv2.lib"]["import-hacks"] == [{"global-sys-path": [""]}]
+    assert config["pyexiv2.lib"]["import-hacks"] == [
+        {"global-sys-path": [""]},
+        {"package-system-dlls": "yes", "when": "macos"},
+    ]
     assert config["pyexiv2.lib"]["implicit-imports"] == [{"depends": ["exiv2api"]}]
     assert "hoshicore._custom_op" in config
     assert config["turbojpeg"]["dlls"][0]["by_code"]["filename_code"] == repr(str(tmp_path / "turbojpeg.dll"))
