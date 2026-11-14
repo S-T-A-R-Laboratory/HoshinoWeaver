@@ -10,7 +10,7 @@ on:
         type: string
       ffmpeg_sha256:
         description: 'SHA256 of the FFmpeg ZIP, obtained from a trusted source'
-        default: '6deb2860c3dc0c08e0f96bab119196c024103046fa3cc7ef72e3a77797d8553c'
+        default: '4597f0f3a397cc0027bfd03dc4dd9c3066be15943cc788370846b4305d178bcb'
         required: true
         type: string
 
@@ -85,7 +85,7 @@ jobs:
               'url': os.environ['FFMPEG_URL'], 'sha256': digest,
           }, indent=2), encoding='utf-8')
           PY
-          lipo -verify_arch arm64 external/ffmpeg
+          lipo external/ffmpeg -verify_arch arm64
           otool -L external/ffmpeg
           python - <<'PY'
           import subprocess
