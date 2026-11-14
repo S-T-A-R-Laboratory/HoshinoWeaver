@@ -113,6 +113,22 @@ jobs:
       - name: Build OpenMP and Metal custom ops
         run: python csrc/build_ops.py --compiler clang
 
+      - name: Record native video library dependencies
+        run: |
+          python - <<'PY'
+          from importlib.metadata import distribution
+          from pathlib import Path
+          import subprocess
+          for name in ('av', 'opencv-python'):
+              dist = distribution(name)
+              print(f'{name}=={dist.version}', flush=True)
+              for item in dist.files or ():
+                  if str(item).endswith(('.so', '.dylib')):
+                      library = Path(dist.locate_file(item))
+                      print(f'Native dependency owner: {name}: {library}', flush=True)
+                      subprocess.run(['otool', '-L', str(library)], check=True)
+          PY
+
       - name: Build and verify CLI and app
         run: python make_package.py --backend nuitka --no-build --jobs=2 --verify
 

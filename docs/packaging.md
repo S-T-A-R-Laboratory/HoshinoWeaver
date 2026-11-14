@@ -92,6 +92,8 @@ PyInstaller 的 CLI 资源位于 `_internal/`，Nuitka 位于发行根目录；
 `HoshinoWeaver desktop.app`，CLI 位于发行目录。
 Nuitka 对 macOS 非 debug GUI 使用 `--mode=app`，CLI 和 debug GUI 使用
 `--mode=standalone`；不混用旧的 `--macos-create-app-bundle` 模式选项。
+Nuitka 显式收集 `astropy.constants` 子包，覆盖 Astropy 按配置动态导入的 CODATA/IAU
+版本模块；仅保留 bytecode 不会自动包含未被静态分析发现的模块。
 
 发行目录为 `dist/HoshinoWeaver desktop_<平台>_<VERSION>[-debug]/`，
 ZIP 为 `HoshinoWeaver_<平台>_<VERSION>.zip`。两个后端共用命名，

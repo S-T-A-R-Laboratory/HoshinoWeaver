@@ -82,6 +82,9 @@ def build_command(name: str, build_root: Path, config_path: Path, *,
         "--noinclude-setuptools-mode=nofollow",
         "--noinclude-IPython-mode=nofollow",
         "--include-package=scipy._lib.array_api_compat",
+        # Astropy selects CODATA/IAU modules through importlib and configuration.
+        # Include this small package rather than pinning one constants version.
+        "--include-package=astropy.constants",
         # Cython extensions import helpers invisible to Python source analysis.
         "--include-module=av.utils",
         "--include-module=pyexiv2", "--include-distribution-metadata=pyexiv2",

@@ -90,3 +90,4 @@ def test_nuitka_uses_one_modern_mode_for_cli_and_gui(tmp_path, monkeypatch, plat
             '--mode=app' if app else '--mode=standalone']
         assert not set(command) & {'--standalone', '--onefile', '--macos-create-app-bundle'}
         assert any(arg.startswith('--macos-app-name=') for arg in command) is app
+        assert '--include-package=astropy.constants' in command
